@@ -157,6 +157,11 @@ func getSink(
 			}
 			cfg.saslHandshake = b
 		}
+		cfg.saslMechanism = q.Get(changefeedbase.SinkParamSASLMechanism)
+		q.Del(changefeedbase.SinkParamSASLMechanism)
+		if cfg.saslMechanism != "" && !cfg.saslEnabled {
+			return nil, errors.Errorf(`%s must be enabled to configure SASL mechanism`, changefeedbase.SinkParamSASLEnabled)
+		}
 		cfg.saslUser = q.Get(changefeedbase.SinkParamSASLUser)
 		q.Del(changefeedbase.SinkParamSASLUser)
 		cfg.saslPassword = q.Get(changefeedbase.SinkParamSASLPassword)
@@ -305,6 +310,7 @@ type kafkaSinkConfig struct {
 	saslHandshake    bool
 	saslUser         string
 	saslPassword     string
+	saslMechanism    string
 	targetNames      map[descpb.ID]string
 }
 
@@ -357,9 +363,10 @@ func makeKafkaSink(
 		}
 		caCertPool := x509.NewCertPool()
 		caCertPool.AppendCertsFromPEM(cfg.caCert)
-		config.Net.TLS.Config = &tls.Config{
-			RootCAs: caCertPool,
+		if config.Net.TLS.Config == nil {
+			config.Net.TLS.Config = &tls.Config{}
 		}
+		config.Net.TLS.Config.RootCAs = caCertPool
 		config.Net.TLS.Enable = true
 	} else if cfg.tlsEnabled {
 		config.Net.TLS.Enable = true
@@ -393,6 +400,12 @@ func makeKafkaSink(
 		config.Net.SASL.Handshake = cfg.saslHandshake
 		config.Net.SASL.User = cfg.saslUser
 		config.Net.SASL.Password = cfg.saslPassword
+		config.Net.SASL.Mechanism = sarama.SASLMechanism(cfg.saslMechanism)
+		if config.Net.SASL.Mechanism == sarama.SASLTypeSCRAMSHA512 {
+			config.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient { return &ScramClient{HashGeneratorFcn: SHA512} }
+		} else if config.Net.SASL.Mechanism == sarama.SASLTypeSCRAMSHA256 {
+			config.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient { return &ScramClient{HashGeneratorFcn: SHA256} }
+		}
 	}
 
 	// When we emit messages to sarama, they're placed in a queue (as does any

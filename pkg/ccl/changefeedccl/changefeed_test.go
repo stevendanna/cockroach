@@ -2081,6 +2081,10 @@ func TestChangefeedErrors(t *testing.T) {
 		t, `sasl_enabled must be enabled if a SASL password is provided`,
 		`CREATE CHANGEFEED FOR foo INTO $1`, `kafka://nope/?sasl_password=a`,
 	)
+	sqlDB.ExpectErr(
+		t, `sasl_enabled must be enabled to configure SASL mechanism`,
+		`CREATE CHANGEFEED FOR foo INTO $1`, `kafka://nope/?sasl_mechanism=false`,
+	)
 
 	// The avro format doesn't support key_in_value yet.
 	sqlDB.ExpectErr(
