@@ -419,7 +419,7 @@ endif
 
 # We install our vendored tools to a directory within this repository to avoid
 # overwriting any user-installed binaries of the same name in the default GOBIN.
-GO_INSTALL := GOBIN='$(abspath bin)' GOFLAGS= $(xgo) install
+GO_INSTALL := GOBIN='$(abspath bin)' GOFLAGS= $(GO) install
 
 C_DEPS_DIR := $(abspath c-deps)
 JEMALLOC_SRC_DIR := $(C_DEPS_DIR)/jemalloc
@@ -1690,13 +1690,15 @@ bins = \
   bin/roachprod \
   bin/roachprod-stress \
   bin/roachtest \
-	bin/skip-test \
+  bin/skip-test \
   bin/teamcity-trigger \
   bin/uptodate \
   bin/urlcheck \
-	bin/whoownsit \
-  bin/workload \
+  bin/whoownsit \
   bin/zerosum
+
+xbins = \
+  bin/workload
 
 testbins = \
   bin/logictest \
@@ -1752,7 +1754,12 @@ $(bins): bin/%: bin/%.d | bin/prereqs bin/.submodules-initialized
 	@echo go install -v $*
 	bin/prereqs $(if $($*-package),$($*-package),./pkg/cmd/$*) > $@.d.tmp
 	mv -f $@.d.tmp $@.d
-	$(GO_INSTALL) -v $(GOFLAGS) $(GOMODVENDORFLAGS) -tags '$(TAGS)' -ldflags '$(LINKFLAGS)' $(if $($*-package),$($*-package),./pkg/cmd/$*)
+	$(GO_INSTALL) -v $(if $($*-package),$($*-package),./pkg/cmd/$*)
+
+$(xbins): bin/%: bin/%.d | bin/prereqs bin/.submodules-initialized
+	bin/prereqs $(if $($*-package),$($*-package),./pkg/cmd/$*) > $@.d.tmp
+	mv -f $@.d.tmp $@.d
+	$(xgo) build -v $(GOFLAGS) $(GOMODVENDORFLAGS) -tags '$(TAGS)' -ldflags '$(LINKFLAGS)' -o $@ $(if $($*-package),$($*-package),./pkg/cmd/$*)
 
 $(testbins): bin/%: bin/%.d | bin/prereqs $(SUBMODULES_TARGET)
 	@echo go test -c $($*-package)
@@ -1824,4 +1831,3 @@ build/variables.mk: Makefile build/archive/contents/Makefile pkg/ui/Makefile bui
 include build/variables.mk
 $(foreach v,$(filter-out $(strip $(VALID_VARS)),$(.VARIABLES)),\
 	$(if $(findstring command line,$(origin $v)),$(error Variable '$v' is not recognized by this Makefile)))
-
