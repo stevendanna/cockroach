@@ -1,4 +1,4 @@
-// Copyright 2018 The Cockroach Authors.
+// Copyright 2021 The Cockroach Authors.
 //
 // Licensed as a CockroachDB Enterprise file under the Cockroach Community
 // License (the "License"); you may not use this file except in compliance with
@@ -22,7 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/Shopify/sarama"
 	"github.com/cockroachdb/cockroach-go/crdb"
@@ -30,45 +30,33 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/sql/distsql"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgx"
 )
-
-type seenTracker map[string]struct{}
-
-func (t seenTracker) markSeen(m *cdctest.TestFeedMessage) (isNew bool) {
-	// TODO(dan): This skips duplicates, since they're allowed by the
-	// semantics of our changefeeds. Now that we're switching to RangeFeed,
-	// this can actually happen (usually because of splits) and cause flakes.
-	// However, we really should be de-duping key+ts, this is too coarse.
-	// Fixme.
-	seenKey := m.Topic + m.Partition + string(m.Key) + string(m.Value)
-	if _, ok := t[seenKey]; ok {
-		return false
-	}
-	t[seenKey] = struct{}{}
-	return true
-}
 
 type sinklessFeedFactory struct {
 	s    serverutils.TestServerInterface
 	sink url.URL
 }
 
-// MakeSinklessFeedFactory returns a TestFeedFactory implementation using the
-// `experimental-sql` sink.
-func MakeSinklessFeedFactory(
+// makeSinklessFeedFactory returns a TestFeedFactory implementation using the
+// `experimental-sql` uri.
+func makeSinklessFeedFactory(
 	s serverutils.TestServerInterface, sink url.URL,
 ) cdctest.TestFeedFactory {
 	return &sinklessFeedFactory{s: s, sink: sink}
@@ -86,15 +74,12 @@ func (f *sinklessFeedFactory) Feed(create string, args ...interface{}) (cdctest.
 		return nil, err
 	}
 	s := &sinklessFeed{
-		create:  create,
-		args:    args,
-		connCfg: pgxConfig,
-		seen:    make(map[string]struct{}),
+		seenTrackerMap: make(map[string]struct{}),
+		create:         create,
+		args:           args,
+		connCfg:        pgxConfig,
 	}
-	// Resuming a sinkless feed is the same as killing it and creating a brand new
-	// one with the 'cursor' option set to the last resolved timestamp returned,
-	// so reuse the same code for both.
-	return s, s.Resume()
+	return s, s.start()
 }
 
 // Server implements the TestFeedFactory interface.
@@ -102,16 +87,42 @@ func (f *sinklessFeedFactory) Server() serverutils.TestServerInterface {
 	return f.s
 }
 
+type seenTracker interface {
+	reset()
+}
+
+type seenTrackerMap map[string]struct{}
+
+func (t seenTrackerMap) markSeen(m *cdctest.TestFeedMessage) (isNew bool) {
+	// TODO(dan): This skips duplicates, since they're allowed by the
+	// semantics of our changefeeds. Now that we're switching to RangeFeed,
+	// this can actually happen (usually because of splits) and cause flakes.
+	// However, we really should be de-duping key+ts, this is too coarse.
+	// Fixme.
+	seenKey := m.Topic + m.Partition + string(m.Key) + string(m.Value)
+	if _, ok := t[seenKey]; ok {
+		return false
+	}
+	t[seenKey] = struct{}{}
+	return true
+}
+
+func (t seenTrackerMap) reset() {
+	for k := range t {
+		delete(t, k)
+	}
+}
+
 // sinklessFeed is an implementation of the `TestFeed` interface for a
 // "sinkless" (results returned over pgwire) feed.
 type sinklessFeed struct {
+	seenTrackerMap
 	create  string
 	args    []interface{}
 	connCfg pgx.ConnConfig
 
 	conn           *pgx.Conn
 	rows           *pgx.Rows
-	seen           seenTracker
 	latestResolved hlc.Timestamp
 }
 
@@ -131,7 +142,7 @@ func (c *sinklessFeed) Next() (*cdctest.TestFeedMessage, error) {
 		}
 		if len(maybeTopic.String) > 0 {
 			m.Topic = maybeTopic.String
-			if isNew := c.seen.markSeen(m); !isNew {
+			if isNew := c.markSeen(m); !isNew {
 				continue
 			}
 			return m, nil
@@ -149,13 +160,8 @@ func (c *sinklessFeed) Next() (*cdctest.TestFeedMessage, error) {
 	}
 }
 
-// Pause implements the TestFeed interface.
-func (c *sinklessFeed) Pause() error {
-	return c.Close()
-}
-
 // Resume implements the TestFeed interface.
-func (c *sinklessFeed) Resume() error {
+func (c *sinklessFeed) start() error {
 	var err error
 	c.conn, err = pgx.Connect(c.connCfg)
 	if err != nil {
@@ -187,66 +193,105 @@ func (c *sinklessFeed) Close() error {
 	return c.conn.Close()
 }
 
-// FeedJob is an interface describing job related information for
-// feeds that use jobs (anything but sinkless).
-type FeedJob interface {
-	// JobID returns job id for the feed.
-	JobID() jobspb.JobID
-	// Details returns changefeed details for the feed.
-	Details() (*jobspb.ChangefeedDetails, error)
+// reportErrorResumer is a job resumer which reports OnFailOrCancel events.
+type reportErrorResumer struct {
+	wrapped   jobs.Resumer
+	jobFailed func()
 }
 
+var _ jobs.Resumer = (*reportErrorResumer)(nil)
+
+// Resume implements jobs.Resumer
+func (r *reportErrorResumer) Resume(ctx context.Context, execCtx interface{}) error {
+	return r.wrapped.Resume(ctx, execCtx)
+}
+
+// OnFailOrCancel implements jobs.Resumer
+func (r *reportErrorResumer) OnFailOrCancel(ctx context.Context, execCtx interface{}) error {
+	defer r.jobFailed()
+	return r.wrapped.OnFailOrCancel(ctx, execCtx)
+}
+
+// OnPauseRequest implements PauseRequester interface.
+func (r *reportErrorResumer) OnPauseRequest(
+	ctx context.Context, execCtx interface{}, txn *kv.Txn, details *jobspb.Progress,
+) error {
+	return r.wrapped.(*changefeedResumer).OnPauseRequest(ctx, execCtx, txn, details)
+}
+
+type wrapSinkFn func(sink Sink) Sink
+
+// jobFeed indicates that the feed is an "enterprise feed" -- that is,
+// it uses jobs system to manage its state.
 type jobFeed struct {
-	db      *gosql.DB
-	flushCh chan struct{}
+	db       *gosql.DB
+	shutdown chan struct{}
+	makeSink wrapSinkFn
 
-	jobID  jobspb.JobID
-	jobErr error
+	jobID jobspb.JobID
+
+	mu struct {
+		syncutil.Mutex
+		terminalErr error
+	}
 }
 
-// JobID implements FeedJob interface.
+var _ cdctest.EnterpriseTestFeed = (*jobFeed)(nil)
+
+func newJobFeed(db *gosql.DB, wrapper wrapSinkFn) *jobFeed {
+	return &jobFeed{
+		db:       db,
+		shutdown: make(chan struct{}),
+		makeSink: wrapper,
+	}
+}
+
+// jobFailed marks this job as failed.
+func (f *jobFeed) jobFailed() {
+	// protect against almost concurrent terminations of the same job.
+	// this could happen if the caller invokes `cancel job` just as we're
+	// trying to close this feed.  Part of jobFailed handling involves
+	// closing shutdown channel -- and doing this multiple times panics.
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mu.terminalErr != nil {
+		// Already failed/done.
+		return
+	}
+	f.mu.terminalErr = f.fetchTerminalJobErr()
+	close(f.shutdown)
+}
+
+func (f *jobFeed) terminalJobError() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mu.terminalErr
+}
+
+// JobID implements EnterpriseTestFeed interface.
 func (f *jobFeed) JobID() jobspb.JobID {
 	return f.jobID
 }
 
-func (f *jobFeed) fetchJobError() error {
-	// To avoid busy waiting, we wait for the AfterFlushHook (which is called
-	// after results are flushed to a sink) in between polls. It is required
-	// that this is hooked up to `flushCh`, which is usually handled by the
-	// `enterpriseTest` helper.
-	// TODO(yevgeniy): Stop relying on flushCh to synchrnize job state.
-	//
-	// The trickiest bit is handling errors in the changefeed. The tests want to
-	// eventually notice them, but want to return all generated results before
-	// giving up and returning the error. This is accomplished by checking the
-	// job error immediately before every poll. If it's set, the error is
-	// stashed and one more poll's result set is paged through, before finally
-	// returning the error. If we're careful to run the last poll after getting
-	// the error, then it's guaranteed to contain everything flushed by the
-	// changefeed before it shut down.
-	if f.jobErr != nil {
-		return f.jobErr
+func (f *jobFeed) waitForStatus(statusPred func(status jobs.Status) bool) error {
+	if f.jobID == jobspb.InvalidJobID {
+		// Job may not have been started.
+		return nil
 	}
+	// Wait for the job status predicate to become true.
+	return testutils.SucceedsSoonError(func() error {
+		var status string
+		if err := f.db.QueryRowContext(context.Background(),
+			`SELECT status FROM system.jobs WHERE id = $1`, f.jobID).Scan(&status); err != nil {
+			return err
+		}
+		if statusPred(jobs.Status(status)) {
+			return nil
 
-	// We're not guaranteed to get a flush notification if the feed exits,
-	// so bound how long we wait.
-	select {
-	case <-f.flushCh:
-	case <-time.After(30 * time.Millisecond):
-	}
-
-	// If the error was set, save it, but do one more poll as described
-	// above.
-	var errorStr gosql.NullString
-	if err := f.db.QueryRow(
-		`SELECT error FROM [SHOW JOBS] WHERE job_id=$1`, f.jobID,
-	).Scan(&errorStr); err != nil {
-		return err
-	}
-	if len(errorStr.String) > 0 {
-		f.jobErr = errors.Newf("%s", errorStr.String)
-	}
-	return nil
+		}
+		return errors.Newf("still waiting for job status; current %s", status)
+	})
 }
 
 // Pause implements the TestFeed interface.
@@ -255,37 +300,13 @@ func (f *jobFeed) Pause() error {
 	if err != nil {
 		return err
 	}
-	// PAUSE JOB does not actually pause the job but only sends a request for
-	// it. Actually block until the job state changes.
-	opts := retry.Options{
-		InitialBackoff: 1 * time.Millisecond,
-		MaxBackoff:     time.Second,
-		Multiplier:     2,
-	}
-	ctx := context.Background()
-	return retry.WithMaxAttempts(ctx, opts, 10, func() error {
-		var status string
-		if err := f.db.QueryRowContext(ctx, `SELECT status FROM system.jobs WHERE id = $1`, f.jobID).Scan(&status); err != nil {
-			return err
-		}
-		if jobs.Status(status) != jobs.StatusPaused {
-			return errors.New("could not pause job")
-		}
-		return nil
-	})
+	return f.waitForStatus(func(s jobs.Status) bool { return s == jobs.StatusPaused })
 }
 
 // Resume implements the TestFeed interface.
 func (f *jobFeed) Resume() error {
 	_, err := f.db.Exec(`RESUME JOB $1`, f.jobID)
-	f.jobErr = nil
 	return err
-}
-
-func (f *jobFeed) cancelJob() {
-	if _, err := f.db.Exec(`CANCEL JOB $1`, f.jobID); err != nil {
-		log.Infof(context.Background(), `could not cancel feed %d: %v`, f.jobID, err)
-	}
 }
 
 // Details implements FeedJob interface.
@@ -303,49 +324,240 @@ func (f *jobFeed) Details() (*jobspb.ChangefeedDetails, error) {
 	return payload.GetChangefeed(), nil
 }
 
-type tableFeedFactory struct {
-	s       serverutils.TestServerInterface
-	db      *gosql.DB
-	flushCh chan struct{}
-	sink    url.URL
+// fetchTerminalJobErr retrieves the error message from changefeed job.
+func (f *jobFeed) fetchTerminalJobErr() error {
+	var errStr string
+	if err := f.db.QueryRow(
+		`SELECT error FROM [SHOW JOBS] WHERE job_id=$1`, f.jobID,
+	).Scan(&errStr); err != nil {
+		return err
+	}
+
+	if errStr != "" {
+		return errors.Newf("%s", errStr)
+	}
+	return nil
 }
 
-// MakeTableFeedFactory returns a TestFeedFactory implementation using the
-// `experimental-sql` sink.
-func MakeTableFeedFactory(
-	s serverutils.TestServerInterface, db *gosql.DB, flushCh chan struct{}, sink url.URL,
+// Close closes job feed.
+func (f *jobFeed) Close() error {
+	// Signal shutdown.
+	select {
+	case <-f.shutdown:
+	// Already failed/or failing.
+	default:
+		// TODO(yevgeniy): Cancel job w/out producing spurious error messages in the logs.
+		if _, err := f.db.Exec(`CANCEL JOB $1`, f.jobID); err != nil {
+			log.Infof(context.Background(), `could not cancel feed %d: %v`, f.jobID, err)
+		}
+	}
+
+	return nil
+}
+
+// sinkSychronizer allows testfeed's Next() method to synchronize itself
+// with the sink operations.
+type sinkSynchronizer struct {
+	syncutil.Mutex
+	waitor  chan struct{}
+	flushed bool
+}
+
+// eventReady returns a channel that can be waited on until the next
+// event.
+func (s *sinkSynchronizer) eventReady() chan struct{} {
+	s.Lock()
+	defer s.Unlock()
+
+	ready := make(chan struct{})
+	if s.flushed {
+		close(ready)
+		s.flushed = false
+	} else {
+		s.waitor = ready
+	}
+
+	return ready
+}
+
+func (s *sinkSynchronizer) addFlush() {
+	s.Lock()
+	defer s.Unlock()
+	s.flushed = true
+	if s.waitor != nil {
+		close(s.waitor)
+		s.waitor = nil
+		s.flushed = false
+	}
+}
+
+// notifyFlushSink keeps track of the number of emitted rows and timestamps,
+// and provides a way for the caller to block until some events have been emitted.
+type notifyFlushSink struct {
+	Sink
+	sync *sinkSynchronizer
+}
+
+func (s *notifyFlushSink) Flush(ctx context.Context) error {
+	defer s.sync.addFlush()
+	return s.Sink.Flush(ctx)
+}
+
+var _ Sink = (*notifyFlushSink)(nil)
+
+// depInjector facilitates dependency injection to provide orchestration
+// between test feed and the changefeed itself.
+// A single instance of depInjector should be used per feed factory.
+// The reason we have have this dep injector (as opposed to configuring
+// knobs directly) is that various knob settings are static (per sever).
+// What we want is to have dependency injection per feed (since we can start
+// multiple feeds inside a test).
+type depInjector struct {
+	syncutil.Mutex
+	cond        *sync.Cond
+	pendingJob  *jobFeed
+	startedJobs map[jobspb.JobID]*jobFeed
+}
+
+// newDepInjector configures specified server with necessary hooks and knobs.
+func newDepInjector(s serverutils.TestServerInterface) *depInjector {
+	di := &depInjector{
+		startedJobs: make(map[jobspb.JobID]*jobFeed),
+	}
+	di.cond = sync.NewCond(di)
+
+	// Arrange for our wrapped sink to be instantiated.
+	s.DistSQLServer().(*distsql.ServerImpl).TestingKnobs.Changefeed.(*TestingKnobs).WrapSink =
+		func(s Sink, jobID jobspb.JobID) Sink {
+			f := di.getJobFeed(jobID)
+			return f.makeSink(s)
+		}
+
+	// Arrange for error reporting resumer to be used.
+	s.JobRegistry().(*jobs.Registry).TestingResumerCreationKnobs =
+		map[jobspb.Type]func(raw jobs.Resumer) jobs.Resumer{
+			jobspb.TypeChangefeed: func(raw jobs.Resumer) jobs.Resumer {
+				f := di.getJobFeed(raw.(*changefeedResumer).job.ID())
+				return &reportErrorResumer{wrapped: raw, jobFailed: f.jobFailed}
+			},
+		}
+
+	return di
+}
+
+// prepareJob must be called before starting the changefeed.
+// it arranges for the pendingJob field to be initialized, which is needed
+// when constructing "canary" sinks prior the changefeed resumer creation.
+func (di *depInjector) prepareJob(jf *jobFeed) {
+	di.Lock()
+	defer di.Unlock()
+	// Wait for the previously set pendingJob to be nil (see startJob).
+	// Note: this is needed only if we create multiple feeds per feed factory rapidly.
+	for di.pendingJob != nil {
+		di.cond.Wait()
+	}
+	di.pendingJob = jf
+}
+
+// startJob must be called when changefeed job starts to register job feed
+// with this dependency injector.
+func (di *depInjector) startJob(jf *jobFeed) {
+	di.Lock()
+	defer di.Unlock()
+	if _, alreadyStarted := di.startedJobs[jf.jobID]; alreadyStarted {
+		panic("unexpected state: job already started")
+	}
+	if di.pendingJob != jf {
+		panic("expected pending job to be equal to started job")
+	}
+	di.startedJobs[jf.jobID] = jf
+	di.pendingJob = nil
+	di.cond.Broadcast()
+}
+
+// getJobFeed returns jobFeed associated with the specified jobID.
+// This method blocks until the job actually starts (i.e. startJob has been called).
+func (di *depInjector) getJobFeed(jobID jobspb.JobID) *jobFeed {
+	di.Lock()
+	defer di.Unlock()
+	for {
+		if f, started := di.startedJobs[jobID]; started {
+			return f
+		}
+		if di.pendingJob != nil {
+			return di.pendingJob
+		}
+		di.cond.Wait()
+	}
+}
+
+type enterpriseFeedFactory struct {
+	s  serverutils.TestServerInterface
+	di *depInjector
+	db *gosql.DB
+}
+
+func (e enterpriseFeedFactory) startFeedJob(f *jobFeed, create string, args ...interface{}) error {
+	e.di.prepareJob(f)
+	if err := e.db.QueryRow(create, args...).Scan(&f.jobID); err != nil {
+		return err
+	}
+	e.di.startJob(f)
+	return nil
+}
+
+type tableFeedFactory struct {
+	enterpriseFeedFactory
+	uri url.URL
+}
+
+// makeTableFeedFactory returns a TestFeedFactory implementation using the
+// `experimental-sql` uri.
+func makeTableFeedFactory(
+	srv serverutils.TestServerInterface, db *gosql.DB, sink url.URL,
 ) cdctest.TestFeedFactory {
-	return &tableFeedFactory{s: s, db: db, flushCh: flushCh, sink: sink}
+	return &tableFeedFactory{
+		enterpriseFeedFactory: enterpriseFeedFactory{
+			s:  srv,
+			di: newDepInjector(srv),
+			db: db,
+		},
+		uri: sink,
+	}
 }
 
 // Feed implements the TestFeedFactory interface
 func (f *tableFeedFactory) Feed(
 	create string, args ...interface{},
 ) (_ cdctest.TestFeed, err error) {
-	sink := f.sink
-	sink.Path = fmt.Sprintf(`table_%d`, timeutil.Now().UnixNano())
+	sinkURI := f.uri
+	sinkURI.Path = fmt.Sprintf(`table_%d`, timeutil.Now().UnixNano())
 
-	db, err := gosql.Open("postgres", sink.String())
+	sinkDB, err := gosql.Open("postgres", sinkURI.String())
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if err != nil {
-			_ = db.Close()
+			_ = sinkDB.Close()
 		}
 	}()
 
-	sink.Scheme = `experimental-sql`
-	c := &TableFeed{
-		jobFeed: jobFeed{
-			db:      db,
-			flushCh: f.flushCh,
-		},
-		sinkURI: sink.String(),
-		seen:    make(map[string]struct{}),
-	}
-	if _, err := c.db.Exec(`CREATE DATABASE ` + sink.Path); err != nil {
+	sinkURI.Scheme = `experimental-sql`
+	if _, err := sinkDB.Exec(`CREATE DATABASE ` + sinkURI.Path); err != nil {
 		return nil, err
+	}
+
+	ss := &sinkSynchronizer{}
+	wrapSink := func(s Sink) Sink {
+		return &notifyFlushSink{Sink: s, sync: ss}
+	}
+
+	c := &tableFeed{
+		jobFeed:        newJobFeed(f.db, wrapSink),
+		ss:             ss,
+		seenTrackerMap: make(map[string]struct{}),
+		sinkDB:         sinkDB,
 	}
 
 	parsed, err := parser.ParseOne(create)
@@ -355,11 +567,11 @@ func (f *tableFeedFactory) Feed(
 	createStmt := parsed.AST.(*tree.CreateChangefeed)
 	if createStmt.SinkURI != nil {
 		return nil, errors.Errorf(
-			`unexpected sink provided: "INTO %s"`, tree.AsString(createStmt.SinkURI))
+			`unexpected uri provided: "INTO %s"`, tree.AsString(createStmt.SinkURI))
 	}
-	createStmt.SinkURI = tree.NewStrVal(c.sinkURI)
+	createStmt.SinkURI = tree.NewStrVal(sinkURI.String())
 
-	if err := f.db.QueryRow(createStmt.String(), args...).Scan(&c.jobID); err != nil {
+	if err := f.startFeedJob(c.jobFeed, createStmt.String(), args...); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -370,36 +582,28 @@ func (f *tableFeedFactory) Server() serverutils.TestServerInterface {
 	return f.s
 }
 
-// TableFeed is a TestFeed implementation using the `experimental-sql` sink.
-type TableFeed struct {
-	jobFeed
-	sinkURI string
-
+// tableFeed is a TestFeed implementation using the `experimental-sql` uri.
+type tableFeed struct {
+	*jobFeed
+	seenTrackerMap
+	ss     *sinkSynchronizer
+	sinkDB *gosql.DB // Changefeed emits messages into table in this DB.
 	toSend []*cdctest.TestFeedMessage
-	seen   seenTracker
-}
-
-// ResetSeen is useful when manually pausing and resuming a TableFeed.
-// We want to be able to assert that rows are not re-emitted in some cases.
-func (c *TableFeed) ResetSeen() {
-	for k := range c.seen {
-		delete(c.seen, k)
-	}
 }
 
 // Partitions implements the TestFeed interface.
-func (c *TableFeed) Partitions() []string {
+func (c *tableFeed) Partitions() []string {
 	// The sqlSink hardcodes these.
 	return []string{`0`, `1`, `2`}
 }
 
 // Next implements the TestFeed interface.
-func (c *TableFeed) Next() (*cdctest.TestFeedMessage, error) {
+func (c *tableFeed) Next() (*cdctest.TestFeedMessage, error) {
 	// sinkSink writes all changes to a table with primary key of topic,
 	// partition, message_id. To simulate the semantics of kafka, message_ids
 	// are only comparable within a given (topic, partition). Internally the
 	// message ids are generated as a 64 bit int with a timestamp in bits 1-49
-	// and a hash of the partition in 50-64. This TableFeed.Next function works
+	// and a hash of the partition in 50-64. This tableFeed.Next function works
 	// by repeatedly fetching and deleting all rows in the table. Then it pages
 	// through the results until they are empty and repeats.
 	for {
@@ -408,11 +612,15 @@ func (c *TableFeed) Next() (*cdctest.TestFeedMessage, error) {
 			c.toSend = c.toSend[1:]
 			return toSend, nil
 		}
-		if err := c.fetchJobError(); err != nil {
-			return nil, c.jobErr
+
+		select {
+		case <-c.ss.eventReady():
+		case <-c.shutdown:
+			return nil, c.terminalJobError()
 		}
+
 		var toSend []*cdctest.TestFeedMessage
-		if err := crdb.ExecuteTx(context.Background(), c.db, nil, func(tx *gosql.Tx) error {
+		if err := crdb.ExecuteTx(context.Background(), c.sinkDB, nil, func(tx *gosql.Tx) error {
 
 			// Avoid anything that might somehow look like deadlock under stressrace.
 			_, err := tx.Exec("SET TRANSACTION PRIORITY LOW")
@@ -424,7 +632,7 @@ func (c *TableFeed) Next() (*cdctest.TestFeedMessage, error) {
 			// TODO(dan): It's a bummer that this mutates the sqlsink table. I
 			// originally tried paging through message_id by repeatedly generating a
 			// new high-water with GenerateUniqueInt, but this was racy with rows
-			// being flushed out by the sink. An alternative is to steal the nanos
+			// being flushed out by the uri. An alternative is to steal the nanos
 			// part from `high_water_timestamp` in `crdb_internal.jobs` and run it
 			// through `builtins.GenerateUniqueID`, but that would mean we're only
 			// ever running tests on rows that have gotten a resolved timestamp,
@@ -448,7 +656,7 @@ func (c *TableFeed) Next() (*cdctest.TestFeedMessage, error) {
 				// array, which is pretty unexpected. Nil them out before returning.
 				// Either key+value or payload will be set, but not both.
 				if len(m.Key) > 0 || len(m.Value) > 0 {
-					if isNew := c.seen.markSeen(m); !isNew {
+					if isNew := c.markSeen(m); !isNew {
 						continue
 					}
 
@@ -467,44 +675,49 @@ func (c *TableFeed) Next() (*cdctest.TestFeedMessage, error) {
 }
 
 // Close implements the TestFeed interface.
-func (c *TableFeed) Close() error {
-	c.cancelJob()
-	return c.db.Close()
+func (c *tableFeed) Close() error {
+	return errors.CombineErrors(c.jobFeed.Close(), c.sinkDB.Close())
 }
 
 var cloudFeedFileRE = regexp.MustCompile(`^\d{33}-(.+?)-(\d+)-(\d+)-([0-9a-fA-F]{8})-(.+?)-`)
 
 type cloudFeedFactory struct {
-	s       serverutils.TestServerInterface
-	db      *gosql.DB
+	enterpriseFeedFactory
 	dir     string
-	flushCh chan struct{}
-
 	feedIdx int
 }
 
-// MakeCloudFeedFactory returns a TestFeedFactory implementation using the cloud
-// storage sink.
-func MakeCloudFeedFactory(
-	s serverutils.TestServerInterface, db *gosql.DB, dir string, flushCh chan struct{},
+// makeCloudFeedFactory returns a TestFeedFactory implementation using the cloud
+// storage uri.
+func makeCloudFeedFactory(
+	srv serverutils.TestServerInterface, db *gosql.DB, dir string,
 ) cdctest.TestFeedFactory {
-	return &cloudFeedFactory{s: s, db: db, dir: dir, flushCh: flushCh}
+	return &cloudFeedFactory{
+		enterpriseFeedFactory: enterpriseFeedFactory{
+			s:  srv,
+			di: newDepInjector(srv),
+			db: db,
+		},
+		dir: dir,
+	}
 }
 
 // Feed implements the TestFeedFactory interface
-func (f *cloudFeedFactory) Feed(create string, args ...interface{}) (cdctest.TestFeed, error) {
+func (f *cloudFeedFactory) Feed(
+	create string, args ...interface{},
+) (tf cdctest.TestFeed, err error) {
 	parsed, err := parser.ParseOne(create)
 	if err != nil {
 		return nil, err
 	}
 	createStmt := parsed.AST.(*tree.CreateChangefeed)
 	if createStmt.SinkURI != nil {
-		return nil, errors.Errorf(`unexpected sink provided: "INTO %s"`, tree.AsString(createStmt.SinkURI))
+		return nil, errors.Errorf(`unexpected uri provided: "INTO %s"`, tree.AsString(createStmt.SinkURI))
 	}
 	feedDir := strconv.Itoa(f.feedIdx)
 	f.feedIdx++
 	sinkURI := `experimental-nodelocal://0/` + feedDir
-	// TODO(dan): This is a pretty unsatisfying way to test that the sink passes
+	// TODO(dan): This is a pretty unsatisfying way to test that the uri passes
 	// through params it doesn't understand to ExternalStorage.
 	sinkURI += `?should_be=ignored`
 	createStmt.SinkURI = tree.NewStrVal(sinkURI)
@@ -516,15 +729,18 @@ func (f *cloudFeedFactory) Feed(create string, args ...interface{}) (cdctest.Tes
 		return nil, err
 	}
 
-	c := &cloudFeed{
-		jobFeed: jobFeed{
-			db:      f.db,
-			flushCh: f.flushCh,
-		},
-		dir:  feedDir,
-		seen: make(map[string]struct{}),
+	ss := &sinkSynchronizer{}
+	wrapSink := func(s Sink) Sink {
+		return &notifyFlushSink{Sink: s, sync: ss}
 	}
-	if err := f.db.QueryRow(createStmt.String(), args...).Scan(&c.jobID); err != nil {
+
+	c := &cloudFeed{
+		jobFeed:        newJobFeed(f.db, wrapSink),
+		ss:             ss,
+		seenTrackerMap: make(map[string]struct{}),
+		dir:            feedDir,
+	}
+	if err := f.startFeedJob(c.jobFeed, createStmt.String(), args...); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -541,13 +757,13 @@ type cloudFeedEntry struct {
 }
 
 type cloudFeed struct {
-	jobFeed
+	*jobFeed
+	seenTrackerMap
+	ss  *sinkSynchronizer
 	dir string
 
 	resolved string
 	rows     []cloudFeedEntry
-
-	seen seenTracker
 }
 
 const cloudFeedPartition = ``
@@ -558,9 +774,9 @@ func (c *cloudFeed) Partitions() []string {
 	return []string{cloudFeedPartition}
 }
 
-// ReformatJSON marshals a golang stdlib based JSON into a byte slice preserving
+// reformatJSON marshals a golang stdlib based JSON into a byte slice preserving
 // whitespace in accordance with the crdb json library.
-func ReformatJSON(j interface{}) ([]byte, error) {
+func reformatJSON(j interface{}) ([]byte, error) {
 	printed, err := gojson.Marshal(j)
 	if err != nil {
 		return nil, err
@@ -588,10 +804,10 @@ func extractKeyFromJSONValue(wrapped []byte) (key []byte, value []byte, _ error)
 	delete(parsed, `key`)
 
 	var err error
-	if key, err = ReformatJSON(keyParsed); err != nil {
+	if key, err = reformatJSON(keyParsed); err != nil {
 		return nil, nil, err
 	}
-	if value, err = ReformatJSON(parsed); err != nil {
+	if value, err = reformatJSON(parsed); err != nil {
 		return nil, nil, err
 	}
 	return key, value, nil
@@ -624,7 +840,7 @@ func (c *cloudFeed) Next() (*cdctest.TestFeedMessage, error) {
 				if m.Key, m.Value, err = extractKeyFromJSONValue(m.Value); err != nil {
 					return nil, err
 				}
-				if isNew := c.seen.markSeen(m); !isNew {
+				if isNew := c.markSeen(m); !isNew {
 					continue
 				}
 				m.Resolved = nil
@@ -634,9 +850,12 @@ func (c *cloudFeed) Next() (*cdctest.TestFeedMessage, error) {
 			return m, nil
 		}
 
-		if err := c.fetchJobError(); err != nil {
-			return nil, err
+		select {
+		case <-c.ss.eventReady():
+		case <-c.shutdown:
+			return nil, c.terminalJobError()
 		}
+
 		if err := filepath.Walk(c.dir, c.walkDir); err != nil {
 			return nil, err
 		}
@@ -703,28 +922,115 @@ func (c *cloudFeed) walkDir(path string, info os.FileInfo, err error) error {
 	return nil
 }
 
-// Close implements the TestFeed interface.
-func (c *cloudFeed) Close() error {
-	c.cancelJob()
+// teeGroup facilitates reading messages from input channel
+// and sending them to one or more output channels.
+type teeGroup struct {
+	g    ctxgroup.Group
+	done chan struct{}
+}
+
+func newTeeGroup() *teeGroup {
+	return &teeGroup{
+		g:    ctxgroup.WithContext(context.Background()),
+		done: make(chan struct{}),
+	}
+}
+
+// tee reads incoming messages from input channel and sends them out to one or more output channels.
+func (tg *teeGroup) tee(in <-chan *sarama.ProducerMessage, out ...chan<- *sarama.ProducerMessage) {
+	tg.g.Go(func() error {
+		for {
+			select {
+			case <-tg.done:
+				return nil
+			case m := <-in:
+				for i := range out {
+					select {
+					case <-tg.done:
+						return nil
+					case out[i] <- m:
+					}
+				}
+			}
+		}
+	})
+}
+
+// wait shuts down tee group.
+func (tg *teeGroup) wait() error {
+	close(tg.done)
+	return tg.g.Wait()
+}
+
+type fakeKafkaClient struct{}
+
+func (c *fakeKafkaClient) Partitions(topic string) ([]int32, error) {
+	return []int32{0}, nil
+}
+
+func (c *fakeKafkaClient) RefreshMetadata(topics ...string) error {
 	return nil
 }
 
-// feedSetupFn setups necessary state to run kafkaFeed.
-type feedSetupFn func() (feedCh chan *sarama.ProducerMessage, stopFeed func())
+func (c *fakeKafkaClient) Close() error {
+	return nil
+}
+
+var _ kafkaClient = (*fakeKafkaClient)(nil)
+
+type ignoreCloseProducer struct {
+	*asyncProducerMock
+}
+
+func (p *ignoreCloseProducer) Close() error {
+	return nil
+}
+
+// fakeKafkaSink is a sink that arranges for fake kafka client and producer
+// to be used.
+type fakeKafkaSink struct {
+	Sink
+	tg     *teeGroup
+	feedCh chan *sarama.ProducerMessage
+}
+
+var _ Sink = (*fakeKafkaSink)(nil)
+
+// Dial implements Sink interface
+func (s *fakeKafkaSink) Dial() error {
+	kafka := s.Sink.(*kafkaSink)
+	kafka.client = &fakeKafkaClient{}
+	// The producer we give to kafka sink ignores close call.
+	// This is because normally, kafka sinks owns the producer and so it closes it.
+	// But in this case, if we let the sink close this producer, the test will panic
+	// because we will attempt to send acknowledgements on a closed channel.
+	producer := &ignoreCloseProducer{newAsyncProducerMock(unbuffered)}
+
+	// TODO(yevgeniy): Support error injection either by acknowledging on the "errors"
+	//  channel, or by injecting error message into sarama.ProducerMessage.Metadata.
+	s.tg.tee(producer.inputCh, s.feedCh, producer.successesCh)
+	kafka.producer = producer
+	kafka.start()
+	return nil
+}
 
 type kafkaFeedFactory struct {
-	s         serverutils.TestServerInterface
-	db        *gosql.DB
-	setupFeed feedSetupFn
+	enterpriseFeedFactory
 }
 
 var _ cdctest.TestFeedFactory = (*kafkaFeedFactory)(nil)
 
-// MakeKafkaFeedFactory returns a TestFeedFactory implementation using the `kafka` sink.
-func MakeKafkaFeedFactory(
-	s serverutils.TestServerInterface, db *gosql.DB, setup feedSetupFn,
+// makeKafkaFeedFactory returns a TestFeedFactory implementation using the `kafka` uri.
+func makeKafkaFeedFactory(
+	srv serverutils.TestServerInterface, db *gosql.DB,
 ) cdctest.TestFeedFactory {
-	return &kafkaFeedFactory{s: s, db: db, setupFeed: setup}
+	return &kafkaFeedFactory{
+		enterpriseFeedFactory: enterpriseFeedFactory{
+			s:  srv,
+			db: db,
+			di: newDepInjector(srv),
+		},
+	}
 }
 
 func exprAsString(expr tree.Expr) (string, error) {
@@ -777,22 +1083,26 @@ func (k *kafkaFeedFactory) Feed(create string, args ...interface{}) (cdctest.Tes
 		}
 	}
 
-	// setupFeed must be invoked before we create changefeed.
-	sourceCh, stopFeed := k.setupFeed()
-	c := &kafkaFeed{
-		jobFeed: jobFeed{
-			db: k.db,
-			// TODO: kill this: flushCh: flushCh,
-		},
-		seen:       make(map[string]struct{}),
-		source:     sourceCh,
-		stopSource: stopFeed,
-		registry:   registry,
+	tg := newTeeGroup()
+	feedCh := make(chan *sarama.ProducerMessage)
+	wrapSink := func(s Sink) Sink {
+		return &fakeKafkaSink{
+			Sink:   s,
+			tg:     tg,
+			feedCh: feedCh,
+		}
 	}
-	createChangefeed := createStmt.String()
-	if err := k.db.QueryRow(createChangefeed, args...).Scan(&c.jobID); err != nil {
-		stopFeed()
-		return nil, err
+
+	c := &kafkaFeed{
+		jobFeed:        newJobFeed(k.db, wrapSink),
+		seenTrackerMap: make(map[string]struct{}),
+		source:         feedCh,
+		tg:             tg,
+		registry:       registry,
+	}
+
+	if err := k.startFeedJob(c.jobFeed, createStmt.String(), args...); err != nil {
+		return nil, errors.CombineErrors(err, c.Close())
 	}
 	return c, nil
 }
@@ -803,10 +1113,12 @@ func (k *kafkaFeedFactory) Server() serverutils.TestServerInterface {
 }
 
 type kafkaFeed struct {
-	jobFeed
-	source     chan *sarama.ProducerMessage
-	stopSource func()
-	seen       seenTracker
+	*jobFeed
+	seenTrackerMap
+
+	source chan *sarama.ProducerMessage
+	tg     *teeGroup
+
 	// Registry is set if we're emitting avro.
 	registry *cdctest.SchemaRegistry
 }
@@ -822,7 +1134,12 @@ func (k *kafkaFeed) Partitions() []string {
 // Next implements TestFeed
 func (k *kafkaFeed) Next() (*cdctest.TestFeedMessage, error) {
 	for {
-		msg := <-k.source
+		var msg *sarama.ProducerMessage
+		select {
+		case <-k.shutdown:
+			return nil, k.terminalJobError()
+		case msg = <-k.source:
+		}
 
 		fm := &cdctest.TestFeedMessage{
 			Topic:     msg.Topic,
@@ -867,19 +1184,16 @@ func (k *kafkaFeed) Next() (*cdctest.TestFeedMessage, error) {
 			return nil, err
 		}
 
-		if isNew := k.seen.markSeen(fm); isNew {
+		if isNew := k.markSeen(fm); isNew {
 			return fm, nil
 		}
-
 	}
 }
 
 // Close implements TestFeed interface.
 func (k *kafkaFeed) Close() error {
 	if k.registry != nil {
-		k.registry.Close()
+		defer k.registry.Close()
 	}
-	k.jobFeed.cancelJob()
-	k.stopSource()
-	return nil
+	return errors.CombineErrors(k.jobFeed.Close(), k.tg.wait())
 }

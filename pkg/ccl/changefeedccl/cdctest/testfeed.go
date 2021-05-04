@@ -11,6 +11,7 @@ package cdctest
 import (
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 )
 
@@ -47,16 +48,26 @@ type TestFeed interface {
 	// by Next.
 	Partitions() []string
 	// Next returns the next message. Within a given topic+partition, the order is
-	// preserved, but not otherwise. Either len(key) and len(value) will be
+	// preserved, but not otherwisete. Either len(key) and len(value) will be
 	// greater than zero (a row updated) or len(payload) will be (a resolved
 	// timestamp).
 	Next() (*TestFeedMessage, error)
+	// Close shuts down the changefeed and releases resources.
+	Close() error
+}
+
+// EnterpriseTestFeed augments TestFeed with additional methods applicable
+// to enterprise feeds.
+type EnterpriseTestFeed interface {
+	// JobID returns the job id for this feed.
+	JobID() jobspb.JobID
 	// Pause stops the feed from running. Next will continue to return any results
 	// that were queued before the pause, eventually blocking or erroring once
 	// they've all been drained.
 	Pause() error
 	// Resume restarts the feed from the last changefeed-wide resolved timestamp.
 	Resume() error
-	// Close shuts down the changefeed and releases resources.
-	Close() error
+
+	// Details returns changefeed details for this feed.
+	Details() (*jobspb.ChangefeedDetails, error)
 }
