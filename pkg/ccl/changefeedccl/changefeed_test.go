@@ -342,7 +342,7 @@ func TestChangefeedCursor(t *testing.T) {
 		// Check that the cursor is properly hooked up to the job statement
 		// time. The sinkless tests currently don't have a way to get the
 		// statement timestamp, so only verify this for enterprise.
-		if e, ok := fooLogical.(*cdctest.TableFeed); ok {
+		if e, ok := fooLogical.(*TableFeed); ok {
 			var bytes []byte
 			sqlDB.QueryRow(t, `SELECT payload FROM system.jobs WHERE id=$1`, e.JobID()).Scan(&bytes)
 			var payload jobspb.Payload
@@ -383,7 +383,7 @@ func TestChangefeedTimestamps(t *testing.T) {
 		// If this changefeed uses jobs (and thus stores a ChangefeedDetails), get
 		// the statement timestamp from row0 and verify that they match. Otherwise,
 		// just skip the row.
-		if jf, ok := foo.(cdctest.FeedJob); ok {
+		if jf, ok := foo.(FeedJob); ok {
 			d, err := jf.Details()
 			assert.NoError(t, err)
 			expected := `{"after": {"a": 0}, "updated": "` + d.StatementTime.AsOfSystemTime() + `"}`
@@ -1964,7 +1964,7 @@ func TestChangefeedRetryableError(t *testing.T) {
 		})
 
 		// Verify job progress contains retryable error status.
-		jobID := foo.(cdctest.FeedJob).JobID()
+		jobID := foo.(FeedJob).JobID()
 		job, err := registry.LoadJob(context.Background(), jobID)
 		require.NoError(t, err)
 		require.Contains(t, job.Progress().RunningStatus, "synthetic retryable error")
@@ -2541,7 +2541,7 @@ func TestChangefeedPauseUnpause(t *testing.T) {
 			t.Fatalf(`expected a resolved timestamp got %s: %s->%s`, m.Topic, m.Key, m.Value)
 		}
 
-		feedJob := foo.(cdctest.FeedJob)
+		feedJob := foo.(FeedJob)
 		sqlDB.Exec(t, `PAUSE JOB $1`, feedJob.JobID())
 		// PAUSE JOB only requests the job to be paused. Block until it's paused.
 		opts := retry.Options{
@@ -2585,7 +2585,7 @@ func TestChangefeedPauseUnpauseCursorAndInitialScan(t *testing.T) {
 		var tsStr string
 		sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp() from foo`).Scan(&tsStr)
 		foo := feed(t, f, `CREATE CHANGEFEED FOR foo `+
-			`WITH initial_scan, resolved='10ms', cursor='`+tsStr+`'`).(*cdctest.TableFeed)
+			`WITH initial_scan, resolved='10ms', cursor='`+tsStr+`'`).(*TableFeed)
 		defer closeFeed(t, foo)
 
 		assertPayloads(t, foo, []string{
@@ -2747,7 +2747,7 @@ func TestChangefeedProtectedTimestamps(t *testing.T) {
 			waitForNoRecord := mkWaitForRecordCond(t, getPtsRec, checkNoRecord)
 			waitForBlocked := requestBlockedScan()
 
-			foo := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved`).(*cdctest.TableFeed)
+			foo := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved`).(*TableFeed)
 			defer closeFeed(t, foo)
 			{
 				// Ensure that there's a protected timestamp on startup that goes
@@ -2820,7 +2820,7 @@ func TestChangefeedProtectedTimestampOnPause(t *testing.T) {
 				if shouldPause {
 					stmt += ", " + changefeedbase.OptProtectDataFromGCOnPause
 				}
-				foo := feed(t, f, stmt).(*cdctest.TableFeed)
+				foo := feed(t, f, stmt).(*TableFeed)
 				defer closeFeed(t, foo)
 				assertPayloads(t, foo, []string{
 					`foo: [1]->{"after": {"a": 1, "b": "a"}}`,
@@ -3055,7 +3055,7 @@ func TestChangefeedNodeShutdown(t *testing.T) {
 	sink, cleanup := sqlutils.PGUrl(
 		t, tc.Server(0).ServingSQLAddr(), t.Name(), url.User(security.RootUser))
 	defer cleanup()
-	f := cdctest.MakeTableFeedFactory(tc.Server(1), tc.ServerConn(0), flushCh, sink)
+	f := MakeTableFeedFactory(tc.Server(1), tc.ServerConn(0), flushCh, sink)
 	foo := feed(t, f, "CREATE CHANGEFEED FOR foo")
 	defer closeFeed(t, foo)
 
@@ -3344,7 +3344,7 @@ func TestChangefeedRestartDuringBackfill(t *testing.T) {
 		})
 
 		// Restart the changefeed without allowing the second row to be backfilled.
-		feedJob := foo.(cdctest.FeedJob)
+		feedJob := foo.(FeedJob)
 		sqlDB.Exec(t, `PAUSE JOB $1`, feedJob.JobID())
 		// PAUSE JOB only requests the job to be paused. Block until it's paused.
 		opts := retry.Options{
@@ -3461,7 +3461,7 @@ func TestChangefeedHandlesDrainingNodes(t *testing.T) {
 	// Create a factory which executes the CREATE CHANGEFEED statement on server 0.
 	// This statement should fail, but the job itself ought to be creaated.
 	// After some time, that job should be adopted by another node, and executed successfully.
-	f := cdctest.MakeCloudFeedFactory(tc.Server(1), tc.ServerConn(0), sinkDir, flushCh)
+	f := MakeCloudFeedFactory(tc.Server(1), tc.ServerConn(0), sinkDir, flushCh)
 
 	feed := feed(t, f, "CREATE CHANGEFEED FOR foo")
 	defer closeFeed(t, feed)

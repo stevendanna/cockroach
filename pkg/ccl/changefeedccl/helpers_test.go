@@ -87,7 +87,7 @@ func readNextMessages(t testing.TB, f cdctest.TestFeed, numMessages int, stripTs
 					t.Fatalf(`%s: %s`, m.Value, err)
 				}
 				delete(message, "updated")
-				value, err = cdctest.ReformatJSON(message)
+				value, err = ReformatJSON(message)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -275,7 +275,7 @@ func sinklessTestWithServerArgs(
 		}
 		sink, cleanup := sqlutils.PGUrl(t, s.ServingSQLAddr(), t.Name(), url.User(security.RootUser))
 		defer cleanup()
-		f := cdctest.MakeSinklessFeedFactory(s, sink)
+		f := MakeSinklessFeedFactory(s, sink)
 		testFn(t, db, f)
 	}
 }
@@ -327,7 +327,7 @@ func enterpriseTestWithServerArgs(
 		}
 		sink, cleanup := sqlutils.PGUrl(t, s.ServingSQLAddr(), t.Name(), url.User(security.RootUser))
 		defer cleanup()
-		f := cdctest.MakeTableFeedFactory(s, db, flushCh, sink)
+		f := MakeTableFeedFactory(s, db, flushCh, sink)
 
 		testFn(t, db, f)
 	}
@@ -375,7 +375,7 @@ func cloudStorageTest(testFn cdcTestFn) func(*testing.T) {
 		sqlDB.Exec(t, `SET CLUSTER SETTING changefeed.experimental_poll_interval = '10ms'`)
 		sqlDB.Exec(t, `CREATE DATABASE d`)
 
-		f := cdctest.MakeCloudFeedFactory(s, db, dir, flushCh)
+		f := MakeCloudFeedFactory(s, db, dir, flushCh)
 		testFn(t, db, f)
 	}
 }
@@ -535,7 +535,7 @@ func kafkaTestWithServerArgs(
 			sqlDB.Exec(t, fmt.Sprintf(`ALTER DATABASE d PRIMARY REGION "%s"`, region))
 		}
 
-		f := cdctest.MakeKafkaFeedFactory(s, db, setupFeed)
+		f := MakeKafkaFeedFactory(s, db, setupFeed)
 		testFn(t, db, f)
 	}
 }
