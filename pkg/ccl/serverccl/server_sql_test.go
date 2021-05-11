@@ -51,7 +51,7 @@ func TestSQLServer(t *testing.T) {
 	_, db := serverutils.StartTenant(
 		t,
 		tc.Server(0),
-		base.TestTenantArgs{TenantID: roachpb.MakeTenantID(security.EmbeddedTenantIDs()[0])},
+		base.TestTenantArgs{TenantID: serverutils.TestTenantID()},
 	)
 	defer db.Close()
 	r := sqlutils.MakeSQLRunner(db)
@@ -74,7 +74,7 @@ func TestTenantCannotSetClusterSetting(t *testing.T) {
 	defer tc.Stopper().Stop(ctx)
 
 	// StartTenant with the default permissions to
-	_, db := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{TenantID: roachpb.MakeTenantID(10), AllowSettingClusterSettings: false})
+	_, db := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{TenantID: serverutils.TestTenantID(), AllowSettingClusterSettings: false})
 	defer db.Close()
 	_, err := db.Exec(`SET CLUSTER SETTING sql.defaults.vectorize=off`)
 	require.NoError(t, err)
@@ -115,9 +115,10 @@ func TestTenantHTTP(t *testing.T) {
 	tc := serverutils.StartNewTestCluster(t, 1, base.TestClusterArgs{})
 	defer tc.Stopper().Stop(ctx)
 
-	tenant, err := tc.Server(0).StartTenant(base.TestTenantArgs{
-		TenantID: roachpb.MakeTenantID(security.EmbeddedTenantIDs()[0]),
-	})
+	tenant, err := tc.Server(0).StartTenant(ctx,
+		base.TestTenantArgs{
+			TenantID: serverutils.TestTenantID(),
+		})
 	require.NoError(t, err)
 	t.Run("prometheus", func(t *testing.T) {
 		resp, err := httputil.Get(ctx, "http://"+tenant.HTTPAddr()+"/_status/vars")
@@ -150,12 +151,14 @@ func TestIdleExit(t *testing.T) {
 
 	warmupDuration := 500 * time.Millisecond
 	countdownDuration := 4000 * time.Millisecond
-	tenant, err := tc.Server(0).StartTenant(base.TestTenantArgs{
-		TenantID:      roachpb.MakeTenantID(10),
-		IdleExitAfter: warmupDuration,
-		TestingKnobs: base.TestingKnobs{
-			TenantTestingKnobs: &sql.TenantTestingKnobs{
-				IdleExitCountdownDuration: countdownDuration,
+	tenant, err := tc.Server(0).StartTenant(ctx,
+		base.TestTenantArgs{
+			TenantID:      serverutils.TestTenantID(),
+			IdleExitAfter: warmupDuration,
+			TestingKnobs: base.TestingKnobs{
+				TenantTestingKnobs: &sql.TenantTestingKnobs{
+					IdleExitCountdownDuration: countdownDuration,
+				},
 			},
 		},
 		Stopper: tc.Stopper(),
