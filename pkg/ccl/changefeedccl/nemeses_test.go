@@ -55,3 +55,40 @@ func TestChangefeedNemeses(t *testing.T) {
 		t.Fatalf("Found violation of CDC's guarantees: %v", entries)
 	}
 }
+
+func TestChangefeedNemesesRecordings(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	skip.UnderRace(t, "takes >1 min under race")
+
+	defer jobs.TestingSetAdoptAndCancelIntervals(10*time.Millisecond, 10*time.Millisecond)()
+
+	testFn := func(t *testing.T, db *gosql.DB, f cdctest.TestFeedFactory) {
+		for _, recording := range cdctest.Recordings {
+			isSinkless := strings.Contains(t.Name(), "sinkless")
+			if isSinkless && !recording.IsSinkless {
+				t.Skip("recording doesn't support sinkless playback")
+			}
+
+			v, err := cdctest.RunNemesisRecording(f, db, recording)
+			if err != nil {
+				t.Fatalf("%+v", err)
+			}
+			for _, failure := range v.Failures() {
+				t.Error(failure)
+			}
+		}
+	}
+	t.Run(`sinkless`, sinklessTest(testFn))
+	t.Run(`enterprise`, enterpriseTest(testFn))
+	t.Run(`cloudstorage`, cloudStorageTest(testFn))
+	log.Flush()
+	entries, err := log.FetchEntriesFromFiles(0, math.MaxInt64, 1,
+		regexp.MustCompile("cdc ux violation"), log.WithFlattenedSensitiveData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 0 {
+		t.Fatalf("Found violation of CDC's guarantees: %v", entries)
+	}
+}

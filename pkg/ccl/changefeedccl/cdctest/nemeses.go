@@ -14,6 +14,8 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/util/fsm"
@@ -121,14 +123,11 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 		},
 	}
 
-	// Create the table and set up some initial splits.
-	if _, err := db.Exec(`CREATE TABLE foo (id INT PRIMARY KEY, ts STRING DEFAULT '0')`); err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(`SET CLUSTER SETTING kv.range_merge.queue_enabled = false`); err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(`ALTER TABLE foo SPLIT AT VALUES ($1)`, ns.rowCount/2); err != nil {
+	ns.recording.RowCount = ns.rowCount
+	ns.recording.MaxTestColumnCount = ns.maxTestColumnCount
+	ns.recording.IsSinkless = isSinkless
+
+	if err := ns.initializeTables(); err != nil {
 		return nil, err
 	}
 
@@ -140,55 +139,32 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 		if err != nil {
 			return nil, err
 		}
-		if err := openTxn(fsm.Args{Ctx: ctx, Extended: ns, Payload: payload}); err != nil {
+
+		if err := ns.runAndRecordPreStartEvent(ctx, eventOpenTxn{}, payload); err != nil {
 			return nil, err
 		}
 		// Randomly commit or rollback, but commit at least one row to the table.
 		if rand.Intn(3) < 2 || i == 0 {
-			if err := commit(fsm.Args{Ctx: ctx, Extended: ns}); err != nil {
+			if err := ns.runAndRecordPreStartEvent(ctx, eventCommit{}, nil); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := rollback(fsm.Args{Ctx: ctx, Extended: ns}); err != nil {
+			if err := ns.runAndRecordPreStartEvent(ctx, eventRollback{}, nil); err != nil {
 				return nil, err
 			}
 		}
 	}
 
-	foo, err := f.Feed(`CREATE CHANGEFEED FOR foo WITH updated, resolved, diff`)
-	if err != nil {
+	if err := ns.startChangefeed(f); err != nil {
 		return nil, err
 	}
-	ns.f = foo
-	defer func() { _ = foo.Close() }()
+	defer func() { _ = ns.f.Close() }()
 
-	// Create scratch table with a pre-specified set of test columns to avoid having to
-	// accommodate schema changes on-the-fly.
-	scratchTableName := `fprint`
-	var createFprintStmtBuf bytes.Buffer
-	fmt.Fprintf(&createFprintStmtBuf, `CREATE TABLE %s (id INT PRIMARY KEY, ts STRING)`, scratchTableName)
-	if _, err := db.Exec(createFprintStmtBuf.String()); err != nil {
+	if err := ns.initializeValidator(); err != nil {
 		return nil, err
 	}
-	baV, err := NewBeforeAfterValidator(db, `foo`)
-	if err != nil {
-		return nil, err
-	}
-	fprintV, err := NewFingerprintValidator(db, `foo`, scratchTableName, foo.Partitions(), ns.maxTestColumnCount)
-	if err != nil {
-		return nil, err
-	}
-	ns.v = MakeCountValidator(Validators{
-		NewOrderValidator(`foo`),
-		baV,
-		fprintV,
-	})
 
-	// Initialize the actual row count, overwriting what the initialization loop did. That
-	// loop has set this to the number of modified rows, which is correct during
-	// changefeed operation, but not for the initial scan, because some of the rows may
-	// have had the same primary key.
-	if err := db.QueryRow(`SELECT count(*) FROM foo`).Scan(&ns.availableRows); err != nil {
+	if err := ns.resetAvailableRows(); err != nil {
 		return nil, err
 	}
 
@@ -200,9 +176,11 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 		if err != nil {
 			return nil, err
 		}
-		if err := openTxn(fsm.Args{Ctx: ctx, Extended: ns, Payload: payload}); err != nil {
+		if err := ns.runEvent(ctx, eventOpenTxn{}, payload); err != nil {
 			return nil, err
 		}
+		ns.recording.TxnOpenBeforeInitialScan = true
+		ns.recording.TxnOpenBeforeInitialScanPayload = payload
 	}
 
 	// Run the state machine until it finishes. Exit criteria is in `nextEvent`
@@ -214,6 +192,12 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 		CanAddColumn:    fsm.True,
 		CanRemoveColumn: fsm.False,
 	}
+	const writeRecording = true
+	path, _ := filepath.Abs("nemeses_recording")
+
+	if writeRecording {
+		fmt.Fprintf(os.Stderr, "Recording to %s\n", path)
+	}
 	m := fsm.MakeMachine(compiledStateTransitions, initialState, ns)
 	for {
 		state := m.CurState()
@@ -221,6 +205,70 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 			return ns.v, nil
 		}
 		event, eventPayload, err := ns.nextEvent(rng, state, &m)
+		if err != nil {
+			return nil, err
+		}
+		ns.recordEvent(event, eventPayload)
+		if writeRecording {
+			ns.recording.writeToDisk(path)
+		}
+		if err := m.ApplyWithPayload(ctx, event, eventPayload); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func RunNemesisRecording(
+	f TestFeedFactory, db *gosql.DB, recording NemesesRecording,
+) (Validator, error) {
+	ctx := context.Background()
+	ns := &nemeses{
+		maxTestColumnCount: recording.MaxTestColumnCount,
+		rowCount:           recording.RowCount,
+		db:                 db,
+	}
+
+	if err := ns.initializeTables(); err != nil {
+		return nil, err
+	}
+
+	for _, e := range recording.PreStartEvents {
+		ns.runEvent(ctx, e.Event, e.Payload)
+	}
+
+	if err := ns.startChangefeed(f); err != nil {
+		return nil, err
+	}
+	defer func() { _ = ns.f.Close() }()
+
+	if err := ns.initializeValidator(); err != nil {
+		return nil, err
+	}
+
+	if err := ns.resetAvailableRows(); err != nil {
+		return nil, err
+	}
+
+	if recording.TxnOpenBeforeInitialScan {
+		if err := ns.runEvent(ctx, eventOpenTxn{}, recording.TxnOpenBeforeInitialScanPayload); err != nil {
+			return nil, err
+		}
+	}
+
+	initialState := stateRunning{
+		FeedPaused:      fsm.False,
+		TxnOpen:         fsm.FromBool(recording.TxnOpenBeforeInitialScan),
+		CanAddColumn:    fsm.True,
+		CanRemoveColumn: fsm.False,
+	}
+
+	m := fsm.MakeMachine(compiledStateTransitions, initialState, ns)
+	for {
+		state := m.CurState()
+		if _, ok := state.(stateDone); ok {
+			return ns.v, nil
+		}
+		event, eventPayload, err := recording.nextEvent()
 		if err != nil {
 			return nil, err
 		}
@@ -258,6 +306,10 @@ type addColumnPayload struct {
 	enum int
 }
 
+type runnable interface {
+	Run(fsm.Args) error
+}
+
 type nemeses struct {
 	rowCount           int
 	maxTestColumnCount int
@@ -275,6 +327,85 @@ type nemeses struct {
 	openTxnTs              string
 
 	enumCount int
+
+	recording NemesesRecording
+}
+
+// Create the table and set up some initial splits.
+func (ns *nemeses) initializeTables() error {
+	if _, err := ns.db.Exec(`CREATE TABLE foo (id INT PRIMARY KEY, ts STRING DEFAULT '0')`); err != nil {
+		return err
+	}
+	if _, err := ns.db.Exec(`SET CLUSTER SETTING kv.range_merge.queue_enabled = false`); err != nil {
+		return err
+	}
+	if _, err := ns.db.Exec(`ALTER TABLE foo SPLIT AT VALUES ($1)`, ns.rowCount/2); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ns *nemeses) startChangefeed(f TestFeedFactory) error {
+	foo, err := f.Feed(`CREATE CHANGEFEED FOR foo WITH updated, resolved, diff`)
+	if err != nil {
+		return err
+	}
+	ns.f = foo
+	return nil
+}
+
+func (ns *nemeses) initializeValidator() error {
+	// Create scratch table with a pre-specified set of test columns to avoid having to
+	// accommodate schema changes on-the-fly.
+	scratchTableName := `fprint`
+	var createFprintStmtBuf bytes.Buffer
+	fmt.Fprintf(&createFprintStmtBuf, `CREATE TABLE %s (id INT PRIMARY KEY, ts STRING)`, scratchTableName)
+	if _, err := ns.db.Exec(createFprintStmtBuf.String()); err != nil {
+		return err
+	}
+	baV, err := NewBeforeAfterValidator(ns.db, `foo`)
+	if err != nil {
+		return err
+	}
+	fprintV, err := NewFingerprintValidator(ns.db, `foo`, scratchTableName, ns.f.Partitions(), ns.maxTestColumnCount)
+	if err != nil {
+		return err
+	}
+	ns.v = MakeCountValidator(Validators{
+		NewOrderValidator(`foo`),
+		baV,
+		fprintV,
+	})
+	return nil
+}
+
+func (ns *nemeses) recordEvent(event fsm.Event, payload fsm.EventPayload) {
+	ns.recording.Events = append(ns.recording.Events, NemesesEvent{
+		Event:   event,
+		Payload: payload,
+	})
+}
+
+func (ns *nemeses) runAndRecordPreStartEvent(
+	ctx context.Context, event fsm.Event, payload fsm.EventPayload,
+) error {
+	ns.recording.PreStartEvents = append(ns.recording.PreStartEvents, NemesesEvent{
+		Event:   event,
+		Payload: payload,
+	})
+	return ns.runEvent(ctx, event, payload)
+}
+
+func (ns *nemeses) runEvent(ctx context.Context, event fsm.Event, payload fsm.EventPayload) error {
+	a := fsm.Args{Ctx: ctx, Extended: ns, Payload: payload, Event: event}
+	return logEvent(event.(runnable).Run)(a)
+}
+
+// Initialize the actual row count, overwriting any previous
+// events did. This is called before initial scans since
+// initial scans exect 1 copy of each row.
+func (ns *nemeses) resetAvailableRows() error {
+	return ns.db.QueryRow(`SELECT count(*) FROM foo`).Scan(&ns.availableRows)
 }
 
 // nextEvent selects the next state transition.
@@ -417,6 +548,33 @@ func (eventAddColumn) Event()    {}
 func (eventRemoveColumn) Event() {}
 func (eventCreateEnum) Event()   {}
 func (eventFinished) Event()     {}
+
+func (eventOpenTxn) Run(a fsm.Args) error      { return openTxn(a) }
+func (eventFeedMessage) Run(a fsm.Args) error  { return noteFeedMessage(a) }
+func (eventPause) Run(a fsm.Args) error        { return pause(a) }
+func (eventResume) Run(a fsm.Args) error       { return resume(a) }
+func (eventCommit) Run(a fsm.Args) error       { return commit(a) }
+func (eventPush) Run(a fsm.Args) error         { return push(a) }
+func (eventAbort) Run(a fsm.Args) error        { return abort(a) }
+func (eventRollback) Run(a fsm.Args) error     { return rollback(a) }
+func (eventSplit) Run(a fsm.Args) error        { return split(a) }
+func (eventAddColumn) Run(a fsm.Args) error    { return addColumn(a) }
+func (eventRemoveColumn) Run(a fsm.Args) error { return removeColumn(a) }
+func (eventCreateEnum) Run(a fsm.Args) error   { return createEnum(a) }
+
+func (e eventAddColumn) String() string {
+	if e.CanAddColumnAfter.Get() {
+		return fmt.Sprintf("eventAddColumn{CanAddColumnAfter: fsm.True}")
+	}
+	return fmt.Sprintf("eventAddColumn{CanAddColumnAfter: fsm.False}")
+}
+
+func (e eventRemoveColumn) String() string {
+	if e.CanRemoveColumnAfter.Get() {
+		return fmt.Sprintf("eventRemoveColumn{CanRemoveColumnAfter: fsm.True}")
+	}
+	return fmt.Sprintf("eventRemoveColumn{CanRemoveColumnAfter: fsm.False}")
+}
 
 var stateTransitions = fsm.Pattern{
 	stateRunning{
