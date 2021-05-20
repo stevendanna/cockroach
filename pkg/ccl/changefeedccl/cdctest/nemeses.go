@@ -744,9 +744,7 @@ var compiledStateTransitions = fsm.Compile(stateTransitions)
 
 func logEvent(fn func(fsm.Args) error) func(fsm.Args) error {
 	return func(a fsm.Args) error {
-		if log.V(1) {
-			log.Infof(a.Ctx, "%#v\n", a.Event)
-		}
+		log.Infof(a.Ctx, "Event: %#v, Payload: %#v\n", a.Event, a.Payload)
 		return fn(a)
 	}
 }
