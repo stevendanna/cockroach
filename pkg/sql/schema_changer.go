@@ -983,6 +983,87 @@ func (sc *SchemaChanger) RunStateMachineBeforeBackfill(ctx context.Context) erro
 	return nil
 }
 
+// RunStateMachineAfterIndexBackfill moves the state machine forward and
+// wait to ensure that all nodes are seeing the latest version of the
+// table.
+//
+// Adding Mutations in BACKFILLING state move through DELETE ->
+// DELETE_AND_WRITE_ONLY.
+func (sc *SchemaChanger) RunStateMachineAfterIndexBackfill(ctx context.Context) error {
+	// Step through the state machine twice:
+	//  - BACKFILLING -> DELETE
+	//  - DELETE -> DELETE_AND_WRITE_ONLY
+	log.Info(ctx, "stepping through state machine after index backfill")
+	if err := sc.stepStateMachineAfterIndexBackfill(ctx); err != nil {
+		return err
+	}
+	if err := sc.stepStateMachineAfterIndexBackfill(ctx); err != nil {
+		return err
+	}
+	log.Info(ctx, "finished stepping through state machine")
+	return nil
+}
+
+func (sc *SchemaChanger) stepStateMachineAfterIndexBackfill(ctx context.Context) error {
+	log.Info(ctx, "stepping through state machine")
+
+	var runStatus jobs.RunningStatus
+	if err := sc.txn(ctx, func(
+		ctx context.Context, txn *kv.Txn, descsCol *descs.Collection,
+	) error {
+		tbl, err := descsCol.GetMutableTableVersionByID(ctx, sc.descID, txn)
+		if err != nil {
+			return err
+		}
+		runStatus = ""
+		// Apply mutations belonging to the same version.
+		for _, m := range tbl.AllMutations() {
+			if m.MutationID() != sc.mutationID {
+				// Mutations are applied in a FIFO order. Only apply the first set of
+				// mutations if they have the mutation ID we're looking for.
+				break
+			}
+			if m.AsIndex() == nil {
+				// Don't touch anything but indexes
+				continue
+			}
+
+			if m.Adding() {
+				if m.Backfilling() {
+					tbl.Mutations[m.MutationOrdinal()].State = descpb.DescriptorMutation_DELETE_ONLY
+					runStatus = RunningStatusDeleteOnly
+				} else if m.DeleteOnly() {
+					tbl.Mutations[m.MutationOrdinal()].State = descpb.DescriptorMutation_DELETE_AND_WRITE_ONLY
+					runStatus = RunningStatusDeleteAndWriteOnly
+				}
+				// else if DELETE_AND_WRITE_ONLY, then the state change has already moved forward.
+			}
+			// TODO(ssd): Do we need to apply zone config changes again?
+		}
+		if runStatus == "" || tbl.Dropped() {
+			return nil
+		}
+		if err := descsCol.WriteDesc(
+			ctx, true /* kvTrace */, tbl, txn,
+		); err != nil {
+			return err
+		}
+		if sc.job != nil {
+			if err := sc.job.RunningStatus(ctx, txn, func(
+				ctx context.Context, details jobspb.Details,
+			) (jobs.RunningStatus, error) {
+				return runStatus, nil
+			}); err != nil {
+				return errors.Wrap(err, "failed to update job status")
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (sc *SchemaChanger) createIndexGCJob(
 	ctx context.Context, indexID descpb.IndexID, txn *kv.Txn, jobDesc string,
 ) error {

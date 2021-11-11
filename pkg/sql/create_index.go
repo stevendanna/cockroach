@@ -669,6 +669,9 @@ func (n *createIndexNode) startExec(params runParams) error {
 	if err := n.tableDesc.AllocateIDs(params.ctx); err != nil {
 		return err
 	}
+
+	// TODO(ssd): need to do something here for the temporary
+	// index as well.
 	if err := params.p.configureZoneConfigForNewIndexPartitioning(
 		params.ctx,
 		n.tableDesc,

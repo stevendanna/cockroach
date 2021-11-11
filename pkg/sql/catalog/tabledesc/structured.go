@@ -2042,8 +2042,12 @@ func (desc *Mutable) AddComputedColumnSwapMutation(swap *descpb.ComputedColumnSw
 func (desc *Mutable) addMutation(m descpb.DescriptorMutation) {
 	switch m.Direction {
 	case descpb.DescriptorMutation_ADD:
-		m.State = descpb.DescriptorMutation_DELETE_ONLY
-
+		switch m.Descriptor_.(type) {
+		case *descpb.DescriptorMutation_Index:
+			m.State = descpb.DescriptorMutation_BACKFILLING
+		default:
+			m.State = descpb.DescriptorMutation_DELETE_ONLY
+		}
 	case descpb.DescriptorMutation_DROP:
 		m.State = descpb.DescriptorMutation_DELETE_AND_WRITE_ONLY
 	}
