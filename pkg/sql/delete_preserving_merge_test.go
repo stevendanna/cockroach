@@ -46,7 +46,7 @@ func TestMergeProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tdb.Exec(`CREATE TABLE d.t (k INT PRIMARY KEY, a INT, b INT,
-		INDEX idx (b), 
+		INDEX idx (b),
 		INDEX idx_temp (b)
 );
 `); err != nil {
@@ -121,8 +121,8 @@ func TestMergeProcess(t *testing.T) {
 	if err := changer.Merge(context.Background(),
 		codec,
 		tableDesc,
-		idxTemp,
-		idx); err != nil {
+		idxTemp.GetID(),
+		idx.GetID()); err != nil {
 		t.Fatal(err)
 	}
 

@@ -163,6 +163,19 @@ func TestDeletePreservingIndexEncoding(t *testing.T) {
 DELETE FROM d.t WHERE k = 1;
 UPDATE d.t SET b = 10004 WHERE k = 2;`,
 		},
+		{"secondary_index_encoding_uniq_test",
+			`CREATE DATABASE d;
+			CREATE TABLE d.t (
+				k INT NOT NULL PRIMARY KEY,
+				a INT NOT NULL,
+				b INT
+			);`,
+			`CREATE UNIQUE INDEX ON d.t (a) STORING (b);`,
+			`INSERT INTO d.t (k, a, b) VALUES (1234, 101, 10001), (1235, 102, 10002), (1236, 103, 10003);
+DELETE FROM d.t WHERE k = 1234;
+INSERT INTO dt (k, a, b) VALUES (1234, 101, 10001);
+`,
+		},
 		{"primary_encoding_test",
 			`CREATE DATABASE d;
 			CREATE TABLE d.t (
@@ -179,24 +192,25 @@ UPDATE d.t SET b = 10004 WHERE k = 2;`,
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
+			t.Log("resetting")
 			if err := resetTestData(); err != nil {
 				t.Fatalf("error while resetting test data %s", err)
 			}
-
+			t.Log("getRevisions")
 			delEncRevisions, delEncPrefix, err := getRevisionsForTest(test.setupSQL, test.schemaChangeSQL, test.dataSQL, true)
 			if err != nil {
 				t.Fatalf("error while getting delete encoding revisions %s", err)
 			}
-
+			t.Log("resetting")
 			if err := resetTestData(); err != nil {
 				t.Fatalf("error while resetting test data %s", err)
 			}
-
+			t.Log("getRevisions")
 			defaultRevisions, defaultPrefix, err := getRevisionsForTest(test.setupSQL, test.schemaChangeSQL, test.dataSQL, false)
 			if err != nil {
 				t.Fatalf("error while getting default revisions %s", err)
 			}
-
+			t.Log("compareRevision")
 			err = compareRevisionHistories(defaultRevisions, len(defaultPrefix), delEncRevisions, len(delEncPrefix))
 			if err != nil {
 				t.Fatal(err)

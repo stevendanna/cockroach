@@ -7,6 +7,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/errors"
 )
@@ -15,14 +16,14 @@ func (sc *SchemaChanger) Merge(
 	ctx context.Context,
 	codec keys.SQLCodec,
 	table catalog.TableDescriptor,
-	source catalog.Index,
-	destination catalog.Index,
+	source descpb.IndexID,
+	destination descpb.IndexID,
 ) error {
 	// TODO: what's this supposed to be?
 	mergeTimestamp := sc.clock.Now()
 
-	sourceSpan := table.IndexSpan(codec, source.GetID())
-	destSpan := table.IndexSpan(codec, destination.GetID())
+	sourceSpan := table.IndexSpan(codec, source)
+	destSpan := table.IndexSpan(codec, destination)
 
 	const pageSize = 1000
 

@@ -2051,12 +2051,31 @@ func (desc *Mutable) addMutation(m descpb.DescriptorMutation) {
 	case descpb.DescriptorMutation_DROP:
 		m.State = descpb.DescriptorMutation_DELETE_AND_WRITE_ONLY
 	}
+	desc.addMutationWithNextID(m)
+	if idxMut, ok := m.Descriptor_.(*descpb.DescriptorMutation_Index); ok {
+		// TODO(ssd) 2021-11-12: is there a method that does this already
+		tempIndex := *protoutil.Clone(idxMut.Index).(*descpb.IndexDescriptor)
+		tempIndex.UseDeletePreservingEncoding = true
+		tempIndex.ID = 0
+		tempIndex.Name = ""
+		tempIndex.Unique = false
+		m2 := descpb.DescriptorMutation{
+			Descriptor_: &descpb.DescriptorMutation_Index{Index: &tempIndex},
+			Direction:   descpb.DescriptorMutation_ADD,
+			State:       descpb.DescriptorMutation_DELETE_ONLY,
+		}
+		desc.addMutationWithNextID(m2)
+	}
+}
+
+func (desc *Mutable) addMutationWithNextID(m descpb.DescriptorMutation) {
 	// For tables created in the same transaction the next mutation ID will
 	// not have been allocated and the added mutation will use an invalid ID.
 	// This is fine because the mutation will be processed immediately.
 	m.MutationID = desc.ClusterVersion.NextMutationID
 	desc.NextMutationID = desc.ClusterVersion.NextMutationID + 1
 	desc.Mutations = append(desc.Mutations, m)
+
 }
 
 // MakeFirstMutationPublic implements the TableDescriptor interface.

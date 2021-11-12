@@ -94,9 +94,12 @@ func TestIndexBackfiller(t *testing.T) {
 	sqlDB := tc.ServerConn(0)
 
 	execOrFail := func(query string) gosql.Result {
+		t.Logf("executing %q", query)
 		if res, err := sqlDB.Exec(query); err != nil {
+			t.Logf("failed: %s", err.Error())
 			t.Fatal(err)
 		} else {
+			t.Logf("success: %v", res)
 			return res
 		}
 		return nil
@@ -105,7 +108,6 @@ func TestIndexBackfiller(t *testing.T) {
 	// The sequence of events here exactly matches the test cases in
 	// docs/tech-notes/index-backfill.md. If you update this, please remember to
 	// update the tech note as well.
-
 	execOrFail("CREATE DATABASE t")
 	execOrFail("CREATE TABLE t.kv (k int PRIMARY KEY, v char)")
 	execOrFail("INSERT INTO t.kv VALUES (1, 'a'), (3, 'c'), (4, 'e'), (6, 'f'), (7, 'g'), (9, 'h')")
@@ -134,8 +136,9 @@ func TestIndexBackfiller(t *testing.T) {
 	execOrFail("DELETE FROM t.kv WHERE k = 6")
 
 	// Begin the backfill.
+	t.Log("move to backfill")
 	moveToBackfill <- true
-
+	t.Log("waiting for schema change to finish")
 	finishedSchemaChange.Wait()
 
 	pairsPrimary := queryPairs(t, sqlDB, "SELECT k, v FROM t.kv ORDER BY k ASC")
