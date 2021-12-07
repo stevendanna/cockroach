@@ -385,7 +385,7 @@ func TestMergeProcess(t *testing.T) {
 			name: "unique index",
 			setupSQL: `CREATE DATABASE d;
    CREATE TABLE d.t (k INT PRIMARY KEY, a INT, b INT,
-		UNIQUE INDEX idx (b), 
+		UNIQUE INDEX idx (b),
 		UNIQUE INDEX idx_temp (b)
 );`,
 			srcIndex: "idx_temp",
@@ -414,7 +414,7 @@ func TestMergeProcess(t *testing.T) {
 			name: "unique index noop delete",
 			setupSQL: `CREATE DATABASE d;
    CREATE TABLE d.t (k INT PRIMARY KEY, a INT, b INT,
-		UNIQUE INDEX idx (b), 
+		UNIQUE INDEX idx (b),
 		UNIQUE INDEX idx_temp (b)
 );`,
 			srcIndex: "idx_temp",
@@ -440,7 +440,7 @@ func TestMergeProcess(t *testing.T) {
 			name: "index with overriding values",
 			setupSQL: `CREATE DATABASE d;
    CREATE TABLE d.t (k INT PRIMARY KEY, a INT, b INT,
-		UNIQUE INDEX idx (b), 
+		UNIQUE INDEX idx (b),
 		UNIQUE INDEX idx_temp (b)
 );`,
 			srcIndex:   "idx_temp",
@@ -535,8 +535,8 @@ func TestMergeProcess(t *testing.T) {
 		if err := changer.Merge(context.Background(),
 			codec,
 			tableDesc,
-			srcIndex,
-			dstIndex); err != nil {
+			srcIndex.GetID(),
+			dstIndex.GetID()); err != nil {
 			t.Fatal(err)
 		}
 

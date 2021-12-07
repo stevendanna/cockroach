@@ -17,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/errors"
 )
@@ -29,14 +30,14 @@ func (sc *SchemaChanger) Merge(
 	ctx context.Context,
 	codec keys.SQLCodec,
 	table catalog.TableDescriptor,
-	source catalog.Index,
-	destination catalog.Index,
+	sourceID descpb.IndexID,
+	destinationID descpb.IndexID,
 ) error {
 	// TODO(rhu): Do we need to get the timestamp and use a fix timestamp?
 	mergeTimestamp := sc.clock.Now()
 
-	sourceSpan := table.IndexSpan(codec, source.GetID())
-	destSpan := table.IndexSpan(codec, destination.GetID())
+	sourceSpan := table.IndexSpan(codec, sourceID)
+	destSpan := table.IndexSpan(codec, destinationID)
 
 	const pageSize = 1000
 
