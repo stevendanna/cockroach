@@ -607,6 +607,8 @@ func init() {
 		debugZipCmd,
 		debugListFilesCmd,
 		debugSendKVBatchCmd,
+		debugFixBadSplitsCmd,
+		debugMakeBadSplitsCmd,
 		doctorExamineClusterCmd,
 		doctorExamineFallbackClusterCmd,
 		doctorRecreateClusterCmd,
@@ -734,6 +736,8 @@ func init() {
 		sqlShellCmd,
 		demoCmd,
 		debugJobTraceFromClusterCmd,
+		debugFixBadSplitsCmd,
+		debugMakeBadSplitsCmd,
 		doctorExamineClusterCmd,
 		doctorExamineFallbackClusterCmd,
 		doctorRecreateClusterCmd,
@@ -813,6 +817,8 @@ func init() {
 			statementBundleRecreateCmd,
 			debugListFilesCmd,
 			debugJobTraceFromClusterCmd,
+			debugFixBadSplitsCmd,
+			debugMakeBadSplitsCmd,
 		},
 		demoCmd.Commands()...)
 	tableOutputCommands = append(tableOutputCommands, nodeCmds...)

@@ -1614,6 +1614,8 @@ var debugCmds = []*cobra.Command{
 	debugResetQuorumCmd,
 	debugSendKVBatchCmd,
 	debugRecoverCmd,
+	debugFixBadSplitsCmd,
+	debugMakeBadSplitsCmd,
 }
 
 // DebugCmd is the root of all debug commands. Exported to allow modification by CCL code.
@@ -1711,6 +1713,9 @@ func init() {
 	f = debugUnsafeRemoveDeadReplicasCmd.Flags()
 	f.IntSliceVar(&removeDeadReplicasOpts.deadStoreIDs, "dead-store-ids", nil,
 		"list of dead store IDs")
+
+	f = debugFixBadSplitsCmd.Flags()
+	f.BoolVar(&badSplitOpts.attemptMerge, "attempt-merge", false, "Attempt to AdminMerge any ranges found to have suspicious range keys.")
 
 	f = debugRecoverCollectInfoCmd.Flags()
 	f.VarP(&debugRecoverCollectInfoOpts.Stores, cliflags.RecoverStore.Name, cliflags.RecoverStore.Shorthand, cliflags.RecoverStore.Usage())
