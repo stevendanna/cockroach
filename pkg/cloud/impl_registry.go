@@ -209,10 +209,7 @@ func MakeExternalStorage(
 		if err != nil {
 			return nil, err
 		}
-		if l, ok := limiters[dest.Provider]; ok {
-			return &limitWrapper{ExternalStorage: e, lim: l}, nil
-		}
-		return e, nil
+		return &esWrapper{ExternalStorage: e, lim: limiters[dest.Provider]}, nil
 	}
 	return nil, errors.Errorf("unsupported external destination type: %s", dest.Provider.String())
 }
@@ -258,38 +255,55 @@ func MakeLimiters(ctx context.Context, sv *settings.Values) Limiters {
 	return m
 }
 
-type limitWrapper struct {
+// esWrapper is an ExternalStorage implementation that adds
+// implementation-agnostic behavior such as read/write limiting.
+type esWrapper struct {
 	ExternalStorage
+
 	lim rwLimiter
 }
 
-func (l *limitWrapper) ReadFile(ctx context.Context, basename string) (ioctx.ReadCloserCtx, error) {
-	r, err := l.ExternalStorage.ReadFile(ctx, basename)
+var _ ExternalStorage = (*esWrapper)(nil)
+
+func (e *esWrapper) ReadFile(ctx context.Context, basename string) (ioctx.ReadCloserCtx, error) {
+	r, err := e.ExternalStorage.ReadFile(ctx, basename)
 	if err != nil {
 		return r, err
 	}
 
-	return &limitedReader{r: r, lim: l.lim.read}, nil
+	if e.lim.read == nil {
+		return r, nil
+	}
+
+	return &limitedReader{r: r, lim: e.lim.read}, nil
 }
 
-func (l *limitWrapper) ReadFileAt(
+func (e *esWrapper) ReadFileAt(
 	ctx context.Context, basename string, offset int64,
 ) (ioctx.ReadCloserCtx, int64, error) {
-	r, s, err := l.ExternalStorage.ReadFileAt(ctx, basename, offset)
+	r, s, err := e.ExternalStorage.ReadFileAt(ctx, basename, offset)
 	if err != nil {
 		return r, s, err
 	}
 
-	return &limitedReader{r: r, lim: l.lim.read}, s, nil
+	if e.lim.read == nil {
+		return r, s, nil
+	}
+
+	return &limitedReader{r: r, lim: e.lim.read}, s, nil
 }
 
-func (l *limitWrapper) Writer(ctx context.Context, basename string) (io.WriteCloser, error) {
-	w, err := l.ExternalStorage.Writer(ctx, basename)
+func (e *esWrapper) Writer(ctx context.Context, basename string) (io.WriteCloser, error) {
+	w, err := e.ExternalStorage.Writer(ctx, basename)
 	if err != nil {
 		return nil, err
 	}
 
-	return &limitedWriter{w: w, ctx: ctx, lim: l.lim.write}, nil
+	if e.lim.read == nil {
+		return w, nil
+	}
+
+	return &limitedWriter{w: w, ctx: ctx, lim: e.lim.write}, nil
 }
 
 type limitedReader struct {
