@@ -65,14 +65,15 @@ type producerJobResumer struct {
 func (p *producerJobResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	jobExec := execCtx.(sql.JobExecContext)
 	execCfg := jobExec.ExecCfg()
-	isTimedOut := func(job *jobs.Job) bool {
-		progress := p.job.Progress()
+	isTimedOut := func(j *jobs.Job) bool {
+		progress := j.Progress()
 		return progress.GetStreamReplication().Expiration.Before(p.timeSource.Now())
 	}
-	trackFrequency := streamingccl.StreamReplicationStreamLivenessTrackFrequency.Get(execCfg.SV())
 	if isTimedOut(p.job) {
 		return errors.Errorf("replication stream %d timed out", p.job.ID())
 	}
+
+	trackFrequency := streamingccl.StreamReplicationStreamLivenessTrackFrequency.Get(execCfg.SV())
 	p.timer.Reset(trackFrequency)
 	for {
 		select {
@@ -86,7 +87,7 @@ func (p *producerJobResumer) Resume(ctx context.Context, execCtx interface{}) er
 				return err
 			}
 			// The job completes successfully if the ingestion has been cut over.
-			if p := j.Progress(); p.GetStreamReplication().IngestionCutOver {
+			if prog := j.Progress(); prog.GetStreamReplication().IngestionCutOver {
 				return nil
 			}
 			if isTimedOut(j) {
