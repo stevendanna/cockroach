@@ -47,6 +47,8 @@ func BackupDestinationTestSetup(
 	return backupRestoreTestSetupWithParams(t, clusterSize, numAccounts, init, base.TestClusterArgs{})
 }
 
+// TODO(ssd): This function is very similar to a function in backupccl with the
+// same name. We should unify them.
 func backupRestoreTestSetupWithParams(
 	t testing.TB,
 	clusterSize int,
@@ -59,11 +61,13 @@ func backupRestoreTestSetupWithParams(
 	dir, dirCleanupFn := testutils.TempDir(t)
 	params.ServerArgs.ExternalIODir = dir
 	params.ServerArgs.UseDatabase = "data"
+	params.ServerArgs.DisableDefaultTestTenant = true
 	if len(params.ServerArgsPerNode) > 0 {
 		for i := range params.ServerArgsPerNode {
 			param := params.ServerArgsPerNode[i]
 			param.ExternalIODir = dir
 			param.UseDatabase = "data"
+			param.DisableDefaultTestTenant = true
 			params.ServerArgsPerNode[i] = param
 		}
 	}
