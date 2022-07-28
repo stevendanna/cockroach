@@ -243,7 +243,7 @@ func TestImportIgnoresProcessedFiles(t *testing.T) {
 		Mon:     evalCtx.TestingMon,
 		Cfg: &execinfra.ServerConfig{
 			JobRegistry:     &jobs.Registry{},
-			Settings:        &cluster.Settings{},
+			Settings:        cluster.MakeTestingClusterSettings(),
 			ExternalStorage: externalStorageFactory,
 			DB:              fakeDB{},
 			BulkAdder: func(
