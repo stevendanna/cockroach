@@ -10,7 +10,9 @@ package backupccl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	math "math"
 	"os"
 	"path/filepath"
@@ -143,6 +145,69 @@ func clientKVsToEngineKVs(kvs []kv.KeyValue) []storage.MVCCKeyValue {
 		ret = append(ret, storage.MVCCKeyValue{Key: k, Value: kv.Value.RawBytes})
 	}
 	return ret
+}
+
+func BenchmarkRestoreSpanEntryIteration(b *testing.B) {
+	ctx := context.Background()
+
+	testClusterSettings := cluster.MakeTestingClusterSettings()
+	makeExternalStorage := func(ctx context.Context, dest cloudpb.ExternalStorage, opts ...cloud.ExternalStorageOption) (cloud.ExternalStorage, error) {
+		return cloud.MakeExternalStorage(ctx, dest, base.ExternalIODirConfig{},
+			testClusterSettings, blobs.TestBlobServiceClient(testClusterSettings.ExternalIODir), nil, nil, nil, opts...)
+	}
+	testEntriesJSON, err := ioutil.ReadFile("testdata/big_entry.json")
+	require.NoError(b, err)
+	testEntries := []execinfrapb.RestoreSpanEntry{}
+	require.NoError(b, json.Unmarshal(testEntriesJSON, &testEntries))
+	entriesIndex := 32
+	testEntry := testEntries[entriesIndex]
+	asOf, err := time.Parse("2006-01-02 15:04:05", "2021-05-21 14:40:22")
+	require.NoError(b, err)
+
+	iter, dirs, err := iteratorForRestoreSpanEntry(ctx, makeExternalStorage, hlc.Timestamp{WallTime: asOf.UnixNano()}, nil, testEntry)
+	require.NoError(b, err)
+	defer func() {
+		for _, d := range dirs {
+			_ = d.Close()
+		}
+	}()
+
+	totalFileSizes := int64(0)
+	for _, file := range testEntry.Files {
+		dir, err := makeExternalStorage(ctx, file.Dir)
+		require.NoError(b, err)
+		sz, err := dir.Size(ctx, file.Path)
+		require.NoError(b, err)
+		totalFileSizes += sz
+		require.NoError(b, dir.Close())
+	}
+	b.Logf("ENTRIES INDEX: %d\n", entriesIndex)
+	b.Logf("TOTAL SIZE: %d\n", totalFileSizes)
+	b.Logf("TOTAL NUM FILES: %d\n", len(testEntry.Files))
+
+	drainIter := func(iter *storage.ReadAsOfIterator, entry execinfrapb.RestoreSpanEntry) error {
+		startKeyMVCC, endKeyMVCC := storage.MVCCKey{Key: entry.Span.Key},
+			storage.MVCCKey{Key: entry.Span.EndKey}
+
+		for iter.SeekGE(startKeyMVCC); ; iter.NextKey() {
+			ok, err := iter.Valid()
+			if err != nil {
+				return err
+			}
+
+			if !ok || !iter.UnsafeKey().Less(endKeyMVCC) {
+				break
+			}
+		}
+		return nil
+	}
+
+	b.ResetTimer()
+	b.SetBytes(totalFileSizes)
+	for n := 0; n < b.N; n++ {
+		require.NoError(b, drainIter(iter, testEntry))
+	}
+
 }
 
 func TestIngest(t *testing.T) {

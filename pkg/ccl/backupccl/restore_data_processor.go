@@ -265,7 +265,7 @@ func (rd *restoreDataProcessor) openSSTs(
 ) error {
 	ctxDone := ctx.Done()
 
-	// TODO(msbutler): use a a map of external storage factories to avoid reopening the same dir
+	// TODO(msbutler): use a map of external storage factories to avoid reopening the same dir
 	// in a given restore span entry
 	var dirs []cloud.ExternalStorage
 
@@ -286,9 +286,7 @@ func (rd *restoreDataProcessor) openSSTs(
 
 	// sendIter sends a multiplexed iterator covering the currently accumulated files over the
 	// channel.
-	sendIter := func(iter storage.SimpleMVCCIterator, dirsToSend []cloud.ExternalStorage) error {
-		readAsOfIter := storage.NewReadAsOfIterator(iter, rd.spec.RestoreTime)
-
+	sendIter := func(iter *storage.ReadAsOfIterator, dirsToSend []cloud.ExternalStorage) error {
 		cleanup := func() {
 			if recoverFromIterPanic {
 				defer func() {
@@ -298,7 +296,7 @@ func (rd *restoreDataProcessor) openSSTs(
 				}()
 			}
 
-			readAsOfIter.Close()
+			iter.Close()
 
 			for _, dir := range dirsToSend {
 				if err := dir.Close(); err != nil {
@@ -309,7 +307,7 @@ func (rd *restoreDataProcessor) openSSTs(
 
 		mSST := mergedSST{
 			entry:   entry,
-			iter:    readAsOfIter,
+			iter:    iter,
 			cleanup: cleanup,
 		}
 
@@ -323,32 +321,52 @@ func (rd *restoreDataProcessor) openSSTs(
 		return nil
 	}
 
-	log.VEventf(ctx, 1 /* level */, "ingesting span [%s-%s)", entry.Span.Key, entry.Span.EndKey)
+	log.VInfof(ctx, 2, "ingesting span [%s-%s) composed of %d files",
+		entry.Span.Key, entry.Span.EndKey, len(entry.Files))
+	var iter *storage.ReadAsOfIterator
+	var err error
+	iter, dirs, err = iteratorForRestoreSpanEntry(ctx, rd.flowCtx.Cfg.ExternalStorage, rd.spec.RestoreTime, rd.spec.Encryption, entry)
+	if err != nil {
+		return err
+	}
+	return sendIter(iter, dirs)
+}
 
-	storeFiles := make([]storageccl.StoreFile, 0, len(EntryFiles{}))
+func iteratorForRestoreSpanEntry(
+	ctx context.Context,
+	makeExternalStorage cloud.ExternalStorageFactory,
+	restoreTime hlc.Timestamp,
+	encryption *roachpb.FileEncryptionOptions,
+	entry execinfrapb.RestoreSpanEntry,
+) (*storage.ReadAsOfIterator, []cloud.ExternalStorage, error) {
+
+	storeFiles := make([]storageccl.StoreFile, 0, len(entry.Files))
+	dirs := make([]cloud.ExternalStorage, 0, len(entry.Files))
+
 	for _, file := range entry.Files {
 		log.VEventf(ctx, 2, "import file %s which starts at %s", file.Path, entry.Span.Key)
-
-		dir, err := rd.flowCtx.Cfg.ExternalStorage(ctx, file.Dir)
+		dir, err := makeExternalStorage(ctx, file.Dir)
 		if err != nil {
-			return err
+			return nil, dirs, err
 		}
 		dirs = append(dirs, dir)
 		storeFiles = append(storeFiles, storageccl.StoreFile{Store: dir, FilePath: file.Path})
 		// TODO(pbardea): When memory monitoring is added, send the currently
 		// accumulated iterators on the channel if we run into memory pressure.
 	}
+
 	iterOpts := storage.IterOptions{
-		RangeKeyMaskingBelow: rd.spec.RestoreTime,
+		RangeKeyMaskingBelow: restoreTime,
 		KeyTypes:             storage.IterKeyTypePointsAndRanges,
 		LowerBound:           keys.LocalMax,
 		UpperBound:           keys.MaxKey,
 	}
-	iter, err := storageccl.ExternalSSTReader(ctx, storeFiles, rd.spec.Encryption, iterOpts)
+	iter, err := storageccl.ExternalSSTReader(ctx, storeFiles, encryption, iterOpts)
 	if err != nil {
-		return err
+		return nil, dirs, err
 	}
-	return sendIter(iter, dirs)
+	readAsOfIter := storage.NewReadAsOfIterator(iter, restoreTime)
+	return readAsOfIter, dirs, nil
 }
 
 func (rd *restoreDataProcessor) runRestoreWorkers(ctx context.Context, ssts chan mergedSST) error {

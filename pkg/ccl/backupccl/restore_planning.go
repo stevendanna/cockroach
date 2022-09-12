@@ -137,7 +137,7 @@ func maybeFilterMissingViews(
 	return filteredTablesByID, nil
 }
 
-// allocateDescriptorRewrites determines the new ID and parentID (a "DescriptorRewrite")
+// altlocateDescriptorRewrites determines the new ID and parentID (a "DescriptorRewrite")
 // for each table in sqlDescs and returns a mapping from old ID to said
 // DescriptorRewrite. It first validates that the provided sqlDescs can be restored
 // into their original database (or the database specified in opts) to avoid

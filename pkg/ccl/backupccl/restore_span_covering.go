@@ -9,6 +9,7 @@
 package backupccl
 
 import (
+	"context"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backupinfo"
@@ -16,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/util/interval"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
 type intervalSpan roachpb.Span
@@ -119,6 +121,7 @@ func makeSimpleImportSpans(
 					// record a file size, just assume it is 16mb for estimating.
 					sz := f.EntryCounts.DataSize
 					if sz == 0 {
+						log.Warningf(context.Background(), "DataSize is 0, assuming 16 MiB for %s", f.Path)
 						sz = 16 << 20
 					}
 
