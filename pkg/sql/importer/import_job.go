@@ -64,6 +64,7 @@ const importJobRecoveryEventType eventpb.RecoveryEventType = "import_job"
 type importTestingKnobs struct {
 	afterImport            func(summary roachpb.RowCount) error
 	beforeRunDSP           func() error
+	onSetupFinish          func()
 	alwaysFlushJobProgress bool
 }
 
