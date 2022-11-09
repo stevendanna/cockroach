@@ -437,7 +437,8 @@ const clearClaimQuery = `
       SET claim_session_id = NULL, claim_instance_id = NULL
     WHERE id = $1
       AND claim_session_id = $2
-      AND claim_instance_id = $3`
+      AND claim_instance_id = $3
+      AND status NOT IN ('` + string(StatusPauseRequested) + `', '` + string(StatusCancelRequested) + `')`
 
 // maybeClearLease clears the claim on the given job, provided that
 // the current lease matches our liveness Session.
