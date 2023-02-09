@@ -163,7 +163,8 @@ func NewSeparateProcessTenantServer(
 	tenantNameContainer *roachpb.TenantNameContainer,
 ) (*SQLServerWrapper, error) {
 	instanceIDContainer := baseCfg.IDContainer.SwitchToSQLIDContainerForStandaloneSQLInstance()
-	return newTenantServer(ctx, stopper, baseCfg, sqlCfg, parentRecorder, tenantNameContainer, instanceIDContainer)
+	costController := NewTenantSideCostController
+	return newTenantServer(ctx, stopper, baseCfg, sqlCfg, parentRecorder, tenantNameContainer, instanceIDContainer, costController)
 }
 
 // NewSeparateProcessTenantServer creates a tenant-specific, SQL-only
@@ -184,7 +185,8 @@ func NewSharedProcessTenantServer(
 		return nil, errors.AssertionFailedf("programming error: NewSharedProcessTenantServer called before NodeID was assigned.")
 	}
 	instanceIDContainer := base.NewSQLIDContainerForNode(baseCfg.IDContainer)
-	return newTenantServer(ctx, stopper, baseCfg, sqlCfg, parentRecorder, tenantNameContainer, instanceIDContainer)
+	costController := newNoopTenantSideCostController
+	return newTenantServer(ctx, stopper, baseCfg, sqlCfg, parentRecorder, tenantNameContainer, instanceIDContainer, costController)
 }
 
 func newTenantServer(
@@ -195,6 +197,7 @@ func newTenantServer(
 	parentRecorder *status.MetricsRecorder,
 	tenantNameContainer *roachpb.TenantNameContainer,
 	instanceIDContainer *base.SQLIDContainer,
+	costControllerFactory tenantSideCostControllerFactory,
 ) (*SQLServerWrapper, error) {
 	// TODO(knz): Make the license application a per-server thing
 	// instead of a global thing.
@@ -206,7 +209,7 @@ func newTenantServer(
 	// Inform the server identity provider that we're operating
 	// for a tenant server.
 	baseCfg.idProvider.SetTenant(sqlCfg.TenantID)
-	args, err := makeTenantSQLServerArgs(ctx, stopper, baseCfg, sqlCfg, parentRecorder, tenantNameContainer, instanceIDContainer)
+	args, err := makeTenantSQLServerArgs(ctx, stopper, baseCfg, sqlCfg, parentRecorder, tenantNameContainer, instanceIDContainer, costControllerFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -873,6 +876,7 @@ func makeTenantSQLServerArgs(
 	parentRecorder *status.MetricsRecorder,
 	tenantNameContainer *roachpb.TenantNameContainer,
 	instanceIDContainer *base.SQLIDContainer,
+	costControllerFactory tenantSideCostControllerFactory,
 ) (sqlServerArgs, error) {
 	st := baseCfg.Settings
 
@@ -960,7 +964,7 @@ func makeTenantSQLServerArgs(
 		tenantKnobs.OverrideTokenBucketProvider != nil {
 		provider = tenantKnobs.OverrideTokenBucketProvider(provider)
 	}
-	costController, err := NewTenantSideCostController(st, sqlCfg.TenantID, provider)
+	costController, err := costControllerFactory(st, sqlCfg.TenantID, provider)
 	if err != nil {
 		return sqlServerArgs{}, err
 	}
@@ -1190,14 +1194,18 @@ func makeNextLiveInstanceIDFn(
 	}
 }
 
-// NewTenantSideCostController is a hook for CCL code which implements the
-// controller.
-var NewTenantSideCostController = func(
+type tenantSideCostControllerFactory func(*cluster.Settings, roachpb.TenantID, kvtenant.TokenBucketProvider) (multitenant.TenantSideCostController, error)
+
+var newNoopTenantSideCostController = func(
 	st *cluster.Settings, tenantID roachpb.TenantID, provider kvtenant.TokenBucketProvider,
 ) (multitenant.TenantSideCostController, error) {
 	// Return a no-op implementation.
 	return noopTenantSideCostController{}, nil
 }
+
+// NewTenantSideCostController is a hook for CCL code which implements the
+// controller.
+var NewTenantSideCostController = newNoopTenantSideCostController
 
 // ApplyTenantLicense is a hook for CCL code which enables enterprise features
 // for the tenant process if the COCKROACH_TENANT_LICENSE environment variable
