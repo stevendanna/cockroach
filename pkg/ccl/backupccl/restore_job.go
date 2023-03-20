@@ -475,7 +475,10 @@ func loadBackupSQLDescs(
 		}
 	}
 	activeVersion := p.ExecCfg().Settings.Version.ActiveVersion(ctx)
-	if err := maybeUpgradeDescriptors(activeVersion, sqlDescs, true /* skipFKsWithNoMatchingTable */); err != nil {
+	if err := maybeUpgradeDescriptors(activeVersion, sqlDescs,
+		true, /* skipFKsWithNoMatchingTable */
+		true, /* skipMissingSequences */
+	); err != nil {
 		mem.Shrink(ctx, sz)
 		return nil, backuppb.BackupManifest{}, nil, 0, err
 	}

@@ -112,7 +112,9 @@ func (m manifestInfoReader) showBackup(
 		kmsEnv.ClusterSettings().Version.ActiveVersion(ctx),
 		info.manifests,
 		info.layerToIterFactory,
-		true /* skipFKsWithNoMatchingTable */)
+		true, /* skipFKsWithNoMatchingTable */
+		true, /* skipMissingSequences */
+	)
 	if err != nil {
 		return err
 	}
@@ -370,7 +372,7 @@ func showBackupPlanHook(
 			p.ExecCfg().InternalDB,
 			p.User(),
 		)
-		showEncErr := `If you are running SHOW BACKUP exclusively on an incremental backup, 
+		showEncErr := `If you are running SHOW BACKUP exclusively on an incremental backup,
 you must pass the 'encryption_info_dir' parameter that points to the directory of your full backup`
 		if showStmt.Options.EncryptionPassphrase != nil {
 			passphrase, err := exprEval.String(ctx, showStmt.Options.EncryptionPassphrase)
