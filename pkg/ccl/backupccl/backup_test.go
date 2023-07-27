@@ -9268,11 +9268,6 @@ func TestGCDropIndexSpanExpansion(t *testing.T) {
 	ctx := context.Background()
 	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{ServerArgs: base.TestServerArgs{
 		ExternalIODir: baseDir,
-		// This test hangs when run within a tenant. It's likely that
-		// the cause of the hang is the fact that we're waiting on the GC to
-		// complete, and we don't have visibility into the GC completing from
-		// the tenant. More investigation is required. Tracked with #76378.
-		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			GCJob: &sql.GCJobTestingKnobs{
 				RunBeforePerformGC: func(id jobspb.JobID) error {
@@ -9289,10 +9284,13 @@ func TestGCDropIndexSpanExpansion(t *testing.T) {
 	defer tc.Stopper().Stop(ctx)
 	conn := tc.Conns[0]
 	sqlRunner := sqlutils.MakeSQLRunner(conn)
-	sqlRunner.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'`) // speeds up the test
+	systemSQLRunner := sqlutils.MakeSQLRunner(tc.StorageClusterConn())
+
+	systemSQLRunner.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'`) // speeds up the test
+	systemSQLRunner.Exec(t, `ALTER TENANT ALL SET CLUSTER SETTING sql.zone_configs.allow_for_secondary_tenant.enabled=true`)
 
 	sqlRunner.Exec(t, `CREATE DATABASE test;`)
-	sqlRunner.Exec(t, ` USE test;`)
+	sqlRunner.Exec(t, `USE test;`)
 	sqlRunner.Exec(t, `CREATE TABLE foo (id INT PRIMARY KEY, id2 INT, id3 INT, INDEX bar (id2), INDEX baz(id3));`)
 	sqlRunner.Exec(t, `ALTER INDEX foo@bar CONFIGURE ZONE USING gc.ttlseconds = '1';`)
 	sqlRunner.Exec(t, `INSERT INTO foo VALUES (1, 2, 3);`)
