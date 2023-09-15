@@ -41,6 +41,7 @@ go_library(
         "//pkg/repstream",
         "//pkg/repstream/streampb",
         "//pkg/roachpb",
+        "//pkg/server/status/statuspb",
         "//pkg/settings",
         "//pkg/settings/cluster",
         "//pkg/spanconfig",

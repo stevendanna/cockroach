@@ -21,9 +21,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprofiler"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/server/status/statuspb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
@@ -207,7 +209,7 @@ func startDistIngestion(
 	}
 
 	if !streamProgress.InitialSplitComplete {
-		if err := createInitialSplits(ctx, execCtx, planner.initialTopology, details.DestinationTenantID); err != nil {
+		if err := createInitialSplits(ctx, execCtx, planner.initialTopology, planner.initialIngestionSpecs, details.DestinationTenantID); err != nil {
 			return err
 		}
 	} else {
@@ -320,6 +322,7 @@ func createInitialSplits(
 	ctx context.Context,
 	execCtx sql.JobExecContext,
 	topology streamclient.Topology,
+	frontierSpecs map[base.SQLInstanceID]*execinfrapb.StreamIngestionDataSpec,
 	destTenantID roachpb.TenantID,
 ) error {
 	rekeyer, err := backupccl.MakeKeyRewriterFromRekeys(execCtx.ExtendedEvalContext().Codec,
@@ -332,95 +335,216 @@ func createInitialSplits(
 	if err != nil {
 		return err
 	}
+	db := execCtx.ExecCfg().DB
 
-	for _, partition := range topology.Partitions {
-		for _, span := range partition.Spans {
-			startKey := span.Key.Clone()
-			splitKey, _, err := rekeyer.RewriteKey(startKey, 0 /* walltimeForImportElision */)
-			if err != nil {
-				return err
-			}
-			// TODO(ssd): EnsureSafeSplitKey called on an arbitrary
-			// key unfortunately results in many of our split keys
-			// mapping to the same key for workloads like TPCC where
-			// the schema of the table includes integers that get
-			// chopped off the key under the assumption they are
-			// they column family.
-			//
-			// On the one hand, the keys in the plan come from the
-			// range boundaries in the original cluster, so they
-			// should be safe split keys.
-			//
-			// On the other hand, I'm loathe to add a Split call
-			// without an EnsureSafeSplitKey.
-			//
-			// if newSplitKey, err := keys.EnsureSafeSplitKey(splitKey); err != nil {
-			// 	// Ignore the error since keys such as
-			// 	// /Tenant/2/Table/13 is an OK start key but
-			// 	// returns an error.
-			// } else if len(newSplitKey) != 0 {
-			// 	splitKey = newSplitKey
-			// }
-			//
-			// Additionally, even without ensure safe split key, I
-			// see a small number of duplicate split points. For
-			// instance, during a run of c2c/tpcc/warehouses=500/duration=10/cutover=0:
-			//
-			// $ grep 'presplitting' logs/cockroach.log | awk '{ print $NF }' | sort | uniq -c | sort -rn | head -7
-			// 3 ‹/Tenant/2/Table/114/1/255/PrefixEnd›
-			// 2 ‹/Tenant/2›
-			// 2 ‹/Tenant/2/Table/113/1›
-			// 2 ‹/Tenant/2/Table/113/1/109/PrefixEnd›
-			// 2 ‹/Tenant/2/Table/109/PrefixEnd›
-			// 1 ‹/Tenant/2/Table/114/1›
-			// 1 ‹/Tenant/2/Table/114/1/76/5/-2221/12›
-			//
-			// This is a bit surprising to me, but perhaps I've
-			// misunderstood how partition spans works.
-			log.Infof(ctx, "presplitting at %s", roachpb.Key(splitKey).String())
+	// We may need a storeID for the nodes we want to relocate
+	// to. Get them all at once here.
+	defaultStoreIDs, err := getDefaultStoreIDMap(ctx, db)
+	if err != nil {
+		log.Warningf(ctx, "could not get default store ID map, may not be able to relocate: %v", err)
+		defaultStoreIDs = make(map[roachpb.NodeID]roachpb.StoreID)
+	}
+	for destinationID, processor := range frontierSpecs {
+		for _, spec := range processor.PartitionSpecs {
+			for _, span := range spec.Spans {
+				startKey := span.Key.Clone()
+				splitKey, _, err := rekeyer.RewriteKey(startKey, 0 /* walltimeForImportElision */)
+				if err != nil {
+					return err
+				}
+				// TODO(ssd): EnsureSafeSplitKey called on an arbitrary
+				// key unfortunately results in many of our split keys
+				// mapping to the same key for workloads like TPCC where
+				// the schema of the table includes integers that get
+				// chopped off the key under the assumption they are
+				// they column family.
+				//
+				// On the one hand, the keys in the plan come from the
+				// range boundaries in the original cluster, so they
+				// should be safe split keys.
+				//
+				// On the other hand, I'm loathe to add a Split call
+				// without an EnsureSafeSplitKey.
+				//
+				// if newSplitKey, err := keys.EnsureSafeSplitKey(splitKey); err != nil {
+				// 	// Ignore the error since keys such as
+				// 	// /Tenant/2/Table/13 is an OK start key but
+				// 	// returns an error.
+				// } else if len(newSplitKey) != 0 {
+				// 	splitKey = newSplitKey
+				// }
+				//
+				// Additionally, even without ensure safe split key, I
+				// see a small number of duplicate split points. For
+				// instance, during a run of c2c/tpcc/warehouses=500/duration=10/cutover=0:
+				//
+				// $ grep 'presplitting' logs/cockroach.log | awk '{ print $NF }' | sort | uniq -c | sort -rn | head -7
+				// 3 ‹/Tenant/2/Table/114/1/255/PrefixEnd›
+				// 2 ‹/Tenant/2›
+				// 2 ‹/Tenant/2/Table/113/1›
+				// 2 ‹/Tenant/2/Table/113/1/109/PrefixEnd›
+				// 2 ‹/Tenant/2/Table/109/PrefixEnd›
+				// 1 ‹/Tenant/2/Table/114/1›
+				// 1 ‹/Tenant/2/Table/114/1/76/5/-2221/12›
+				//
+				// This is a bit surprising to me, but perhaps I've
+				// misunderstood how partition spans works.
+				log.Infof(ctx, "presplitting at %s", roachpb.Key(splitKey).String())
 
-			db := execCtx.ExecCfg().DB
-			expirationTime := db.Clock().Now().Add(time.Hour.Nanoseconds(), 0)
-			// TODO(ssd): Any use sending these in paralllel if we
-			// have a large number of them?
-			if err := db.AdminSplit(ctx, splitKey, expirationTime); err != nil {
-				return errors.Wrapf(err, "splitting key %s", splitKey)
+				expirationTime := db.Clock().Now().Add(time.Hour.Nanoseconds(), 0)
+				// TODO(ssd): Any use sending these in paralllel if we
+				// have a large number of them?
+				if err := db.AdminSplit(ctx, splitKey, expirationTime); err != nil {
+					return errors.Wrapf(err, "splitting key %s", splitKey)
+				}
+				// TODO(ssd): In RESTORE we scatter our newly split
+				// range, find the node it landed on, and then allocate
+				// the work for that range to that node. Here, we have
+				// the addded concern that we want to locality match
+				// source and destination pairs. One option would be to
+				// use the AdminRelocateLease function to try to move
+				// the lease to the node we are assigning the work to.
+				//
+				// Evidence from the test run suggests that there is
+				// likely some more gains by doing _something_ to get
+				// the ranges onto local nodes. Namely, we see a very
+				// even distribution of AddSSTable's sent but an uneven
+				// distribution of AddSSTable's being receieved.
+				//
+				// I've tried scattering alone and the results were
+				// mixed.
+				//
+				// scatterKey := roachpb.Key(splitKey)
+				// _, pErr := kv.SendWrapped(ctx, db.NonTransactionalSender(), &kvpb.AdminScatterRequest{
+				// 	RequestHeader: kvpb.RequestHeaderFromSpan(roachpb.Span{
+				// 		Key:    scatterKey,
+				// 		EndKey: scatterKey.Next(),
+				// 	}),
+				// 	RandomizeLeases: true,
+				// 	MaxSize:         1, // don't scatter non-empty ranges on resume.
+				// })
+				// if pErr != nil {
+				// 	if !strings.Contains(pErr.String(), "existing range size") {
+				// 		log.Warningf(ctx, "failed to scatter span starting at %s: %+v",
+				// 			scatterKey, pErr.GoError())
+				// 	}
+				// }
+				//
+
+				// TODO(ssd): We are just assuming that our sql
+				// instance ID is also a node ID. This is
+				// currently true because we only run in the
+				// system tenant.
+				if err := relocateRangeAtKeyToNode(ctx, execCtx,
+					splitKey,
+					roachpb.NodeID(destinationID),
+					defaultStoreIDs[roachpb.NodeID(destinationID)],
+				); err != nil {
+					log.Warningf(ctx, "could not relocate the range: %v", err)
+				}
 			}
-			// TODO(ssd): In RESTORE we scatter our newly split
-			// range, find the node it landed on, and then allocate
-			// the work for that range to that node. Here, we have
-			// the addded concern that we want to locality match
-			// source and destination pairs. One option would be to
-			// use the AdminRelocateLease function to try to move
-			// the lease to the node we are assigning the work to.
-			//
-			// Evidence from the test run suggests that there is
-			// likely some more gains by doing _something_ to get
-			// the ranges onto local nodes. Namely, we see a very
-			// even distribution of AddSSTable's sent but an uneven
-			// distribution of AddSSTable's being receieved.
-			//
-			// I've tried scattering alone and the results were
-			// mixed.
-			//
-			// scatterKey := roachpb.Key(splitKey)
-			// _, pErr := kv.SendWrapped(ctx, db.NonTransactionalSender(), &kvpb.AdminScatterRequest{
-			// 	RequestHeader: kvpb.RequestHeaderFromSpan(roachpb.Span{
-			// 		Key:    scatterKey,
-			// 		EndKey: scatterKey.Next(),
-			// 	}),
-			// 	RandomizeLeases: true,
-			// 	MaxSize:         1, // don't scatter non-empty ranges on resume.
-			// })
-			// if pErr != nil {
-			// 	if !strings.Contains(pErr.String(), "existing range size") {
-			// 		log.Warningf(ctx, "failed to scatter span starting at %s: %+v",
-			// 			scatterKey, pErr.GoError())
-			// 	}
-			// }
 		}
 	}
 	return nil
+}
+
+func getDefaultStoreIDMap(
+	ctx context.Context, db *kv.DB,
+) (map[roachpb.NodeID]roachpb.StoreID, error) {
+	ret := make(map[roachpb.NodeID]roachpb.StoreID)
+	b := &kv.Batch{}
+	b.Scan(keys.StatusNodePrefix, keys.StatusNodePrefix.PrefixEnd())
+	if err := db.Run(ctx, b); err != nil {
+		return nil, err
+	}
+
+	for _, row := range b.Results[0].Rows {
+		var status statuspb.NodeStatus
+		if err := row.ValueProto(&status); err != nil {
+			return nil, err
+		}
+		if len(status.StoreStatuses) > 0 {
+			ret[status.Desc.NodeID] = status.StoreStatuses[0].Desc.StoreID
+		}
+	}
+	return ret, nil
+}
+
+// relocateRangeAtKeyToNode tries to relocate the range for the given key such
+// that the given node is the leaseholder.
+func relocateRangeAtKeyToNode(
+	ctx context.Context,
+	execCtx sql.JobExecContext,
+	splitKey roachpb.Key,
+	ingestionProcessorNodeID roachpb.NodeID,
+	defaultStoreID roachpb.StoreID,
+) error {
+	db := execCtx.ExecCfg().DB
+	// TODO(ssd): Maybe we should just use the range cache? I'm not really
+	// sure on the API here. RangeCache has a nicer API but is maybe out of
+	// date? No idea really.
+	rangeIter, err := execCtx.ExecCfg().RangeDescIteratorFactory.NewIterator(ctx, roachpb.Span{
+		Key:    splitKey,
+		EndKey: splitKey.Next(),
+	})
+	if err != nil {
+		return err
+	}
+	if !rangeIter.Valid() {
+		return errors.New("range iterator invalid")
+	}
+
+	rangeDesc := rangeIter.CurRangeDescriptor()
+	existingVoters := rangeDesc.Replicas().Voters()
+	rangeAlreadyOnNode := existingVoters.HasReplicaOnNode(ingestionProcessorNodeID)
+	if rangeAlreadyOnNode {
+		// If our target is already a replica of this range, then we can use
+		// AdminTransferLease.
+		//
+		// We need a store ID for AdminTransferLease, but since we have
+		// a range descriptor, we can get the correct store rather than
+		// using the default store ID.
+		descs := existingVoters.FilterToDescriptors(func(rDesc roachpb.ReplicaDescriptor) bool {
+			return rDesc.NodeID == ingestionProcessorNodeID
+		})
+		if len(descs) == 0 {
+			return errors.Newf("unexpectedly didn't find replica for node %d in voters for range %s",
+				ingestionProcessorNodeID,
+				rangeDesc.String(),
+			)
+		}
+		target := descs[0].StoreID
+		log.Infof(ctx, "relocating lease for range at %s to node %d store %d", splitKey, ingestionProcessorNodeID, target)
+		return db.AdminTransferLease(ctx, splitKey, target)
+	} else {
+		// According to some code comments we can only use
+		// AdminTransferLease if we are already a replica. We aren't so
+		// use AdminRelocateRange instead.
+		if defaultStoreID == 0 {
+			return errors.Newf("no default store ID, cannot AdminRelocateRange")
+		}
+
+		// We are going to replace the first voter with our target
+		// node. AdminRelocateRange allows us to also transfer the lease
+		// to the first voter (at least according to a code comment).
+		existingVoters := rangeDesc.Replicas().Voters().ReplicationTargets()
+		if len(existingVoters) == 0 {
+			return errors.Newf("unexpectedly didn't find voters for node %d in voters for range %s",
+				ingestionProcessorNodeID,
+				rangeDesc.String())
+		}
+		existingVoters[0] = roachpb.ReplicationTarget{
+			NodeID:  ingestionProcessorNodeID,
+			StoreID: defaultStoreID,
+		}
+		return db.AdminRelocateRange(
+			ctx,
+			splitKey,
+			existingVoters,
+			rangeDesc.Replicas().NonVoters().ReplicationTargets(),
+			true, /* transferLeaseToFirstVoter */
+		)
+	}
 }
 
 // makeReplicationFlowPlanner creates a replicationFlowPlanner and the initial physical plan.
@@ -459,6 +583,7 @@ type replicationFlowPlanner struct {
 
 	initialStreamAddresses []string
 	initialTopology        streamclient.Topology
+	initialIngestionSpecs  map[base.SQLInstanceID]*execinfrapb.StreamIngestionDataSpec
 
 	srcTenantID roachpb.TenantID
 }
@@ -491,17 +616,13 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 		if err != nil {
 			return nil, nil, err
 		}
-		if !p.containsInitialStreamAddresses() {
-			p.initialTopology = topology
-			p.initialStreamAddresses = topology.StreamAddresses()
-		}
-
 		p.srcTenantID = topology.SourceTenantID
 
 		planCtx, sqlInstanceIDs, err := dsp.SetupAllNodesPlanning(ctx, execCtx.ExtendedEvalContext(), execCtx.ExecCfg())
 		if err != nil {
 			return nil, nil, err
 		}
+
 		destNodeLocalities, err := getDestNodeLocalities(ctx, dsp, sqlInstanceIDs)
 		if err != nil {
 			return nil, nil, err
@@ -522,6 +643,12 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 		if err != nil {
 			return nil, nil, err
 		}
+		if !p.containsInitialStreamAddresses() {
+			p.initialTopology = topology
+			p.initialIngestionSpecs = streamIngestionSpecs
+			p.initialStreamAddresses = topology.StreamAddresses()
+		}
+
 		if knobs := execCtx.ExecCfg().StreamingTestingKnobs; knobs != nil && knobs.AfterReplicationFlowPlan != nil {
 			knobs.AfterReplicationFlowPlan(streamIngestionSpecs, streamIngestionFrontierSpec)
 		}
