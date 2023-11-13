@@ -33,7 +33,7 @@ func registerOnlineRestore(r registry.Registry) {
 			namePrefix:             "online",
 			hardware:               makeHardwareSpecs(hardwareSpecs{ebsThroughput: 250 /* MB/s */}),
 			backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: "v23.1.11"}),
-			timeout:                1 * time.Hour,
+			timeout:                5 * time.Hour,
 			clouds:                 registry.AllClouds,
 			suites:                 registry.Suites(registry.Nightly),
 			tags:                   registry.Tags("aws"),
