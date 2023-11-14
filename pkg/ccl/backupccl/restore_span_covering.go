@@ -270,6 +270,7 @@ func generateAndSendImportSpans(
 	layerToBackupManifestFileIterFactory backupinfo.LayerToBackupManifestFileIterFactory,
 	backupLocalityMap map[int]storeByLocalityKV,
 	filter spanCoveringFilter,
+	fsp fileSpanComparator,
 	spanCh chan execinfrapb.RestoreSpanEntry,
 ) error {
 
@@ -369,7 +370,7 @@ func generateAndSendImportSpans(
 					coverSpan.EndKey = span.EndKey
 				}
 
-				newFilesByLayer, err := getNewIntersectingFilesByLayer(coverSpan, layersCoveredLater, fileIterByLayer)
+				newFilesByLayer, err := getNewIntersectingFilesByLayer(coverSpan, layersCoveredLater, fileIterByLayer, fsp)
 				if err != nil {
 					return err
 				}
@@ -599,6 +600,7 @@ func getNewIntersectingFilesByLayer(
 	span roachpb.Span,
 	layersCoveredLater map[int]bool,
 	fileIters []bulk.Iterator[*backuppb.BackupManifest_File],
+	fsp fileSpanComparator,
 ) ([][]*backuppb.BackupManifest_File, error) {
 	var files [][]*backuppb.BackupManifest_File
 
@@ -620,7 +622,7 @@ func getNewIntersectingFilesByLayer(
 				// inclusive. Because roachpb.Span and its associated operations
 				// are end key exclusive, we work around this by replacing the
 				// end key with its next value in order to include the end key.
-				if inclusiveOverlap(span, f.Span) {
+				if fsp.overlap(span, f.Span) {
 					layerFiles = append(layerFiles, f)
 				}
 
@@ -635,8 +637,23 @@ func getNewIntersectingFilesByLayer(
 	return files, nil
 }
 
-// inclusiveOverlap returns true if sp, which is end key exclusive, overlaps
-// isp, which is end key inclusive.
-func inclusiveOverlap(sp roachpb.Span, isp roachpb.Span) bool {
-	return sp.Overlaps(isp) || sp.ContainsKey(isp.EndKey)
+type fileSpanComparator interface {
+	overlap(targetSpan, fileSpan roachpb.Span) bool
+}
+
+type inclusiveEndKeyComparator struct{}
+
+func (*inclusiveEndKeyComparator) overlap(targetSpan, inclusiveEndKeyFileSpan roachpb.Span) bool {
+	// inclusiveOverlap returns true if sp, which is end key
+	// exclusive, overlaps isp, which is end key inclusive.
+	// TODO(ssd): Could ContainsKey here be replaced with targetSpan.Key.Equal(inclusiveEndKeyFileSpan.EndKey)
+	return targetSpan.Overlaps(inclusiveEndKeyFileSpan) || targetSpan.ContainsKey(inclusiveEndKeyFileSpan.EndKey)
+}
+
+type exclusiveEndKeyComparator struct{}
+
+func (*exclusiveEndKeyComparator) overlap(targetSpan, inclusiveEndKeyFileSpan roachpb.Span) bool {
+	// inclusiveOverlap returns true if sp, which is end key
+	// exclusive, overlaps isp, which is end key inclusive.
+	return targetSpan.Overlaps(inclusiveEndKeyFileSpan)
 }

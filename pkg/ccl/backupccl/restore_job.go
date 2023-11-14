@@ -341,6 +341,12 @@ func restore(
 	countSpansCh := make(chan execinfrapb.RestoreSpanEntry, 1000)
 	genSpan := func(ctx context.Context, spanCh chan execinfrapb.RestoreSpanEntry) error {
 		defer close(spanCh)
+		var fsp fileSpanComparator
+		if details.ExperimentalOnline {
+			fsp = &exclusiveEndKeyComparator{}
+		} else {
+			fsp = &inclusiveEndKeyComparator{}
+		}
 		return generateAndSendImportSpans(
 			ctx,
 			dataToRestore.getSpans(),
@@ -348,6 +354,7 @@ func restore(
 			layerToIterFactory,
 			backupLocalityMap,
 			filter,
+			fsp,
 			spanCh,
 		)
 	}
