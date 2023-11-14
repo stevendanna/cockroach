@@ -3222,6 +3222,75 @@ func (r *restoreResumer) cleanupTempSystemTables(ctx context.Context) error {
 	return nil
 }
 
+// spanForVirtualSSTable returns the "intersection" between the
+// restore span entry and the given file spec. The intersection is a
+// bit odd. because the RestoreFileSpec is currently assumed to have
+// an _inclusive_ EndKey.
+func spanForVirtualSSTable(
+	entry *execinfrapb.RestoreSpanEntry, file *execinfrapb.RestoreFileSpec,
+) (roachpb.Span, error) {
+	// Given an _inclusive_ file span [b, d], we have a few cases:
+	//
+	// entry case 1: [a, e) (completely contained)
+	//   Assumed-exclusive Intersect: [b, d)
+	//    Actual Tightest SST Bounds: [b, d.Next())
+	//    Bad but Correct SST Bounds: [b, e)
+	//
+	// entry case 2: [d, e) (StartKey == EndKey)
+	//   Assumed-Exclusive Intersect: [)
+	//    Actual Tightest SST Bounds: [d, d.Next())
+	//    Bad but Correct SST Bounds: [d, e)
+	//
+	// entry case 3: [a, c) (left)
+	//   Assumed-Exclusive Intersect: [b, c)
+	//    Actual Tightest SST Bounds: [b, c)
+	//   d is not involved, no need to worry.
+	//
+	// entry case 4: [c, e) (right)
+	//   Assumed-exclusive Intersect: [c, d)
+	//    Actual Tightest SST Bounds: [c, d.Next())
+	//    Bad but Correct SST Bounds: [c, e)
+	//
+	// entry case 5: [a, d) (EndKey == EndKey)
+	//   Assumed-Exclusive Intersect: [b, d)
+	//    Actual Tightest SST Bounds: [b, d)
+	//    d is not involved, no need to worry.
+	//
+	// entry case 6: [e, f) (No overlap, even with inclusive key)
+	//   Assumed-Exclusive Intersect: [)
+	//   This is an error. Something went wrong when generating
+	//   spans.
+	//
+	// Since we are currently splitting at the _Start Key_ of file
+	// and we only ever need to fix the EndKey of an intersection,
+	// we can use Next() without much fear and shouldn't need to
+	// resort to the "Bad but Correct" SST bounds.
+	exclusiveIntersect := file.BackupFileEntrySpan.Intersect(entry.Span)
+	if !exclusiveIntersect.Valid() {
+		// Case 2
+		if entry.Span.Key.Equal(file.BackupFileEntrySpan.EndKey) {
+			return roachpb.Span{
+				Key:    entry.Span.Key,
+				EndKey: entry.Span.Key.Next(),
+			}, nil
+		}
+		// Case 6
+		return roachpb.Span{}, errors.AssertionFailedf(
+			"unexpected backup file entry for restore span: file %s with bounds %s has no intersection with restore span %s",
+			file.Path, file.BackupFileEntrySpan, entry.Span,
+		)
+	}
+
+	// We have an intersect but we may have to extend the end key.
+	if exclusiveIntersect.EndKey.Equal(file.BackupFileEntrySpan.EndKey) {
+		if !exclusiveIntersect.EndKey.Equal(entry.Span.EndKey) {
+			// Case 1, 4
+			exclusiveIntersect.EndKey = file.BackupFileEntrySpan.EndKey.Next()
+		} // else Case 5
+	} // else Case 3
+	return exclusiveIntersect, nil
+}
+
 func sendAddRemoteSSTWorker(
 	execCtx sql.JobExecContext,
 	uris []string,
@@ -3233,23 +3302,29 @@ func sendAddRemoteSSTWorker(
 
 		for entry := range restoreSpanEntriesCh {
 			for _, file := range entry.Files {
-				restoringSubspan := file.BackupFileEntrySpan.Intersect(entry.Span)
-				log.Infof(ctx, "Experimental restore: sending span %s of file (path: %s, span: %s), with intersecting subspan %s",
-					file.BackupFileEntrySpan, file.Path, file.BackupFileEntrySpan, restoringSubspan)
-
-				if !restoringSubspan.Valid() {
-					log.Warningf(ctx, "backup file does not intersect with the restoring span")
-					continue
+				restoringSubspan, err := spanForVirtualSSTable(&entry, &file)
+				if err != nil {
+					return err
 				}
+				if !restoringSubspan.Valid() {
+					return errors.AssertionFailedf("empty intersection between backup file entry (path: %s, span: %s) and restore span entry (%s)",
+						file.Path,
+						file.BackupFileEntrySpan,
+						entry.Span,
+					)
+				}
+				log.Infof(ctx, "experimental restore: sending span %s of file (path: %s, span: %s) with intersecting subspan %s",
+					file.BackupFileEntrySpan, file.Path, file.BackupFileEntrySpan, restoringSubspan)
 
 				// NB: Since the restored span is a subset of the BackupFileEntrySpan,
 				// these counts may be an overestimate of what actually gets restored.
 				counts := file.BackupFileEntryCounts
 
 				if counts.DataSize > remainingBytesInTargetRange {
-					log.Infof(ctx, "Experimental restore: need to split since %d > %d",
+					log.Infof(ctx, "experimental restore: need to split since %d > %d",
 						counts.DataSize, remainingBytesInTargetRange,
 					)
+					// TODO(ssd): EnsureSafeSplitKey?
 					expiration := execCtx.ExecCfg().Clock.Now().AddDuration(time.Hour)
 					if err := execCtx.ExecCfg().DB.AdminSplit(ctx, restoringSubspan.Key, expiration); err != nil {
 						log.Warningf(ctx, "failed to split during experimental restore: %v", err)
@@ -3282,7 +3357,6 @@ func sendAddRemoteSSTWorker(
 					KeyCount:          counts.Rows + counts.IndexEntries,
 					LiveCount:         counts.Rows + counts.IndexEntries,
 				}
-				var err error
 				_, remainingBytesInTargetRange, err = execCtx.ExecCfg().DB.AddRemoteSSTable(ctx,
 					restoringSubspan, loc,
 					fileStats)
