@@ -3352,11 +3352,12 @@ func sendAddRemoteSSTWorker(
 		for entry := range restoreSpanEntriesCh {
 			firstSplitDone := false
 			for _, file := range entry.Files {
-				restoringSubspan, err := spanForVirtualSSTable(&entry, &file)
-				if err != nil {
-					log.Infof(ctx, "worker failed with error: %v", err)
-					return err
-				}
+				restoringSubspan := entry.Span.Intersect(file.BackupFileEntrySpan)
+				// restoringSubspan, err := spanForVirtualSSTable(&entry, &file)
+				// if err != nil {
+				// 	log.Infof(ctx, "worker failed with error: %v", err)
+				// 	return err
+				// }
 				if !restoringSubspan.Valid() {
 					err := errors.AssertionFailedf("empty intersection between backup file entry (path: %s, span: %s) and restore span entry (%s)",
 						file.Path,
@@ -3368,7 +3369,6 @@ func sendAddRemoteSSTWorker(
 				}
 				log.Infof(ctx, "experimental restore: sending span %s of file (path: %s, span: %s) with intersecting subspan %s",
 					file.BackupFileEntrySpan, file.Path, file.BackupFileEntrySpan, restoringSubspan)
-
 
 				file.BackupFileEntrySpan = restoringSubspan
 				if !firstSplitDone {
