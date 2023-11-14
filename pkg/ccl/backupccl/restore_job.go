@@ -3281,6 +3281,7 @@ func sendAddRemoteSSTWorker(
 		}
 
 		for entry := range restoreSpanEntriesCh {
+			firstSplitDone := false
 			for _, file := range entry.Files {
 				restoringSubspan := file.BackupFileEntrySpan.Intersect(entry.Span)
 				log.Infof(ctx, "Experimental restore: sending span %s of file (path: %s, span: %s), with intersecting subspan %s",
@@ -3292,6 +3293,17 @@ func sendAddRemoteSSTWorker(
 				}
 
 				file.BackupFileEntrySpan = restoringSubspan
+				if !firstSplitDone {
+					expiration := execCtx.ExecCfg().Clock.Now().AddDuration(time.Hour)
+					if err := execCtx.ExecCfg().DB.AdminSplit(ctx, restoringSubspan.Key, expiration); err != nil {
+						log.Warningf(ctx, "failed to split during experimental restore: %v", err)
+					}
+					if _, err := execCtx.ExecCfg().DB.AdminScatter(ctx, restoringSubspan.Key, 4<<20); err != nil {
+						log.Warningf(ctx, "failed to scatter during experimental restore: %v", err)
+					}
+					firstSplitDone = true
+				}
+
 				// If we've queued up a batch size of files, split before the next one
 				// then flush the ones we queued. We do this accumulate-into-batch, then
 				// split, then flush so that when we split we are splitting an empty
