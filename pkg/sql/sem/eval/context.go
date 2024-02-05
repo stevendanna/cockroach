@@ -164,6 +164,8 @@ type Context struct {
 
 	SessionAccessor SessionAccessor
 
+	AuthorizationAccessor AuthorizationAccessor
+
 	ClientNoticeSender ClientNoticeSender
 
 	Sequence SequenceOperators
