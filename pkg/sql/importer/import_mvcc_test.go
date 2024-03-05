@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -37,12 +36,9 @@ func TestMVCCValueHeaderImportEpoch(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
+	ctx := context.Background()
 	server, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	s := server.ApplicationLayer()
-	ctx := context.Background()
 	defer server.Stopper().Stop(ctx)
 	sqlDB := sqlutils.MakeSQLRunner(db)
 
@@ -66,7 +62,7 @@ func TestMVCCValueHeaderImportEpoch(t *testing.T) {
 	sqlDB.QueryRow(t, `SELECT id FROM system.namespace WHERE name = $1`,
 		"t").Scan(&tableID)
 
-	startKey := keys.SystemSQLCodec.TablePrefix(tableID)
+	startKey := s.Codec().TablePrefix(tableID)
 	endKey := startKey.PrefixEnd()
 
 	req := &kvpb.ExportRequest{
