@@ -10,23 +10,34 @@ package streamproducer
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backupresolver"
 	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/repstream"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 )
 
 type replicationStreamManagerImpl struct {
 	evalCtx   *eval.Context
+	resolver  resolver.SchemaResolver
 	txn       isql.Txn
 	sessionID clusterunique.ID
 }
@@ -39,6 +50,68 @@ func (r *replicationStreamManagerImpl) StartReplicationStream(
 		return streampb.ReplicationProducerSpec{}, err
 	}
 	return StartReplicationProducerJob(ctx, r.evalCtx, r.txn, tenantName, req, false)
+}
+
+// StartReplicationStreamForTables implements streaming.ReplicationStreamManager interface.
+func (r *replicationStreamManagerImpl) StartReplicationStreamForTables(
+	ctx context.Context, req streampb.ReplicationProducerRequest,
+) (streampb.ReplicationProducerSpec, error) {
+	if err := r.checkLicense(); err != nil {
+		return streampb.ReplicationProducerSpec{}, err
+	}
+
+	var replicationStartTime hlc.Timestamp
+	if !req.ReplicationStartTime.IsEmpty() {
+		replicationStartTime = req.ReplicationStartTime
+	} else {
+		replicationStartTime = hlc.Timestamp{
+			WallTime: r.evalCtx.GetStmtTimestamp().UnixNano(),
+		}
+	}
+
+	// Resolve table names to spans
+	tableOnlyTargetList := &tree.BackupTargetList{}
+	for _, name := range req.TableNames {
+		// TODO(ssd): Sort out the rules we want for this resolution. Right now the source sends fully qualified
+		// names and we accept them.
+		parts := strings.SplitN(name, ".", 3)
+		dbName, schemaName, tblName := parts[0], parts[1], parts[2]
+		tablePattern := tree.MakeTableNameWithSchema(tree.Name(dbName), tree.Name(schemaName), tree.Name(tblName))
+		tableOnlyTargetList.Tables.TablePatterns = append(
+			tableOnlyTargetList.Tables.TablePatterns,
+			&tablePattern,
+		)
+	}
+	execCfg := r.evalCtx.Planner.ExecutorConfig().(*sql.ExecutorConfig)
+	_, _, _, targetDescs, err := backupresolver.ResolveTargetsToDescriptors(ctx, execCfg, r.resolver,
+		replicationStartTime, tableOnlyTargetList)
+	if err != nil {
+		return streampb.ReplicationProducerSpec{}, err
+	}
+	spans := make([]roachpb.Span, 0, len(req.TableNames))
+	tableDescs := make(map[string]descpb.TableDescriptor, len(req.TableNames))
+
+	for tablePattern, desc := range targetDescs {
+		rawTbl, _, _, _, _ := descpb.GetDescriptors(desc.DescriptorProto())
+		td := tabledesc.NewBuilder(rawTbl).BuildImmutableTable()
+		spans = append(spans, td.PrimaryIndexSpan(execCfg.Codec))
+		tableDescs[tablePattern.String()] = *rawTbl
+	}
+
+	id, err := r.evalCtx.Planner.StartHistoryRetentionJob(ctx,
+		fmt.Sprintf("online stream of %s", strings.Join(req.TableNames, ",")),
+		replicationStartTime, 24*time.Hour)
+	if err != nil {
+		return streampb.ReplicationProducerSpec{}, err
+	}
+
+	return streampb.ReplicationProducerSpec{
+		StreamID:             streampb.StreamID(id),
+		SourceClusterID:      r.evalCtx.ClusterID,
+		ReplicationStartTime: replicationStartTime,
+		TableSpans:           spans,
+		TableDescriptors:     tableDescs,
+	}, nil
 }
 
 // HeartbeatReplicationStream implements streaming.ReplicationStreamManager interface.
@@ -69,6 +142,16 @@ func (r *replicationStreamManagerImpl) GetReplicationStreamSpec(
 		return nil, err
 	}
 	return getReplicationStreamSpec(ctx, r.evalCtx, r.txn, streamID)
+}
+
+func (r *replicationStreamManagerImpl) PartitionSpans(
+	ctx context.Context, spans []roachpb.Span,
+) (*streampb.ReplicationStreamSpec, error) {
+	_, tenID, err := keys.DecodeTenantPrefix(r.evalCtx.Codec.TenantPrefix())
+	if err != nil {
+		return nil, err
+	}
+	return buildReplicationStreamSpec(ctx, r.evalCtx, tenID, false, spans)
 }
 
 // CompleteReplicationStream implements ReplicationStreamManager interface.
@@ -114,14 +197,18 @@ func (r *replicationStreamManagerImpl) DebugGetProducerStatuses(
 }
 
 func newReplicationStreamManagerWithPrivilegesCheck(
-	ctx context.Context, evalCtx *eval.Context, txn isql.Txn, sessionID clusterunique.ID,
+	ctx context.Context,
+	evalCtx *eval.Context,
+	sc resolver.SchemaResolver,
+	txn isql.Txn,
+	sessionID clusterunique.ID,
 ) (eval.ReplicationStreamManager, error) {
 	if err := evalCtx.SessionAccessor.CheckPrivilege(ctx,
 		syntheticprivilege.GlobalPrivilegeObject,
 		privilege.REPLICATION); err != nil {
 		return nil, err
 	}
-	return &replicationStreamManagerImpl{evalCtx: evalCtx, txn: txn, sessionID: sessionID}, nil
+	return &replicationStreamManagerImpl{evalCtx: evalCtx, txn: txn, sessionID: sessionID, resolver: sc}, nil
 }
 
 func (r *replicationStreamManagerImpl) checkLicense() error {

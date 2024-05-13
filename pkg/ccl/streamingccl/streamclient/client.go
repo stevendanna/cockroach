@@ -87,7 +87,7 @@ type Client interface {
 	// open its subscription to its partition of a larger stream.
 	// TODO(dt): ts -> checkpointToken.
 	Subscribe(ctx context.Context, streamID streampb.StreamID, procID int32, spec SubscriptionToken,
-		initialScanTime hlc.Timestamp, previousReplicatedTimes span.Frontier) (Subscription, error)
+		initialScanTime hlc.Timestamp, previousReplicatedTimes span.Frontier, withFiltering bool) (Subscription, error)
 
 	// Complete completes a replication stream consumption.
 	Complete(ctx context.Context, streamID streampb.StreamID, successfulIngestion bool) error

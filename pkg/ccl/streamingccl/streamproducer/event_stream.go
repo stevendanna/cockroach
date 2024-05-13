@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationutils"
-	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -115,8 +114,13 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 		return err
 	}
 
-	log.Infof(ctx, "starting physical replication event stream: tenant=%s initial_scan_timestamp=%s previous_replicated_time=%s",
-		sourceTenantID, s.spec.InitialScanTimestamp, s.spec.PreviousReplicatedTimestamp)
+	if sourceTenantID.IsSet() {
+		log.Infof(ctx, "starting physical replication event stream: tenant=%s initial_scan_timestamp=%s previous_replicated_time=%s",
+			sourceTenantID, s.spec.InitialScanTimestamp, s.spec.PreviousReplicatedTimestamp)
+	} else {
+		log.Infof(ctx, "starting replication event stream: initial_scan_timestamp=%s previous_replicated_time=%s",
+			s.spec.InitialScanTimestamp, s.spec.PreviousReplicatedTimestamp)
+	}
 
 	s.acc = s.mon.MakeBoundAccount()
 
@@ -135,6 +139,7 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 		rangefeed.WithFrontierSpanVisitor(s.maybeCheckpoint),
 		rangefeed.WithOnFrontierAdvance(s.onFrontier),
 		rangefeed.WithOnCheckpoint(s.onCheckpoint),
+		rangefeed.WithFiltering(s.spec.WithFiltering),
 		rangefeed.WithOnInternalError(func(ctx context.Context, err error) {
 			s.setErr(err)
 		}),
@@ -469,31 +474,35 @@ func (s *eventStream) validateProducerJobAndSpec(ctx context.Context) (roachpb.T
 	if err != nil {
 		return roachpb.TenantID{}, err
 	}
-	payload := job.Payload()
-	sp, ok := payload.GetDetails().(*jobspb.Payload_StreamReplication)
-	if !ok {
+	progress := job.Payload()
+	details := progress.GetDetails()
+	switch sp := details.(type) {
+	case *jobspb.Payload_StreamReplication:
+		if sp.StreamReplication == nil {
+			return roachpb.TenantID{}, errors.AssertionFailedf("unexpected nil StreamReplication in producer job %d payload", producerJobID)
+		}
+		// Validate that the requested spans are a subset of the
+		// source tenant's keyspace.
+		sourceTenantID := sp.StreamReplication.TenantID
+		sourceTenantSpans := keys.MakeTenantSpan(sourceTenantID)
+		for _, sp := range s.spec.Spans {
+			if !sourceTenantSpans.Contains(sp) {
+				err := pgerror.Newf(pgcode.InvalidParameterValue, "requested span %s is not contained within the keyspace of source tenant %d",
+					sp,
+					sourceTenantID)
+				return roachpb.TenantID{}, err
+			}
+		}
+		return sourceTenantID, nil
+	case *jobspb.Payload_HistoryRetentionDetails:
+		// Just allow for now.
+		// TODO(ssd): Store the protected span and validate request is for a subset of that span.
+		// return
+		return roachpb.TenantID{}, nil
+	default:
 		return roachpb.TenantID{}, notAReplicationJobError(producerJobID)
 	}
-	if sp.StreamReplication == nil {
-		return roachpb.TenantID{}, errors.AssertionFailedf("unexpected nil StreamReplication in producer job %d payload", producerJobID)
-	}
-	if job.Status() != jobs.StatusRunning {
-		return roachpb.TenantID{}, jobIsNotRunningError(producerJobID, job.Status(), "stream events")
-	}
 
-	// Validate that the requested spans are a subset of the
-	// source tenant's keyspace.
-	sourceTenantID := sp.StreamReplication.TenantID
-	sourceTenantSpans := keys.MakeTenantSpan(sourceTenantID)
-	for _, sp := range s.spec.Spans {
-		if !sourceTenantSpans.Contains(sp) {
-			err := pgerror.Newf(pgcode.InvalidParameterValue, "requested span %s is not contained within the keyspace of source tenant %d",
-				sp,
-				sourceTenantID)
-			return roachpb.TenantID{}, err
-		}
-	}
-	return sourceTenantID, nil
 }
 
 func (s *eventStream) DebugGetProducerStatus() *streampb.DebugProducerStatus {

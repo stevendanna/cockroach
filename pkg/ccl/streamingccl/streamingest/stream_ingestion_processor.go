@@ -50,7 +50,7 @@ import (
 )
 
 var minimumFlushInterval = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"bulkio.stream_ingestion.minimum_flush_interval",
 	"the minimum timestamp between flushes; flushes may still occur if internal buffers fill up",
 	5*time.Second,
@@ -59,7 +59,7 @@ var minimumFlushInterval = settings.RegisterDurationSettingWithExplicitUnit(
 )
 
 var maxKVBufferSize = settings.RegisterByteSizeSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"bulkio.stream_ingestion.kv_buffer_size",
 	"the maximum size of the KV buffer allowed before a flush",
 	128<<20, // 128 MiB
@@ -67,7 +67,7 @@ var maxKVBufferSize = settings.RegisterByteSizeSetting(
 )
 
 var maxRangeKeyBufferSize = settings.RegisterByteSizeSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"bulkio.stream_ingestion.range_key_buffer_size",
 	"the maximum size of the range key buffer allowed before a flush",
 	32<<20, // 32 MiB
@@ -75,7 +75,7 @@ var maxRangeKeyBufferSize = settings.RegisterByteSizeSetting(
 )
 
 var tooSmallRangeKeySize = settings.RegisterByteSizeSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"bulkio.stream_ingestion.ingest_range_keys_as_writes",
 	"size below which a range key SST will be ingested using normal writes",
 	400*1<<10, // 400 KiB
@@ -86,7 +86,7 @@ var tooSmallRangeKeySize = settings.RegisterByteSizeSetting(
 // the system.jobs table to check whether the stream ingestion job has been
 // signaled to cutover.
 var cutoverSignalPollInterval = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"bulkio.stream_ingestion.cutover_signal_poll_interval",
 	"the interval at which the stream ingestion job checks if it has been signaled to cutover",
 	10*time.Second,
@@ -95,7 +95,7 @@ var cutoverSignalPollInterval = settings.RegisterDurationSetting(
 )
 
 var quantize = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"physical_replication.consumer.timestamp_granularity",
 	"the granularity at which replicated times are quantized to make tracking more efficient",
 	5*time.Second,
@@ -451,7 +451,7 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 		}
 
 		sub, err := streamClient.Subscribe(ctx, streampb.StreamID(sip.spec.StreamID), int32(sip.flowCtx.NodeID.SQLInstanceID()), token,
-			sip.spec.InitialScanTimestamp, sip.frontier)
+			sip.spec.InitialScanTimestamp, sip.frontier, false /* withFiltering */)
 
 		if err != nil {
 			sip.MoveToDrainingAndLogError(errors.Wrapf(err, "consuming partition %v", redactedAddr))

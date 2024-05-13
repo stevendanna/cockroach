@@ -141,7 +141,7 @@ func streamPartition(ctx context.Context, streamAddr *url.URL) error {
 	sub, err := client.Subscribe(ctx, replicationProducerSpec.StreamID, 1,
 		spsBytes,
 		sps.InitialScanTimestamp,
-		nil)
+		nil, false)
 	if err != nil {
 		return err
 	}

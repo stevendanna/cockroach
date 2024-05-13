@@ -42,15 +42,25 @@ type partitionedStreamClient struct {
 	}
 }
 
-func NewPartitionedStreamClient(
+func NewPgConnectionForStream(
 	ctx context.Context, remote *url.URL, opts ...Option,
-) (Client, error) {
+) (*pgx.Conn, *pgx.ConnConfig, error) {
 	options := processOptions(opts)
 	config, err := setupPGXConfig(remote, options)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, config, nil
+}
+
+func NewPartitionedStreamClient(
+	ctx context.Context, remote *url.URL, opts ...Option,
+) (Client, error) {
+	conn, config, err := NewPgConnectionForStream(ctx, remote, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -129,15 +139,13 @@ func (p *partitionedStreamClient) Heartbeat(
 	return status, nil
 }
 
-// postgresURL converts an SQL serving address into a postgres URL.
-func (p *partitionedStreamClient) postgresURL(servingAddr string) (url.URL, error) {
-	host, port, err := net.SplitHostPort(servingAddr)
+func replaceHostAndPort(baseURL url.URL, addr string) (url.URL, error) {
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return url.URL{}, err
 	}
-	res := p.urlPlaceholder
-	res.Host = net.JoinHostPort(host, port)
-	return res, nil
+	baseURL.Host = net.JoinHostPort(host, port)
+	return baseURL, err
 }
 
 // Plan implements Client interface.
@@ -161,14 +169,12 @@ func (p *partitionedStreamClient) Plan(
 	return p.createTopology(spec)
 }
 
-func (p *partitionedStreamClient) createTopology(
-	spec streampb.ReplicationStreamSpec,
-) (Topology, error) {
+func TopologyFromSpec(spec streampb.ReplicationStreamSpec, baseURL url.URL) (Topology, error) {
 	topology := Topology{
 		SourceTenantID: spec.SourceTenantID,
 	}
 	for _, sp := range spec.Partitions {
-		pgURL, err := p.postgresURL(sp.SQLAddress.String())
+		pgURL, err := replaceHostAndPort(baseURL, sp.SQLAddress.String())
 		if err != nil {
 			return Topology{}, err
 		}
@@ -186,6 +192,12 @@ func (p *partitionedStreamClient) createTopology(
 		})
 	}
 	return topology, nil
+}
+
+func (p *partitionedStreamClient) createTopology(
+	spec streampb.ReplicationStreamSpec,
+) (Topology, error) {
+	return TopologyFromSpec(spec, p.urlPlaceholder)
 }
 
 // Close implements Client interface.
@@ -213,6 +225,7 @@ func (p *partitionedStreamClient) Subscribe(
 	spec SubscriptionToken,
 	initialScanTime hlc.Timestamp,
 	previousReplicatedTimes span.Frontier,
+	withFiltering bool,
 ) (Subscription, error) {
 	_, sp := tracing.ChildSpan(ctx, "streamclient.Client.Subscribe")
 	defer sp.Finish()
@@ -229,6 +242,7 @@ func (p *partitionedStreamClient) Subscribe(
 			return span.ContinueMatch
 		})
 	}
+	sps.WithFiltering = withFiltering
 	sps.ConsumerID = consumerID
 
 	specBytes, err := protoutil.Marshal(&sps)

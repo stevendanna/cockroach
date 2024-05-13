@@ -683,12 +683,21 @@ func LoadAllDescs(
 	return allDescs, nil
 }
 
+type schemaResolver interface {
+	resolver.SchemaResolver
+	ExecCfg() *sql.ExecutorConfig
+}
+
 // ResolveTargetsToDescriptors performs name resolution on a set of targets and
 // returns the resulting descriptors.
 //
 // TODO(ajwerner): adopt the collection here.
 func ResolveTargetsToDescriptors(
-	ctx context.Context, p sql.PlanHookState, endTime hlc.Timestamp, targets *tree.BackupTargetList,
+	ctx context.Context,
+	execCfg *sql.ExecutorConfig,
+	sr resolver.SchemaResolver,
+	endTime hlc.Timestamp,
+	targets *tree.BackupTargetList,
 ) (
 	[]catalog.Descriptor,
 	[]descpb.ID,
@@ -696,14 +705,14 @@ func ResolveTargetsToDescriptors(
 	map[tree.TablePattern]catalog.Descriptor,
 	error,
 ) {
-	allDescs, err := LoadAllDescs(ctx, p.ExecCfg(), endTime)
+	allDescs, err := LoadAllDescs(ctx, execCfg, endTime)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
 	var matched DescriptorsMatched
 	if matched, err = DescriptorsMatchingTargets(ctx,
-		p.CurrentDatabase(), p.CurrentSearchPath(), allDescs, *targets, endTime); err != nil {
+		sr.CurrentDatabase(), sr.CurrentSearchPath(), allDescs, *targets, endTime); err != nil {
 		return nil, nil, nil, nil, err
 	}
 

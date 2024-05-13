@@ -795,7 +795,7 @@ func getTableDescriptors(
 		}
 	}
 
-	_, _, _, targetDescs, err := backupresolver.ResolveTargetsToDescriptors(ctx, p, statementTime, targets)
+	_, _, _, targetDescs, err := backupresolver.ResolveTargetsToDescriptors(ctx, p.ExecCfg(), p, statementTime, targets)
 	if err != nil {
 		var m *backupresolver.MissingTableErr
 		if errors.As(err, &m) {

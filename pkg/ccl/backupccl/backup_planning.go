@@ -622,7 +622,7 @@ func backupPlanHook(
 		switch backupStmt.Coverage() {
 		case tree.RequestedDescriptors:
 			var err error
-			targetDescs, completeDBs, requestedDBs, descsByTablePattern, err = backupresolver.ResolveTargetsToDescriptors(ctx, p, endTime, backupStmt.Targets)
+			targetDescs, completeDBs, requestedDBs, descsByTablePattern, err = backupresolver.ResolveTargetsToDescriptors(ctx, p.ExecCfg(), p, endTime, backupStmt.Targets)
 			if err != nil {
 				return errors.Wrap(err, "failed to resolve targets specified in the BACKUP stmt")
 			}

@@ -393,7 +393,7 @@ type eventDescriptorFactory func(
 
 type eventDecoder struct {
 	// Cached allocations for *row.Fetcher
-	rfCache *rowFetcherCache
+	rfCache rfCache
 
 	// kvProvider used to feed KVs into fetcher to decode them into datums.
 	kvProvider row.KVProvider
@@ -472,6 +472,25 @@ func NewEventDecoder(
 	}, nil
 }
 
+// NewEventDecoderWithCache returns key value decoder.
+func NewEventDecoderWithCache(
+	ctx context.Context, rfCache rfCache, includeVirtual bool, keyOnly bool,
+) Decoder {
+	eventDescriptorCache := cache.NewUnorderedCache(DefaultCacheConfig)
+	getEventDescriptor := func(
+		desc catalog.TableDescriptor,
+		family *descpb.ColumnFamilyDescriptor,
+		schemaTS hlc.Timestamp,
+	) (*EventDescriptor, error) {
+		return getEventDescriptorCached(desc, family, includeVirtual, keyOnly, schemaTS, eventDescriptorCache)
+	}
+
+	return &eventDecoder{
+		getEventDescriptor: getEventDescriptor,
+		rfCache:            rfCache,
+	}
+}
+
 // RowType is the type of the row being decoded.
 type RowType int
 
@@ -543,7 +562,7 @@ func (d *eventDecoder) decodeKV(
 func (d *eventDecoder) initForKey(
 	ctx context.Context, key roachpb.Key, schemaTS hlc.Timestamp, keyOnly bool,
 ) error {
-	desc, familyID, err := d.rfCache.tableDescForKey(ctx, key, schemaTS)
+	desc, familyID, err := d.rfCache.TableDescForKey(ctx, key, schemaTS)
 	if err != nil {
 		return err
 	}
@@ -677,7 +696,7 @@ func TestingMakeEventRowFromDatums(datums tree.Datums) Row {
 func TestingGetFamilyIDFromKey(
 	decoder Decoder, key roachpb.Key, ts hlc.Timestamp,
 ) (descpb.FamilyID, error) {
-	_, familyID, err := decoder.(*eventDecoder).rfCache.tableDescForKey(context.Background(), key, ts)
+	_, familyID, err := decoder.(*eventDecoder).rfCache.TableDescForKey(context.Background(), key, ts)
 	return familyID, err
 }
 

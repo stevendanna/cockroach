@@ -8073,6 +8073,37 @@ specified store on the node it's run from. One of 'mvccGC', 'merge', 'split',
 			Volatility: volatility.Stable,
 		},
 	),
+	"crdb_internal.start_replication_job": makeBuiltin(
+		tree.FunctionProperties{
+			Category: builtinconstants.CategorySystemInfo,
+		},
+		tree.Overload{
+			Types: tree.ParamTypes{
+				{Name: "conn_str", Typ: types.String},
+				{Name: "table_names", Typ: types.StringArray},
+			},
+			ReturnType: tree.FixedReturnType(types.Int),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				if err := evalCtx.SessionAccessor.CheckPrivilege(
+					ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER,
+				); err != nil {
+					return nil, err
+				}
+				targetConnStr := string(tree.MustBeDString(args[0]))
+				tableNameArray := tree.MustBeDArray(args[1])
+				tables := make([]string, len(tableNameArray.Array))
+				for i, tableName := range tableNameArray.Array {
+					tables[i] = string(tree.MustBeDString(tableName))
+				}
+
+				jobId, err := evalCtx.Planner.StartReplicationJob(ctx, targetConnStr, tables)
+
+				return tree.NewDInt(tree.DInt(jobId)), err
+			},
+			Info:       "This function is used only by CockroachDB's developers for testing purposes.",
+			Volatility: volatility.Volatile,
+		},
+	),
 	"crdb_internal.hide_sql_constants": makeBuiltin(tree.FunctionProperties{
 		Category:     builtinconstants.CategoryString,
 		Undocumented: true,

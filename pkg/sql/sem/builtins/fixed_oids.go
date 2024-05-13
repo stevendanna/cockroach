@@ -2574,6 +2574,9 @@ var builtinOidsArray = []string{
 	2606: `crdb_internal.protect_mvcc_history(timestamp: decimal, expiration_window: interval, description: string) -> int`,
 	2607: `crdb_internal.extend_mvcc_history_protection(job_id: int) -> void`,
 	2608: `crdb_internal.force_panic(msg: string, mode: string) -> int`,
+	2609: `crdb_internal.start_replication_job(conn_str: string, table_names: string[]) -> int`,
+	2610: `crdb_internal.partition_spans(spans: bytes[]) -> bytes`,
+	2611: `crdb_internal.start_replication_stream_for_tables(req: bytes) -> bytes`,
 }
 
 var builtinOidsBySignature map[string]oid.Oid

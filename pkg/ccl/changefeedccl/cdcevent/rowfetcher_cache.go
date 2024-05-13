@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/cache"
@@ -43,6 +44,16 @@ var traceKVLogFrequency = settings.RegisterDurationSetting(
 	500*time.Millisecond,
 	settings.NonNegativeDuration,
 )
+
+type rfCache interface {
+	TableDescForKey(context.Context, roachpb.Key, hlc.Timestamp) (catalog.TableDescriptor, descpb.FamilyID, error)
+	RowFetcherForColumnFamily(
+		tableDesc catalog.TableDescriptor,
+		family descpb.FamilyID,
+		sysCols []descpb.ColumnDescriptor,
+		keyOnly bool,
+	) (*row.Fetcher, *descpb.ColumnFamilyDescriptor, error)
+}
 
 // rowFetcherCache maintains a cache of single table row.Fetchers. Given a key
 // with an mvcc timestamp, it retrieves the correct TableDescriptor for that key
@@ -153,7 +164,7 @@ func refreshUDT(
 	return tableDesc, nil
 }
 
-func (c *rowFetcherCache) tableDescForKey(
+func (c *rowFetcherCache) TableDescForKey(
 	ctx context.Context, key roachpb.Key, ts hlc.Timestamp,
 ) (catalog.TableDescriptor, descpb.FamilyID, error) {
 	var tableDesc catalog.TableDescriptor
@@ -253,6 +264,161 @@ func (c *rowFetcherCache) RowFetcherForColumnFamily(
 			return nil, nil, ErrUnwatchedFamily
 		}
 	}
+
+	var spec fetchpb.IndexFetchSpec
+
+	var relevantColumns descpb.ColumnIDs
+	if keyOnly {
+		relevantColumns = tableDesc.GetPrimaryIndex().CollectKeyColumnIDs().Ordered()
+	} else {
+		relevantColumns, err = getRelevantColumnsForFamily(tableDesc, familyDesc)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := rowenc.InitIndexFetchSpec(
+		&spec, c.codec, tableDesc, tableDesc.GetPrimaryIndex(), relevantColumns,
+	); err != nil {
+		return nil, nil, err
+	}
+
+	// Add system columns.
+	for _, sc := range sysCols {
+		spec.FetchedColumns = append(spec.FetchedColumns, fetchpb.IndexFetchSpec_Column{
+			ColumnID:      sc.ID,
+			Name:          sc.Name,
+			Type:          sc.Type,
+			IsNonNullable: !sc.Nullable,
+		})
+	}
+
+	if err := rf.Init(
+		context.TODO(),
+		row.FetcherInitArgs{
+			WillUseKVProvider: true,
+			Alloc:             &c.a,
+			Spec:              &spec,
+			TraceKV:           c.rfArgs.traceKV,
+			TraceKVEvery:      &util.EveryN{N: c.rfArgs.traceKVLogFrequency},
+		},
+	); err != nil {
+		return nil, nil, err
+	}
+
+	c.fetchers.Add(idVer, f)
+	return rf, familyDesc, nil
+}
+
+// fixedRowFetcherCache maintains a cache of single table row.Fetchers. Given a key
+// with an mvcc timestamp, it retrieves the correct TableDescriptor for that key
+// and returns a row.Fetcher initialized with that table.
+//
+// Table descs are fixed at creation time.
+//
+// This Fetcher's
+// ConsumeKVProvider() can be used to turn that key (or all the keys making up
+// the column families of one row) into a row.
+type fixedRowFetcherCache struct {
+	codec           keys.SQLCodec
+	fetchers        *cache.UnorderedCache
+	watchedFamilies map[watchedFamily]struct{}
+	descCol         map[catid.DescID]catalog.TableDescriptor
+
+	rfArgs rowFetcherArgs
+
+	a tree.DatumAlloc
+}
+
+// newFixedRowFetcherCache constructs row fetcher cache.
+func NewFixedRowFetcherCache(
+	ctx context.Context,
+	codec keys.SQLCodec,
+	s *cluster.Settings,
+	descs map[catid.DescID]catalog.TableDescriptor,
+) *fixedRowFetcherCache {
+	return &fixedRowFetcherCache{
+		codec:    codec,
+		descCol:  descs,
+		fetchers: cache.NewUnorderedCache(DefaultCacheConfig),
+		rfArgs: rowFetcherArgs{
+			traceKV:             log.V(row.TraceKVVerbosity),
+			traceKVLogFrequency: traceKVLogFrequency.Get(&s.SV),
+		},
+	}
+}
+
+func (c *fixedRowFetcherCache) TableDescForKey(
+	ctx context.Context, key roachpb.Key, ts hlc.Timestamp,
+) (catalog.TableDescriptor, descpb.FamilyID, error) {
+	key, err := c.codec.StripTenantPrefix(key)
+	if err != nil {
+		return nil, descpb.FamilyID(0), err
+	}
+	remaining, tableID, _, err := rowenc.DecodePartialTableIDIndexID(key)
+	if err != nil {
+		return nil, descpb.FamilyID(0), err
+	}
+
+	familyID, err := keys.DecodeFamilyKey(key)
+	if err != nil {
+		return nil, descpb.FamilyID(0), err
+	}
+
+	family := descpb.FamilyID(familyID)
+	tableDesc, ok := c.descCol[tableID]
+	if !ok {
+		return nil, descpb.FamilyID(0), errors.Newf("ruroh no table desc")
+	}
+
+	// Skip over the column data.
+	for skippedCols := 0; skippedCols < tableDesc.GetPrimaryIndex().NumKeyColumns(); skippedCols++ {
+		l, err := encoding.PeekLength(remaining)
+		if err != nil {
+			return nil, family, err
+		}
+		remaining = remaining[l:]
+	}
+
+	return tableDesc, family, nil
+}
+
+// RowFetcherForColumnFamily returns row.Fetcher for the specified column family.
+// Returns ErrUnwatchedFamily error if family is not watched.
+func (c *fixedRowFetcherCache) RowFetcherForColumnFamily(
+	tableDesc catalog.TableDescriptor,
+	family descpb.FamilyID,
+	sysCols []descpb.ColumnDescriptor,
+	keyOnly bool,
+) (*row.Fetcher, *descpb.ColumnFamilyDescriptor, error) {
+	idVer := CacheKey{ID: tableDesc.GetID(), Version: tableDesc.GetVersion(), FamilyID: family}
+	if v, ok := c.fetchers.Get(idVer); ok {
+		f := v.(*cachedFetcher)
+		if f.skip {
+			return nil, nil, ErrUnwatchedFamily
+		}
+		// Ensure that all user defined types are up to date with the cached
+		// version and the desired version to use the cache. It is safe to use
+		// UserDefinedTypeColsHaveSameVersion if we have a hit because we are
+		// guaranteed that the tables have the same version. Additionally, these
+		// fetchers are always initialized with a single tabledesc.Get.
+		if safe, err := catalog.UserDefinedTypeColsInFamilyHaveSameVersion(tableDesc, f.tableDesc, family); err != nil {
+			return nil, nil, err
+		} else if safe {
+			return &f.fetcher, &f.familyDesc, nil
+		}
+	}
+
+	familyDesc, err := catalog.MustFindFamilyByID(tableDesc, family)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	f := &cachedFetcher{
+		tableDesc:  tableDesc,
+		familyDesc: *familyDesc,
+	}
+	rf := &f.fetcher
 
 	var spec fetchpb.IndexFetchSpec
 

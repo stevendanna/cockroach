@@ -13,6 +13,8 @@ package sql
 import (
 	"context"
 	crypto_rand "crypto/rand"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -922,7 +924,11 @@ func (p *planner) resetPlanner(
 func (p *planner) GetReplicationStreamManager(
 	ctx context.Context,
 ) (eval.ReplicationStreamManager, error) {
-	return repstream.GetReplicationStreamManager(ctx, p.EvalContext(), p.InternalSQLTxn(), p.ExtendedEvalContext().SessionID)
+	return repstream.GetReplicationStreamManager(ctx,
+		p.EvalContext(),
+		p,
+		p.InternalSQLTxn(),
+		p.ExtendedEvalContext().SessionID)
 }
 
 // GetStreamIngestManager returns a StreamIngestManager.
@@ -1008,4 +1014,54 @@ func (p *planner) StartHistoryRetentionJob(
 
 func (p *planner) ExtendHistoryRetention(ctx context.Context, jobID jobspb.JobID) error {
 	return ExtendHistoryRetention(ctx, p.EvalContext(), p.InternalSQLTxn(), jobID)
+}
+
+func (p *planner) StartReplicationJob(
+	ctx context.Context, targetConnStr string, tableNames []string,
+) (jobspb.JobID, error) {
+	if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V24_1) {
+		return 0, pgerror.New(pgcode.FeatureNotSupported,
+			"replication job not supported before V24.1")
+	}
+	evalCtx := p.EvalContext()
+	execConfig := evalCtx.Planner.ExecutorConfig().(*ExecutorConfig)
+	registry := execConfig.JobRegistry
+
+	// TODO(ssd): This will need to be thought about for the final syntax.
+	fullyQualifiedTableNames := make([]string, 0, len(tableNames))
+	for _, t := range tableNames {
+		un := tree.MakeUnresolvedName(t)
+		uon, err := un.ToUnresolvedObjectName(tree.NoAnnotation)
+		if err != nil {
+			return 0, err
+		}
+		tn := uon.ToTableName()
+		prefix, td, err := resolver.ResolveMutableExistingTableObject(ctx, p, &tn, true, tree.ResolveRequireTableDesc)
+		if err != nil {
+			return 0, err
+		}
+
+		tbNameWithSchema := tree.MakeTableNameWithSchema(
+			tree.Name(prefix.Database.GetName()),
+			tree.Name(prefix.Schema.GetName()),
+			tree.Name(td.GetName()),
+		)
+		fullyQualifiedTableNames = append(fullyQualifiedTableNames, tbNameWithSchema.FQString())
+	}
+	jr := jobs.Record{
+		Description: fmt.Sprintf("online stream ingestion for %s",
+		 strings.Join(fullyQualifiedTableNames, ",")),
+		Username:    evalCtx.SessionData().User(),
+		Details: jobspb.ActiveReplicationDetails{
+			TargetClusterConnStr: targetConnStr,
+			TableNames:           fullyQualifiedTableNames},
+		Progress: jobspb.ActiveReplicationProgress{},
+		JobID:    registry.MakeJobID(),
+	}
+
+	if _, err := registry.CreateAdoptableJobWithTxn(ctx, jr, jr.JobID, p.InternalSQLTxn()); err != nil {
+		return 0, err
+	}
+	registry.NotifyToAdoptJobs()
+	return jr.JobID, nil
 }

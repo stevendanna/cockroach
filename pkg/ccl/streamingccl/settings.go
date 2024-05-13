@@ -17,7 +17,7 @@ import (
 // StreamReplicationStreamLivenessTrackFrequency controls frequency to check
 // the liveness of a streaming replication producer job.
 var StreamReplicationStreamLivenessTrackFrequency = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"stream_replication.stream_liveness_track_frequency",
 	"controls how frequent we check for the liveness of a replication stream producer job",
 	time.Minute,
@@ -27,7 +27,7 @@ var StreamReplicationStreamLivenessTrackFrequency = settings.RegisterDurationSet
 // StreamReplicationMinCheckpointFrequency controls the minimum frequency the stream replication
 // source cluster sends checkpoints to destination cluster.
 var StreamReplicationMinCheckpointFrequency = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"stream_replication.min_checkpoint_frequency",
 	"controls minimum frequency the stream replication source cluster sends checkpoints "+
 		"to the destination cluster",
@@ -39,7 +39,7 @@ var StreamReplicationMinCheckpointFrequency = settings.RegisterDurationSetting(
 // StreamReplicationConsumerHeartbeatFrequency controls frequency the stream replication
 // destination cluster sends heartbeat to the source cluster to keep the stream alive.
 var StreamReplicationConsumerHeartbeatFrequency = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"stream_replication.consumer_heartbeat_frequency",
 	"controls frequency the stream replication destination cluster sends heartbeat "+
 		"to the source cluster to keep the stream alive",
@@ -51,7 +51,7 @@ var StreamReplicationConsumerHeartbeatFrequency = settings.RegisterDurationSetti
 // JobCheckpointFrequency controls the frequency of frontier checkpoints into
 // the jobs table.
 var JobCheckpointFrequency = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"stream_replication.job_checkpoint_frequency",
 	"controls the frequency with which partitions update their progress; if 0, disabled",
 	10*time.Second,
@@ -60,7 +60,7 @@ var JobCheckpointFrequency = settings.RegisterDurationSetting(
 )
 
 var ReplanThreshold = settings.RegisterFloatSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"stream_replication.replan_flow_threshold",
 	"fraction of nodes in the producer or consumer job that would need to change to refresh the"+
 		" physical execution plan. If set to 0, the physical plan will not automatically refresh.",
@@ -70,7 +70,7 @@ var ReplanThreshold = settings.RegisterFloatSetting(
 )
 
 var ReplanFrequency = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"stream_replication.replan_flow_frequency",
 	"frequency at which the consumer job checks to refresh its physical execution plan",
 	10*time.Minute,
@@ -79,7 +79,7 @@ var ReplanFrequency = settings.RegisterDurationSetting(
 )
 
 var InterNodeLag = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"physical_replication.consumer.node_lag_replanning_threshold",
 	"the maximum difference in lag tolerated across two destination nodes; if 0, disabled",
 	0,
@@ -92,7 +92,7 @@ var InterNodeLag = settings.RegisterDurationSetting(
 // TODO(adityamaru): This timer should be removed once each job is aware of whether
 // it is profiling or not.
 var DumpFrontierEntries = settings.RegisterDurationSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"physical_replication.consumer.dump_frontier_entries_frequency",
 	"controls the frequency with which the frontier entries are persisted; if 0, disabled",
 	0,
@@ -103,7 +103,7 @@ var DumpFrontierEntries = settings.RegisterDurationSetting(
 // configurations from the source system tenant to the destination system
 // tenant.
 var ReplicateSpanConfigsEnabled = settings.RegisterBoolSetting(
-	settings.SystemOnly,
+	settings.ApplicationLevel,
 	"physical_replication.consumer.span_configs.enabled",
 	"controls whether we replicate span configurations from the source system tenant to the "+
 		"destination system tenant",

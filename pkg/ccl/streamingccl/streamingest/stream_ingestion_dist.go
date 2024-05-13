@@ -833,6 +833,58 @@ func constructStreamIngestionPlanSpecs(
 	return streamIngestionSpecs, streamIngestionFrontierSpec, nil
 }
 
+// Copy/Pasta fork of the above function.
+func constructOnlineStreamIngestionDataSpecs(
+	ctx context.Context,
+	streamAddress streamingccl.StreamAddress,
+	topology streamclient.Topology,
+	destSQLInstances []sql.InstanceLocality,
+	initialScanTimestamp hlc.Timestamp,
+	previousReplicatedTimestamp hlc.Timestamp,
+	checkpoint jobspb.StreamIngestionCheckpoint,
+	jobID jobspb.JobID,
+	streamID streampb.StreamID,
+) map[base.SQLInstanceID][]execinfrapb.StreamIngestionDataSpec {
+	baseSpec := execinfrapb.StreamIngestionDataSpec{
+		StreamID:                    uint64(streamID),
+		JobID:                       int64(jobID),
+		PreviousReplicatedTimestamp: previousReplicatedTimestamp,
+		InitialScanTimestamp:        initialScanTimestamp,
+		Checkpoint:                  checkpoint, // TODO: Only forward relevant checkpoint info
+		StreamAddress:               string(streamAddress),
+		PartitionSpecs:              make(map[string]execinfrapb.StreamIngestionPartitionSpec),
+	}
+
+	streamIngestionSpecs := make(map[base.SQLInstanceID][]execinfrapb.StreamIngestionDataSpec, len(destSQLInstances))
+
+	// Update stream ingestion specs with their matched source node.
+	matcher := makeNodeMatcher(destSQLInstances)
+	for _, candidate := range matcher.findSourceNodePriority(topology) {
+		destID := matcher.findMatch(candidate.closestDestIDs)
+		log.Infof(ctx, "physical replication src-dst pair candidate: %s (locality %s) - %d ("+
+			"locality %s)",
+			candidate.partition.ID,
+			candidate.partition.SrcLocality,
+			destID,
+			matcher.destNodeToLocality[destID])
+		partition := candidate.partition
+
+		spec := baseSpec
+		spec.PartitionSpecs = map[string]execinfrapb.StreamIngestionPartitionSpec{
+			partition.ID: {
+				PartitionID:       partition.ID,
+				SubscriptionToken: string(partition.SubscriptionToken),
+				Address:           string(partition.SrcAddr),
+				Spans:             partition.Spans,
+				SrcInstanceID:     base.SQLInstanceID(partition.SrcInstanceID),
+				DestInstanceID:    destID,
+			},
+		}
+		streamIngestionSpecs[destID] = append(streamIngestionSpecs[destID], spec)
+	}
+	return streamIngestionSpecs
+}
+
 // waitUntilProducerActive pings the producer job and waits until it
 // is active/running. It returns nil when the job is active.
 func waitUntilProducerActive(
