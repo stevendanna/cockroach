@@ -21,6 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
@@ -623,61 +624,30 @@ func (sip *onlineStreamIngestionProcessor) flushBuffer(
 	ctx, sp := tracing.ChildSpan(sip.Ctx(), "online-stream-ingestion-flush")
 	defer sp.Finish()
 
-	// Ensure the batcher is always reset, even on early error returns.
-	preFlushTime := timeutil.Now()
-	for _, keyVal := range b.buffer.curKVBatch {
-		kv := roachpb.KeyValue{
-			Key: keyVal.Key.Key,
-			Value: roachpb.Value{
-				RawBytes:  keyVal.Value,
-				Timestamp: keyVal.Key.Timestamp,
-			},
-		}
-		row, err := sip.decoder.DecodeKV(ctx, kv, cdcevent.CurrentRow, keyVal.Key.Timestamp, false)
-		if err != nil {
-			return nil, err
-		}
-		if !row.IsDeleted() {
-			datums := make([]interface{}, 0, len(row.EncDatums()))
-			err := row.ForEachColumn().Datum(func(d tree.Datum, col cdcevent.ResultColumn) error {
-				// Ignore crdb_internal_origin_timestamp
-				if col.Name == "crdb_internal_origin_timestamp" {
-					if d != tree.DNull {
-						// We'd only see this if we are doing an initial-scan of a table that was previously ingested into.
-						log.Infof(ctx, "saw non-null crdb_internal_origin_timestamp")
-					}
-					return nil
-				}
-
-				datums = append(datums, d)
-				return nil
-			})
-			if err != nil {
-				return nil, err
-			}
-			datums = append(datums, eval.TimestampToDecimalDatum(row.MvccTimestamp))
-			insertQuery := sip.queryBuffer.insertQueries[row.TableID]
-			if _, err := sip.ie.Exec(ctx, "replicated-insert", nil, insertQuery, datums...); err != nil {
-				log.Warningf(ctx, "replicated insert failed (query: %s): %s", insertQuery, err.Error())
-				return nil, err
-			}
-		} else {
-			datums := make([]interface{}, 0, len(row.TableDescriptor().TableDesc().PrimaryIndex.KeyColumnNames))
-			err := row.ForEachKeyColumn().Datum(func(d tree.Datum, col cdcevent.ResultColumn) error {
-				datums = append(datums, d)
-				return nil
-			})
-			if err != nil {
-				return nil, err
-			}
-			deleteQuery := sip.queryBuffer.deleteQueries[row.TableID]
-			if _, err := sip.ie.Exec(ctx, "replicated-delete", nil, deleteQuery, datums...); err != nil {
-				log.Warningf(ctx, "replicated delete failed (query: %s): %s", deleteQuery, err.Error())
-				return nil, err
-			}
-		}
+	if len(b.buffer.curKVBatch) == 0 {
+		releaseBuffer(b.buffer)
+		return b.checkpoint, nil
 	}
 
+	// Ensure the batcher is always reset, even on early error returns.
+	preFlushTime := timeutil.Now()
+	// TODO: The batching here in production would need to be much smarter. Namely, we don't want to include
+	// updates to the same key in the same batch. Also, it's possible batching will make things much worse in practice.
+	batchStart := 0
+	batchSize := int(flushBatchSize.Get(&sip.EvalCtx.Settings.SV))
+	batchEnd := min(batchStart+batchSize, len(b.buffer.curKVBatch))
+	for batchStart < len(b.buffer.curKVBatch) && batchEnd != 0 {
+		if err := sip.flowCtx.Cfg.DB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+			txn.KV().SetOmitInRangefeeds()
+			return sip.flushBatch(ctx, txn, b.buffer.curKVBatch[batchStart:batchEnd])
+		}); err != nil {
+			// TODO: We'll want to retry this to handle
+			return nil, err
+		}
+
+		batchStart = batchEnd
+		batchEnd = min(batchStart+batchSize, len(b.buffer.curKVBatch))
+	}
 	// Update the flush metrics.
 	sip.metrics.FlushHistNanos.RecordValue(timeutil.Since(preFlushTime).Nanoseconds())
 	sip.metrics.CommitLatency.RecordValue(timeutil.Since(b.buffer.minTimestamp.GoTime()).Nanoseconds())
@@ -688,6 +658,72 @@ func (sip *onlineStreamIngestionProcessor) flushBuffer(
 	releaseBuffer(b.buffer)
 
 	return b.checkpoint, nil
+}
+
+var flushBatchSize = settings.RegisterIntSetting(
+	settings.ApplicationLevel,
+	"stream_replication.consumer.batch_size",
+	"da batch size",
+	100,
+	settings.NonNegativeInt,
+)
+
+func (sip *onlineStreamIngestionProcessor) flushBatch(
+	ctx context.Context, txn isql.Txn, batch mvccKeyValues,
+) error {
+	for _, keyVal := range batch {
+		kv := roachpb.KeyValue{
+			Key: keyVal.Key.Key,
+			Value: roachpb.Value{
+				RawBytes:  keyVal.Value,
+				Timestamp: keyVal.Key.Timestamp,
+			},
+		}
+		row, err := sip.decoder.DecodeKV(ctx, kv, cdcevent.CurrentRow, keyVal.Key.Timestamp, false)
+		if err != nil {
+			return err
+		}
+		if !row.IsDeleted() {
+			datums := make([]interface{}, 0, len(row.EncDatums()))
+			err := row.ForEachColumn().Datum(func(d tree.Datum, col cdcevent.ResultColumn) error {
+				// Ignore crdb_internal_origin_timestamp
+				if col.Name == "crdb_internal_origin_timestamp" {
+					if d != tree.DNull {
+						// We'd only see this if we are doing an initial-scan of a table that was previously ingested into.
+						log.Infof(ctx, "saw non-null crdb_internal_origin_timestamp: %v", d)
+					}
+					return nil
+				}
+
+				datums = append(datums, d)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			datums = append(datums, eval.TimestampToDecimalDatum(row.MvccTimestamp))
+			insertQuery := sip.queryBuffer.insertQueries[row.TableID]
+			if _, err := sip.ie.Exec(ctx, "replicated-insert", txn.KV(), insertQuery, datums...); err != nil {
+				log.Warningf(ctx, "replicated insert failed (query: %s): %s", insertQuery, err.Error())
+				return err
+			}
+		} else {
+			datums := make([]interface{}, 0, len(row.TableDescriptor().TableDesc().PrimaryIndex.KeyColumnNames))
+			err := row.ForEachKeyColumn().Datum(func(d tree.Datum, col cdcevent.ResultColumn) error {
+				datums = append(datums, d)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			deleteQuery := sip.queryBuffer.deleteQueries[row.TableID]
+			if _, err := sip.ie.Exec(ctx, "replicated-delete", txn.KV(), deleteQuery, datums...); err != nil {
+				log.Warningf(ctx, "replicated delete failed (query: %s): %s", deleteQuery, err.Error())
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Last-write-wins INSERT and DELETE queries.

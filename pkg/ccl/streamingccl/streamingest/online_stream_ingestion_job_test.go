@@ -30,6 +30,76 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
+func TestOnlineStreamIngestionJob42Rows(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	clusterArgs := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			DefaultTestTenant: base.TestControlsTenantsExplicitly,
+			Knobs: base.TestingKnobs{
+				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+			},
+		},
+	}
+
+	serverA := testcluster.StartTestCluster(t, 1, clusterArgs)
+	defer serverA.Stopper().Stop(ctx)
+
+	serverB := testcluster.StartTestCluster(t, 1, clusterArgs)
+	defer serverB.Stopper().Stop(ctx)
+
+	source := sqlutils.MakeSQLRunner(serverA.Server(0).ApplicationLayer().SQLConn(t))
+	target := sqlutils.MakeSQLRunner(serverB.Server(0).ApplicationLayer().SQLConn(t))
+
+	for _, s := range []string{
+		"SET CLUSTER SETTING kv.rangefeed.enabled = true",
+		"SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval = '200ms'",
+		"SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'",
+		"SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval = '50ms'",
+		"SET CLUSTER SETTING physical_replication.producer.min_checkpoint_frequency='100ms'",
+		"SET CLUSTER SETTING physical_replication.consumer.heartbeat_frequency = '1s'",
+		"SET CLUSTER SETTING physical_replication.consumer.job_checkpoint_frequency = '100ms'",
+		"SET CLUSTER SETTING physical_replication.consumer.minimum_flush_interval = '10ms'",
+		"SET CLUSTER SETTING physical_replication.consumer.cutover_signal_poll_interval = '100ms'",
+		"SET CLUSTER SETTING physical_replication.consumer.timestamp_granularity = '100ms'",
+	} {
+		source.Exec(t, s)
+		target.Exec(t, s)
+	}
+
+	source.Exec(t, "CREATE TABLE tab (pk int primary key, payload string)")
+	target.Exec(t, "CREATE TABLE tab (pk int primary key, payload string)")
+	source.Exec(t, "ALTER TABLE tab ADD COLUMN crdb_internal_origin_timestamp DECIMAL NOT VISIBLE DEFAULT NULL ON UPDATE NULL")
+	target.Exec(t, "ALTER TABLE tab ADD COLUMN crdb_internal_origin_timestamp DECIMAL NOT VISIBLE DEFAULT NULL ON UPDATE NULL")
+
+	source.Exec(t, "INSERT INTO tab SELECT generate_series(1, 42), 'hello'")
+
+	serverAURL, cleanup := sqlutils.PGUrl(t, serverA.Server(0).ApplicationLayer().SQLAddr(), t.Name(), url.User(username.RootUser))
+	defer cleanup()
+	serverBURL, cleanupB := sqlutils.PGUrl(t, serverB.Server(0).ApplicationLayer().SQLAddr(), t.Name(), url.User(username.RootUser))
+	defer cleanupB()
+
+	var (
+		jobAID jobspb.JobID
+		jobBID jobspb.JobID
+	)
+	target.QueryRow(t, fmt.Sprintf("SELECT crdb_internal.start_replication_job('%s', %s)", serverAURL.String(), `ARRAY['tab']`)).Scan(&jobAID)
+	source.QueryRow(t, fmt.Sprintf("SELECT crdb_internal.start_replication_job('%s', %s)", serverBURL.String(), `ARRAY['tab']`)).Scan(&jobBID)
+	t.Logf("waiting for replication job %d", jobAID)
+	WaitUntilReplicatedTime(t, serverA.Server(0).Clock().Now(), target, jobAID)
+	t.Logf("waiting for replication job %d", jobBID)
+	WaitUntilReplicatedTime(t, serverA.Server(0).Clock().Now(), source, jobBID)
+
+	target.CheckQueryResults(t, "SELECT count(*) from tab", [][]string{
+		{"42"},
+	})
+	source.CheckQueryResults(t, "SELECT count(*) from tab", [][]string{
+		{"42"},
+	})
+}
+
 func TestOnlineStreamIngestionJob(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
