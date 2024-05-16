@@ -78,6 +78,7 @@ func (r *onlineStreamIngestionResumer) Resume(ctx context.Context, execCtx inter
 		}); err != nil {
 			return err
 		}
+
 	}
 	return r.ingestWithRetries(ctx, jobExecCtx)
 }
@@ -203,6 +204,7 @@ func (r *onlineStreamIngestionResumer) ingest(
 		execCfg.InternalDB,
 		jobID)
 
+	metrics := execCfg.JobRegistry.MetricsStruct().StreamIngest.(*Metrics)
 	metaFn := func(_ context.Context, meta *execinfrapb.ProducerMetadata) error {
 		log.Infof(ctx, "GOT META: %v", meta)
 		return nil
@@ -270,6 +272,7 @@ func (r *onlineStreamIngestionResumer) ingest(
 				}); err != nil {
 				return err
 			}
+			metrics.ReplicatedTimeSeconds.Update(replicatedTime.GoTime().Unix())
 		}
 		return nil
 	})
@@ -391,6 +394,8 @@ func startForTables(
 func (h *onlineStreamIngestionResumer) OnFailOrCancel(
 	ctx context.Context, execCtx interface{}, _ error,
 ) error {
+	metrics := execCtx.(sql.JobExecContext).ExecCfg().JobRegistry.MetricsStruct().StreamIngest.(*Metrics)
+	metrics.ReplicatedTimeSeconds.Update(0)
 	return nil
 }
 

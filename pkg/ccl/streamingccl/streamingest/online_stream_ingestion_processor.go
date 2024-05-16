@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
@@ -82,7 +83,8 @@ type onlineStreamIngestionProcessor struct {
 	frontier span.Frontier
 	// lastFlushTime keeps track of the last time that we flushed due to a
 	// checkpoint timestamp event.
-	lastFlushTime time.Time
+	lastFlushTime     time.Time
+	lastFlushFrontier hlc.Timestamp
 
 	// workerGroup is a context group holding all goroutines
 	// related to this processor.
@@ -98,7 +100,8 @@ type onlineStreamIngestionProcessor struct {
 
 	mergedSubscription *mergedSubscription
 
-	flushCh chan flushableBuffer
+	flushInProgress atomic.Bool
+	flushCh         chan flushableBuffer
 
 	errCh chan error
 
@@ -415,10 +418,12 @@ func (sip *onlineStreamIngestionProcessor) flushLoop(_ context.Context) error {
 			// eventConsumer is done.
 			return nil
 		}
+		sip.flushInProgress.Store(true)
 		resolvedSpan, err := sip.flushBuffer(bufferToFlush)
 		if err != nil {
 			return err
 		}
+
 		// NB: The flushLoop needs to select on stopCh here
 		// because the reader of checkpointCh is the caller of
 		// Next(). But there might never be another Next()
@@ -428,6 +433,7 @@ func (sip *onlineStreamIngestionProcessor) flushLoop(_ context.Context) error {
 		case <-sip.stopCh:
 			return nil
 		}
+		sip.flushInProgress.Store(false)
 	}
 }
 
@@ -446,6 +452,8 @@ func (sip *onlineStreamIngestionProcessor) onFlushUpdateMetricUpdate(
 // increasing after it has flushed all KV events previously received by that
 // partition.
 func (sip *onlineStreamIngestionProcessor) consumeEvents(ctx context.Context) error {
+	minFlushInterval := minimumFlushInterval.Get(&sip.flowCtx.Cfg.Settings.SV)
+	sip.maxFlushRateTimer.Reset(minFlushInterval)
 	for {
 		select {
 		case event, ok := <-sip.mergedSubscription.Events():
@@ -460,16 +468,17 @@ func (sip *onlineStreamIngestionProcessor) consumeEvents(ctx context.Context) er
 				return err
 			}
 		case <-sip.maxFlushRateTimer.C:
-			// This timer is used to periodically flush a
-			// buffer that may have been previously
-			// skipped.
 			sip.maxFlushRateTimer.Read = true
-			if err := sip.flush(); err != nil {
-				return err
+			minFlushInterval = minimumFlushInterval.Get(&sip.flowCtx.Cfg.Settings.SV)
+			if timeutil.Since(sip.lastFlushTime) >= minFlushInterval {
+				sip.metrics.FlushOnTime.Inc(1)
+				if err := sip.maybeFlush(); err != nil {
+					return err
+				}
 			}
+			sip.maxFlushRateTimer.Reset(minFlushInterval)
 		}
 	}
-
 }
 
 func (sip *onlineStreamIngestionProcessor) handleEvent(event partitionEvent) error {
@@ -497,20 +506,6 @@ func (sip *onlineStreamIngestionProcessor) handleEvent(event partitionEvent) err
 		if err := sip.bufferCheckpoint(event); err != nil {
 			return err
 		}
-
-		minFlushInterval := minimumFlushInterval.Get(sv)
-		if timeutil.Since(sip.lastFlushTime) < minFlushInterval {
-			// Not enough time has passed since the last flush. Let's set a timer
-			// that will trigger a flush eventually.
-			// TODO: This resets the timer every checkpoint event, but we only
-			// need to reset it once.
-			sip.maxFlushRateTimer.Reset(time.Until(sip.lastFlushTime.Add(minFlushInterval)))
-			return nil
-		}
-		if err := sip.flush(); err != nil {
-			return err
-		}
-		return nil
 	case streamingccl.SSTableEvent, streamingccl.DeleteRangeEvent, streamingccl.SplitEvent:
 		return errors.Newf("unexpected event for online stream: %v", event)
 	default:
@@ -521,8 +516,15 @@ func (sip *onlineStreamIngestionProcessor) handleEvent(event partitionEvent) err
 		log.Infof(sip.Ctx(), "current KV batch size %d (%d items)", sip.buffer.curKVBatchSize, len(sip.buffer.curKVBatch))
 	}
 
-	if sip.buffer.shouldFlushOnSize(sip.Ctx(), sv) {
+	shouldFlush, mustFlush := sip.buffer.shouldFlushOnKVSize(sip.Ctx(), sv)
+	if mustFlush {
+		sip.metrics.FlushOnSize.Inc(1)
 		if err := sip.flush(); err != nil {
+			return err
+		}
+	} else if shouldFlush {
+		sip.metrics.FlushOnSize.Inc(1)
+		if err := sip.maybeFlush(); err != nil {
 			return err
 		}
 	}
@@ -590,7 +592,19 @@ func (sip *onlineStreamIngestionProcessor) bufferCheckpoint(event partitionEvent
 	return nil
 }
 
+func (sip *onlineStreamIngestionProcessor) maybeFlush() error {
+	// TODO (ssd): This is racy but I didn't want to think about it hard yet.
+	if sip.flushInProgress.Load() {
+		return nil
+	}
+	if len(sip.buffer.curKVBatch) == 0 && sip.frontier.Frontier().LessEq(sip.lastFlushFrontier) {
+		return nil
+	}
+	return sip.flush()
+}
+
 func (sip *onlineStreamIngestionProcessor) flush() error {
+	log.Infof(sip.Ctx(), "flushing")
 	bufferToFlush := sip.buffer
 	sip.buffer = getBuffer()
 
@@ -601,13 +615,17 @@ func (sip *onlineStreamIngestionProcessor) flush() error {
 		}
 		return span.ContinueMatch
 	})
+	thisFlushFrontier := sip.frontier.Frontier()
 
+	flushRequestStartTime := timeutil.Now()
 	select {
 	case sip.flushCh <- flushableBuffer{
 		buffer:     bufferToFlush,
 		checkpoint: checkpoint,
 	}:
+		sip.lastFlushFrontier = thisFlushFrontier
 		sip.lastFlushTime = timeutil.Now()
+		sip.metrics.FlushWaitHistNanos.RecordValue(timeutil.Since(flushRequestStartTime).Nanoseconds())
 		return nil
 	case <-sip.stopCh:
 		// We return on stopCh here because our flush process
@@ -633,23 +651,35 @@ func (sip *onlineStreamIngestionProcessor) flushBuffer(
 	preFlushTime := timeutil.Now()
 	// TODO: The batching here in production would need to be much smarter. Namely, we don't want to include
 	// updates to the same key in the same batch. Also, it's possible batching will make things much worse in practice.
+	flushByteSize := 0
 	batchStart := 0
 	batchSize := int(flushBatchSize.Get(&sip.EvalCtx.Settings.SV))
 	batchEnd := min(batchStart+batchSize, len(b.buffer.curKVBatch))
 	for batchStart < len(b.buffer.curKVBatch) && batchEnd != 0 {
+		var batchByteSize int
+		preBatchTime := timeutil.Now()
 		if err := sip.flowCtx.Cfg.DB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 			txn.KV().SetOmitInRangefeeds()
-			return sip.flushBatch(ctx, txn, b.buffer.curKVBatch[batchStart:batchEnd])
+			var err error
+			batchByteSize, err = sip.flushBatch(ctx, txn, b.buffer.curKVBatch[batchStart:batchEnd])
+			return err
 		}); err != nil {
 			// TODO: We'll want to retry this to handle
 			return nil, err
 		}
-
+		flushByteSize += batchByteSize
 		batchStart = batchEnd
 		batchEnd = min(batchStart+batchSize, len(b.buffer.curKVBatch))
+
+		sip.metrics.BatchBytesHist.RecordValue(int64(batchByteSize))
+		sip.metrics.BatchHistNanos.RecordValue(timeutil.Since(preBatchTime).Nanoseconds())
 	}
-	// Update the flush metrics.
+
 	sip.metrics.FlushHistNanos.RecordValue(timeutil.Since(preFlushTime).Nanoseconds())
+	sip.metrics.FlushRowCountHist.RecordValue(int64(len(b.buffer.curKVBatch)))
+	sip.metrics.FlushBytesHist.RecordValue(int64(flushByteSize))
+
+	sip.metrics.IngestedLogicalBytes.Inc(int64(flushByteSize))
 	sip.metrics.CommitLatency.RecordValue(timeutil.Since(b.buffer.minTimestamp.GoTime()).Nanoseconds())
 	sip.metrics.Flushes.Inc(1)
 	sip.metrics.IngestedEvents.Inc(int64(len(b.buffer.curKVBatch)))
@@ -664,13 +694,14 @@ var flushBatchSize = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
 	"stream_replication.consumer.batch_size",
 	"da batch size",
-	100,
+	128,
 	settings.NonNegativeInt,
 )
 
 func (sip *onlineStreamIngestionProcessor) flushBatch(
 	ctx context.Context, txn isql.Txn, batch mvccKeyValues,
-) error {
+) (int, error) {
+	batchBytes := 0
 	for _, keyVal := range batch {
 		kv := roachpb.KeyValue{
 			Key: keyVal.Key.Key,
@@ -679,9 +710,10 @@ func (sip *onlineStreamIngestionProcessor) flushBatch(
 				Timestamp: keyVal.Key.Timestamp,
 			},
 		}
+		batchBytes += kv.Size()
 		row, err := sip.decoder.DecodeKV(ctx, kv, cdcevent.CurrentRow, keyVal.Key.Timestamp, false)
 		if err != nil {
-			return err
+			return batchBytes, err
 		}
 		if !row.IsDeleted() {
 			datums := make([]interface{}, 0, len(row.EncDatums()))
@@ -699,13 +731,13 @@ func (sip *onlineStreamIngestionProcessor) flushBatch(
 				return nil
 			})
 			if err != nil {
-				return err
+				return batchBytes, err
 			}
 			datums = append(datums, eval.TimestampToDecimalDatum(row.MvccTimestamp))
 			insertQuery := sip.queryBuffer.insertQueries[row.TableID]
 			if _, err := sip.ie.Exec(ctx, "replicated-insert", txn.KV(), insertQuery, datums...); err != nil {
 				log.Warningf(ctx, "replicated insert failed (query: %s): %s", insertQuery, err.Error())
-				return err
+				return batchBytes, err
 			}
 		} else {
 			datums := make([]interface{}, 0, len(row.TableDescriptor().TableDesc().PrimaryIndex.KeyColumnNames))
@@ -714,16 +746,16 @@ func (sip *onlineStreamIngestionProcessor) flushBatch(
 				return nil
 			})
 			if err != nil {
-				return err
+				return batchBytes, err
 			}
 			deleteQuery := sip.queryBuffer.deleteQueries[row.TableID]
 			if _, err := sip.ie.Exec(ctx, "replicated-delete", txn.KV(), deleteQuery, datums...); err != nil {
 				log.Warningf(ctx, "replicated delete failed (query: %s): %s", deleteQuery, err.Error())
-				return err
+				return batchBytes, err
 			}
 		}
 	}
-	return nil
+	return batchBytes, nil
 }
 
 // Last-write-wins INSERT and DELETE queries.

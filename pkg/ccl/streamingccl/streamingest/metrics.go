@@ -92,7 +92,6 @@ var (
 		Measurement: "Timestamp",
 		Unit:        metric.Unit_TIMESTAMP_NS,
 	}
-
 	metaReplicatedTimeSeconds = metric.Metadata{
 		Name:        "physical_replication.replicated_time_seconds",
 		Help:        "The replicated time of the physical replication stream in seconds since the unix epoch.",
@@ -105,6 +104,50 @@ var (
 		Measurement: "Job Updates",
 		Unit:        metric.Unit_COUNT,
 	}
+
+	metaReplicationFlushRowCountHist = metric.Metadata{
+		Name:        "physical_replication.flush_row_count",
+		Help:        "Number of rows in a given flush",
+		Measurement: "Rows",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaReplicationFlushBytesHist = metric.Metadata{
+		Name:        "physical_replication.flush_bytes",
+		Help:        "Number of bytes in a given flush",
+		Measurement: "Logical bytes",
+		Unit:        metric.Unit_BYTES,
+	}
+	metaReplicationFlushWaitHistNanos = metric.Metadata{
+		Name:        "physical_replication.flush_wait_nanos",
+		Help:        "Time spenting waiting for an in-progress flush",
+		Measurement: "Nanoseconds",
+		Unit:        metric.Unit_NANOSECONDS,
+	}
+	metaReplicationFlushOnSize = metric.Metadata{
+		Name:        "physical_replication.flush_on_size",
+		Help:        "Number of flushes caused by hitting the buffer size limit",
+		Measurement: "Count",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaReplicationFlushOnTime = metric.Metadata{
+		Name:        "physical_replication.flush_on_time",
+		Help:        "Number of flushes caused by hitting the time limit",
+		Measurement: "Count",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaReplicationBatchBytes = metric.Metadata{
+		Name:        "physical_replication.batch_bytes",
+		Help:        "Number of bytes in a given batch",
+		Measurement: "Bytes",
+		Unit:        metric.Unit_BYTES,
+	}
+	metaReplicationBatchHistNanos = metric.Metadata{
+		Name:        "physical_replication.flush_wait_nanos",
+		Help:        "Time spent flushing a batch",
+		Measurement: "Nanoseconds",
+		Unit:        metric.Unit_NANOSECONDS,
+	}
+
 	// This metric would be 0 until cutover begins, and then it will be updated to
 	// the total number of ranges that need to be reverted, and then gradually go
 	// down to 0 again. NB: that the number of ranges is the total number of
@@ -133,7 +176,14 @@ type Metrics struct {
 	JobProgressUpdates         *metric.Counter
 	ResolvedEvents             *metric.Counter
 	ReplanCount                *metric.Counter
+	FlushRowCountHist          metric.IHistogram
+	FlushBytesHist             metric.IHistogram
 	FlushHistNanos             metric.IHistogram
+	FlushWaitHistNanos         metric.IHistogram
+	FlushOnSize                *metric.Counter
+	FlushOnTime                *metric.Counter
+	BatchBytesHist             metric.IHistogram
+	BatchHistNanos             metric.IHistogram
 	CommitLatency              metric.IHistogram
 	AdmitLatency               metric.IHistogram
 	RunningCount               *metric.Gauge
@@ -172,6 +222,43 @@ func MakeMetrics(histogramWindow time.Duration) metric.Struct {
 		}),
 		AdmitLatency: metric.NewHistogram(metric.HistogramOptions{
 			Metadata:     metaReplicationAdmitLatency,
+			Duration:     histogramWindow,
+			BucketConfig: metric.BatchProcessLatencyBuckets,
+			MaxVal:       streamingAdmitLatencyMaxValue.Nanoseconds(),
+			SigFigs:      1,
+		}),
+		FlushRowCountHist: metric.NewHistogram(metric.HistogramOptions{
+			Metadata:     metaReplicationFlushRowCountHist,
+			Duration:     histogramWindow,
+			BucketConfig: metric.BatchProcessLatencyBuckets,
+			MaxVal:       streamingAdmitLatencyMaxValue.Nanoseconds(),
+			SigFigs:      1,
+		}),
+		FlushBytesHist: metric.NewHistogram(metric.HistogramOptions{
+			Metadata:     metaReplicationFlushBytesHist,
+			Duration:     histogramWindow,
+			BucketConfig: metric.BatchProcessLatencyBuckets,
+			MaxVal:       streamingAdmitLatencyMaxValue.Nanoseconds(),
+			SigFigs:      1,
+		}),
+		FlushWaitHistNanos: metric.NewHistogram(metric.HistogramOptions{
+			Metadata:     metaReplicationFlushWaitHistNanos,
+			Duration:     histogramWindow,
+			BucketConfig: metric.BatchProcessLatencyBuckets,
+			MaxVal:       streamingAdmitLatencyMaxValue.Nanoseconds(),
+			SigFigs:      1,
+		}),
+		FlushOnSize: metric.NewCounter(metaReplicationFlushOnSize),
+		FlushOnTime: metric.NewCounter(metaReplicationFlushOnTime),
+		BatchBytesHist: metric.NewHistogram(metric.HistogramOptions{
+			Metadata:     metaReplicationBatchBytes,
+			Duration:     histogramWindow,
+			BucketConfig: metric.BatchProcessLatencyBuckets,
+			MaxVal:       streamingAdmitLatencyMaxValue.Nanoseconds(),
+			SigFigs:      1,
+		}),
+		BatchHistNanos: metric.NewHistogram(metric.HistogramOptions{
+			Metadata:     metaReplicationBatchHistNanos,
 			Duration:     histogramWindow,
 			BucketConfig: metric.BatchProcessLatencyBuckets,
 			MaxVal:       streamingAdmitLatencyMaxValue.Nanoseconds(),

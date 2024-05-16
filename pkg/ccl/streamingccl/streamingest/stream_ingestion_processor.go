@@ -66,6 +66,13 @@ var maxKVBufferSize = settings.RegisterByteSizeSetting(
 	settings.WithName("physical_replication.consumer.kv_buffer_size"),
 )
 
+var targetKVBufferLen = settings.RegisterIntSetting(
+	settings.ApplicationLevel,
+	"physical_replication.consumer.kv_buffer_target_len",
+	"the maximum size of the KV buffer allowed before a flush",
+	512,
+)
+
 var maxRangeKeyBufferSize = settings.RegisterByteSizeSetting(
 	settings.ApplicationLevel,
 	"bulkio.stream_ingestion.range_key_buffer_size",
@@ -155,6 +162,20 @@ func (b *streamIngestionBuffer) addRangeKey(rangeKV storage.MVCCRangeKeyValue) {
 	if rangeKV.RangeKey.Timestamp.Less(b.minTimestamp) {
 		b.minTimestamp = rangeKV.RangeKey.Timestamp
 	}
+}
+
+func (b *streamIngestionBuffer) shouldFlushOnKVSize(
+	ctx context.Context, sv *settings.Values,
+) (bool, bool) {
+	kvBufMax := int(maxKVBufferSize.Get(sv))
+	kvBufLenTarget := int(targetKVBufferLen.Get(sv))
+	if kvBufMax > 0 && b.curKVBatchSize >= kvBufMax {
+		log.VInfof(ctx, 2, "flushing because current KV batch based on size %d >= %d", b.curKVBatchSize, kvBufMax)
+		return true, true
+	} else if len(b.curKVBatch) >= kvBufLenTarget {
+		return true, false
+	}
+	return false, false
 }
 
 func (b *streamIngestionBuffer) shouldFlushOnSize(ctx context.Context, sv *settings.Values) bool {
