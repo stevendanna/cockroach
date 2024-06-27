@@ -295,6 +295,8 @@ type replicateKV struct {
 	// x~Uniform[1,maxBlockSize].
 	maxBlockBytes int
 
+	concurrency int
+
 	// maxQPS caps the queries per second sent to the source cluster after initialization.
 	maxQPS int
 
@@ -316,6 +318,7 @@ func (kv replicateKV) sourceInitCmd(tenantName string, nodes option.NodeListOpti
 		MaybeFlag(kv.initRows > 0, "max-block-bytes", kv.maxBlockBytes).
 		MaybeFlag(kv.initWithSplitAndScatter, "splits", 100).
 		MaybeOption(kv.initWithSplitAndScatter, "scatter").
+		MaybeFlag(kv.concurrency > 0, "concurrency", kv.concurrency).
 		Arg("{pgurl%s:%s}", nodes, tenantName)
 	return cmd.String()
 }

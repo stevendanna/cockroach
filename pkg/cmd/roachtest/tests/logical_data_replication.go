@@ -47,6 +47,7 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 			run: func(ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup) {
 				kvWorkload := replicateKV{
 					readPercent:             0,
+					concurrency:             64,
 					debugRunDuration:        15 * time.Minute,
 					maxBlockBytes:           1024,
 					initWithSplitAndScatter: true}
