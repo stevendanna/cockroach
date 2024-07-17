@@ -144,6 +144,57 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 				require.Equal(t, leftCount, rightCount)
 			},
 		},
+		{
+			name: "ldr/initial-scan",
+			clusterSpec: multiClusterSpec{
+				leftNodes:  4,
+				rightNodes: 4,
+				clusterOpts: []spec.Option{
+					spec.CPU(8),
+					spec.VolumeSize(1667),
+				},
+			},
+			run: func(ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup) {
+				kvWorkload := replicateKV{
+					readPercent:             0,
+					maxBlockBytes:           1024,
+					initWithSplitAndScatter: true}
+				c.Run(ctx,
+					option.WithNodes(setup.workloadNode),
+					kvWorkload.sourceInitCmd("system", setup.right.nodes))
+
+				kvWorkload.initRows = 50_000_000
+				c.Run(ctx,
+					option.WithNodes(setup.workloadNode),
+					kvWorkload.sourceInitCmd("system", setup.left.nodes))
+
+				// Setup LDR-specific columns
+				setup.left.sysSQL.Exec(t, "ALTER TABLE kv.kv ADD COLUMN crdb_replication_origin_timestamp DECIMAL NOT VISIBLE DEFAULT NULL ON UPDATE NULL")
+				setup.right.sysSQL.Exec(t, "ALTER TABLE kv.kv ADD COLUMN crdb_replication_origin_timestamp DECIMAL NOT VISIBLE DEFAULT NULL ON UPDATE NULL")
+
+				startLDR := func(targetDB *sqlutils.SQLRunner, sourceURL string) int {
+					targetDB.Exec(t, "USE kv")
+					r := targetDB.QueryRow(t,
+						"CREATE LOGICAL REPLICATION STREAM FROM TABLE kv ON $1 INTO TABLE kv",
+						sourceURL,
+					)
+					var jobID int
+					r.Scan(&jobID)
+					return jobID
+				}
+
+				leftJobID := startLDR(setup.left.sysSQL, setup.right.PgURLForDatabase("kv"))
+				rightJobID := startLDR(setup.right.sysSQL, setup.left.PgURLForDatabase("kv"))
+
+				waitForReplicatedTime(t, leftJobID, setup.left.db, getLogicalDataReplicationJobInfo, 2*time.Minute)
+				waitForReplicatedTime(t, rightJobID, setup.right.db, getLogicalDataReplicationJobInfo, 2*time.Minute)
+
+				var leftCount, rightCount int
+				setup.left.sysSQL.QueryRow(t, "SELECT count(1) FROM kv.kv").Scan(&leftCount)
+				setup.right.sysSQL.QueryRow(t, "SELECT count(1) FROM kv.kv").Scan(&rightCount)
+				require.Equal(t, leftCount, rightCount)
+			},
+		},
 	} {
 		r.Add(registry.TestSpec{
 			Name:             sp.name,
