@@ -35,8 +35,7 @@ func (p *Pacer) Pace(ctx context.Context) error {
 	}
 
 	if overLimit, _ := p.cur.OverLimit(); overLimit {
-		p.wq.AdmittedWorkDone(p.cur)
-		p.cur = nil
+		p.Done()
 	}
 
 	if p.cur == nil {
@@ -47,6 +46,11 @@ func (p *Pacer) Pace(ctx context.Context) error {
 		p.cur = handle
 	}
 	return nil
+}
+
+func (p *Pacer) Done() {
+	p.wq.AdmittedWorkDone(p.cur)
+	p.cur = nil
 }
 
 // Close is part of the Pacer interface.

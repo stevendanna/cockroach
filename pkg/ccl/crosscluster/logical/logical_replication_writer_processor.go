@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
@@ -35,12 +36,16 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/admission"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
+	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -51,13 +56,117 @@ var logicalReplicationWriterResultType = []*types.T{
 	types.Bytes, // jobspb.ResolvedSpans
 }
 
-var flushBatchSize = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"logical_replication.consumer.batch_size",
-	"the number of row updates to attempt in a single KV transaction",
-	32,
-	settings.NonNegativeInt,
+// TODO(ssd): All of these should really be per-job options.
+var (
+	flushBatchSize = settings.RegisterIntSetting(
+		settings.ApplicationLevel,
+		"logical_replication.consumer.batch_size",
+		"the number of row updates to attempt in a single KV transaction",
+		32,
+		settings.NonNegativeInt,
+	)
+
+	paceEventProcessing = settings.RegisterBoolSetting(
+		settings.ApplicationLevel,
+		"logical_replication.consumer.elastic_control.enabled",
+		"determines whether event processing integrates with elastic CPU control",
+		false,
+	)
+
+	batchWorkers = settings.RegisterIntSetting(
+		settings.ApplicationLevel,
+		"logical_replication.consumer.worker_count",
+		"number of workers to use in ingestion processor",
+		32,
+		settings.NonNegativeInt)
+
+	rateLimit = settings.RegisterIntSetting(
+		settings.ApplicationLevel,
+		"logical_replication.consumer.event_per_second_limit",
+		"limit on the number of events processed per second (0 for no limit)",
+		0,
+		settings.NonNegativeInt)
 )
+
+var rateLimitersByJob = rateLimiterRegistry{
+	qps: make(map[jobspb.JobID]*refCountedRateLimiter),
+}
+
+func acquireRateLimiterForJob(
+	ctx context.Context, sv *settings.Values, jobID jobspb.JobID,
+) *quotapool.RateLimiter {
+	return rateLimitersByJob.Get(ctx, sv, jobID)
+}
+
+func releaseRateLimiterForJob(jobID jobspb.JobID) {
+	rateLimitersByJob.Release(jobID)
+}
+
+type refCountedRateLimiter struct {
+	refCount atomic.Int32
+	rl       *quotapool.RateLimiter
+}
+
+type rateLimiterRegistry struct {
+	syncutil.Mutex
+	namePrefix string
+	qps        map[jobspb.JobID]*refCountedRateLimiter
+}
+
+func (r *rateLimiterRegistry) Get(
+	ctx context.Context, sv *settings.Values, jobID jobspb.JobID,
+) *quotapool.RateLimiter {
+	r.Lock()
+	defer r.Unlock()
+
+	if rl, ok := r.qps[jobID]; ok {
+		rl.refCount.Add(1)
+		return rl.rl
+	} else {
+		return r.addForJobLocked(ctx, sv, jobID)
+	}
+}
+
+func (r *rateLimiterRegistry) addForJobLocked(
+	ctx context.Context, sv *settings.Values, jobID jobspb.JobID,
+) *quotapool.RateLimiter {
+	getRate := func() quotapool.Limit {
+		rate := rateLimit.Get(sv)
+		if rate == 0 {
+			return quotapool.Inf()
+		}
+		return quotapool.Limit(rate)
+	}
+	getBurst := func() int64 {
+		return rateLimit.Get(sv)
+	}
+	rateLimiter := quotapool.NewRateLimiter(
+		fmt.Sprintf("%s-%d", r.namePrefix, jobID),
+		getRate(),
+		getBurst())
+	rateLimit.SetOnChange(sv, func(ctx context.Context) {
+		rateLimiter.UpdateLimit(
+			getRate(),
+			getBurst())
+	})
+
+	r.qps[jobID] = &refCountedRateLimiter{rl: rateLimiter}
+	r.qps[jobID].refCount.Add(1)
+	return rateLimiter
+}
+
+func (r *rateLimiterRegistry) Release(jobID jobspb.JobID) {
+	r.Lock()
+	defer r.Unlock()
+
+	if rl, ok := r.qps[jobID]; ok {
+		if rl.refCount.Add(-1) == 0 {
+			delete(r.qps, jobID)
+		}
+	}
+}
+
+// var quotaPoolRegistry sync.Map
 
 // logicalReplicationWriterProcessor consumes a cross-cluster replication stream
 // by decoding kvs in it to logical changes and applying them by executing DMLs.
@@ -143,7 +252,7 @@ func newLogicalReplicationWriterProcessor(
 			table:    md.DestinationTableName,
 		}
 	}
-	bhPool := make([]BatchHandler, maxWriterWorkers)
+	bhPool := make([]BatchHandler, batchWorkers.Get(&flowCtx.Cfg.Settings.SV))
 	for i := range bhPool {
 		sqlRP, err := makeSQLProcessor(
 			ctx, flowCtx.Cfg.Settings, tableConfigs,
@@ -164,11 +273,29 @@ func newLogicalReplicationWriterProcessor(
 		} else {
 			rp = sqlRP
 		}
+
+		var pacer *admission.Pacer = nil
+		tenantID, ok := roachpb.ClientTenantFromContext(ctx)
+		if !ok {
+			tenantID = roachpb.SystemTenantID
+		}
+		pacer = flowCtx.Cfg.AdmissionPacerFactory.NewPacer(
+			10*time.Millisecond,
+			admission.WorkInfo{
+				TenantID:        tenantID,
+				Priority:        admissionpb.BulkNormalPri,
+				CreateTime:      timeutil.Now().UnixNano(),
+				BypassAdmission: false,
+			})
+
 		bhPool[i] = &txnBatch{
-			db:       flowCtx.Cfg.DB,
-			rp:       rp,
-			settings: flowCtx.Cfg.Settings,
-			sd:       sql.NewInternalSessionData(ctx, flowCtx.Cfg.Settings, "" /* opName */),
+			db:           flowCtx.Cfg.DB,
+			rp:           rp,
+			settings:     flowCtx.Cfg.Settings,
+			sd:           sql.NewInternalSessionData(ctx, flowCtx.Cfg.Settings, "" /* opName */),
+			limiter:      acquireRateLimiterForJob(ctx, &flowCtx.Cfg.Settings.SV, jobspb.JobID(spec.JobID)),
+			pacer:        pacer,
+			paceLogEvery: log.Every(100 * time.Millisecond),
 		}
 	}
 
@@ -389,7 +516,7 @@ func (lrw *logicalReplicationWriterProcessor) close() {
 	if lrw.Closed {
 		return
 	}
-
+	releaseRateLimiterForJob(jobspb.JobID(lrw.spec.JobID))
 	for _, b := range lrw.bh {
 		b.Close(lrw.Ctx())
 	}
@@ -419,7 +546,6 @@ func (lrw *logicalReplicationWriterProcessor) close() {
 	for _, i := range lrw.purgatory.levels {
 		lrw.purgatory.eventsGauge.Dec(int64(len(i.events)))
 	}
-
 	lrw.InternalClose()
 }
 
@@ -441,6 +567,7 @@ func (lrw *logicalReplicationWriterProcessor) consumeEvents(ctx context.Context)
 	for event := range lrw.subscription.Events() {
 		lrw.debug.RecordRecv(timeutil.Since(before))
 		before = timeutil.Now()
+
 		if err := lrw.handleEvent(ctx, event); err != nil {
 			return err
 		}
@@ -564,8 +691,6 @@ func filterRemaining(kvs []streampb.StreamEvent_KV) []streampb.StreamEvent_KV {
 	}
 	return remaining[:j]
 }
-
-const maxWriterWorkers = 32
 
 // flushBuffer processes some or all of the events in the passed buffer, and
 // zeros out each event in the passed buffer for which it successfully completed
@@ -920,6 +1045,10 @@ type txnBatch struct {
 	rp       RowProcessor
 	settings *cluster.Settings
 	sd       *sessiondata.SessionData
+
+	limiter      *quotapool.RateLimiter
+	pacer        *admission.Pacer
+	paceLogEvery log.EveryN
 }
 
 var useImplicitTxns = settings.RegisterBoolSetting(
@@ -934,9 +1063,25 @@ func (t *txnBatch) HandleBatch(
 ) (batchStats, error) {
 	ctx, sp := tracing.ChildSpan(ctx, "txnBatch.HandleBatch")
 	defer sp.Finish()
+	defer t.pacer.Done()
+
+	if paceEventProcessing.Get(&t.settings.SV) {
+		if err := t.pacer.Pace(ctx); err != nil {
+			// We're unable to pace things automatically -- shout loudly
+			// semi-infrequently but don't fail the rangefeed itself.
+			if t.paceLogEvery.ShouldLog() {
+				log.Errorf(ctx, "automatic pacing: %v", err)
+			}
+		}
+	}
+
+	tokens, err := t.limiter.Acquire(ctx, int64(len(batch)))
+	if err != nil {
+		return batchStats{}, err
+	}
+	defer tokens.Consume()
 
 	stats := batchStats{}
-	var err error
 	if len(batch) == 1 {
 		s, err := t.rp.ProcessRow(ctx, nil /* txn */, batch[0].KeyValue, batch[0].PrevValue)
 		if err != nil {
@@ -968,6 +1113,7 @@ func (t *txnBatch) SetSyntheticFailurePercent(rate uint32) {
 
 func (t *txnBatch) Close(ctx context.Context) {
 	t.rp.Close(ctx)
+	t.pacer.Close()
 }
 
 func init() {
