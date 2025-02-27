@@ -223,7 +223,7 @@ func divideAllSpansOnRangeBoundaries(
 		if err != nil {
 			return err
 		}
-		if err := divideSpanOnRangeBoundaries(ctx, ds, rs, stp.StartAfter, onRange, parentRangeFeedMetadata{}); err != nil {
+		if err := divideSpanOnRangeBoundaries(ctx, ds, rs, stp.StartAfter, onRange, parentRangeFeedMetadata{}, &ds.metrics.DistSenderRangeFeedMetrics); err != nil {
 			return err
 		}
 	}
@@ -428,29 +428,59 @@ func divideSpanOnRangeBoundaries(
 	startAfter hlc.Timestamp,
 	onRange onRangeFn,
 	parentMetadata parentRangeFeedMetadata,
+	metrics *DistSenderRangeFeedMetrics,
 ) error {
 	// As RangeIterator iterates, it can return overlapping descriptors (and
 	// during splits, this happens frequently), but divideAndSendRangeFeedToRanges
 	// intends to split up the input into non-overlapping spans aligned to range
 	// boundaries. So, as we go, keep track of the remaining uncovered part of
 	// `rs` in `nextRS`.
-	nextRS := rs
-	ri := MakeRangeIterator(ds)
-	for ri.Seek(ctx, nextRS.Key, Ascending); ri.Valid(); ri.Next(ctx) {
-		desc := ri.Desc()
-		partialRS, err := nextRS.Intersect(desc.RSpan())
-		if err != nil {
-			return err
+	forEachRange := func(f onRangeFn) error {
+		nextRS := rs
+		ri := MakeRangeIterator(ds)
+		for ri.Seek(ctx, nextRS.Key, Ascending); ri.Valid(); ri.Next(ctx) {
+			desc := ri.Desc()
+			partialRS, err := nextRS.Intersect(desc.RSpan())
+			if err != nil {
+				return err
+			}
+			nextRS.Key = partialRS.EndKey
+			if err := onRange(ctx, partialRS, startAfter, ri.Token(), parentMetadata); err != nil {
+				return err
+			}
+			if !ri.NeedAnother(nextRS) {
+				break
+			}
 		}
-		nextRS.Key = partialRS.EndKey
-		if err := onRange(ctx, partialRS, startAfter, ri.Token(), parentMetadata); err != nil {
-			return err
-		}
-		if !ri.NeedAnother(nextRS) {
-			break
-		}
+		return ri.Error()
 	}
-	return ri.Error()
+
+	// First, count all of the ranges to get some visibility on how many ranges
+	// are waiting to even start.
+	rangeCount := int64(0)
+	count := func(context.Context, roachpb.RSpan, hlc.Timestamp, rangecache.EvictionToken, parentRangeFeedMetadata) error {
+		rangeCount++
+		return nil
+	}
+	if err := forEachRange(count); err != nil {
+		return err
+	}
+	metrics.RangefeedCatchupRangesPending.Inc(rangeCount)
+	// In case the second iteration gets a different view of the ranges, we want
+	// to decrement this back to zero when we are done with this function.
+	defer func() { metrics.RangefeedCatchupRangesPending.Dec(rangeCount) }()
+
+	// Now do it for real.
+	return forEachRange(
+		func(ctx context.Context, r roachpb.RSpan, ts hlc.Timestamp, et rangecache.EvictionToken, md parentRangeFeedMetadata) error {
+			// Decrement our metric. If we happened to see more ranges on this
+			// iteration we don't want to over-decrement.
+			if rangeCount > 0 {
+				rangeCount--
+				metrics.RangefeedCatchupRangesPending.Dec(1)
+			}
+			return onRange(ctx, r, ts, et, md)
+		})
 }
 
 // newActiveRangeFeed registers active rangefeed with rangefeedRegistry.

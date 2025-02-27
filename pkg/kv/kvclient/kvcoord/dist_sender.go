@@ -257,6 +257,12 @@ This counts the number of ranges with an active rangefeed that are performing ca
 		Measurement: "Ranges",
 		Unit:        metric.Unit_COUNT,
 	}
+	metaDistSenderRangefeedCatchupRangesPending = metric.Metadata{
+		Name:        "distsender.rangefeed.catchup_ranges_pending",
+		Help:        `Number of ranges that need to be started but have not yet been started`,
+		Measurement: "Ranges",
+		Unit:        metric.Unit_COUNT,
+	}
 	metaDistSenderRangefeedLocalRanges = metric.Metadata{
 		Name:        "distsender.rangefeed.local_ranges",
 		Help:        `Number of ranges connected to local node.`,
@@ -466,6 +472,7 @@ type DistSenderRangeFeedMetrics struct {
 	RangefeedRanges                         *metric.Gauge
 	RangefeedCatchupRanges                  *metric.Gauge
 	RangefeedLocalRanges                    *metric.Gauge
+	RangefeedCatchupRangesPending           *metric.Gauge
 	RangefeedCatchupRangesWaitingClientSide *metric.Gauge
 	Errors                                  rangeFeedErrorCounters
 }
@@ -597,6 +604,7 @@ func makeDistSenderRangeFeedMetrics() DistSenderRangeFeedMetrics {
 		RangefeedCatchupRanges:                  metric.NewGauge(metaDistSenderRangefeedCatchupRanges),
 		RangefeedLocalRanges:                    metric.NewGauge(metaDistSenderRangefeedLocalRanges),
 		RangefeedCatchupRangesWaitingClientSide: metric.NewGauge(metaDistSenderRangefeedCatchupRangesWaitingClientSide),
+		RangefeedCatchupRangesPending:           metric.NewGauge(metaDistSenderRangefeedCatchupRangesPending),
 		Errors:                                  makeRangeFeedErrorCounters(),
 	}
 }
