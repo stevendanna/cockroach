@@ -184,14 +184,20 @@ func newTestCluster(
 // TODO(nvanbenschoten): add a variant of this driver which bypasses the gRPC
 // local fast-path optimization.
 type sysbenchSQL struct {
-	ctx     context.Context
-	stopper *stop.Stopper
-	pgURL   url.URL
+	ctx          context.Context
+	stopper      *stop.Stopper
+	pgURL        url.URL
+	bufferWrites bool
 }
 
-func newSysbenchSQL(nodes int, localRPCFastPath bool) sysbenchDriverConstructor {
+type sysbenchOptions struct {
+	rpcFastPath    bool
+	bufferedWrites bool
+}
+
+func newSysbenchSQL(nodes int, opts sysbenchOptions) sysbenchDriverConstructor {
 	return func(ctx context.Context, b *testing.B) (sysbenchDriver, func()) {
-		tc := newTestCluster(b, nodes, localRPCFastPath)
+		tc := newTestCluster(b, nodes, opts.rpcFastPath)
 		for i := 0; i < nodes; i++ {
 			tc.Server(i).SQLServer().(*sql.Server).GetExecutorConfig().LicenseEnforcer.Disable(ctx)
 		}
@@ -202,9 +208,10 @@ func newSysbenchSQL(nodes int, localRPCFastPath bool) sysbenchDriverConstructor 
 			tc.Stopper().Stop(ctx)
 		}
 		return &sysbenchSQL{
-			ctx:     ctx,
-			stopper: tc.Stopper(),
-			pgURL:   pgURL,
+			ctx:          ctx,
+			stopper:      tc.Stopper(),
+			pgURL:        pgURL,
+			bufferWrites: opts.bufferedWrites,
 		}, cleanup
 	}
 }
@@ -347,6 +354,9 @@ func (s *sysbenchSQL) prepSchema(rng *rand.Rand) {
 }
 
 func (s *sysbenchSQLClient) prepConn() {
+	if s.bufferWrites {
+		try(s.conn.Exec(s.ctx, "SET kv_transaction_buffered_writes_enabled=true"))
+	}
 	s.stmt.begin = try(s.conn.Prepare(s.ctx, "begin", sysbenchStmtBegin)).Name
 	s.stmt.commit = try(s.conn.Prepare(s.ctx, "commit", sysbenchStmtCommit)).Name
 	s.stmt.rollback = try(s.conn.Prepare(s.ctx, "rollback", sysbenchStmtRollback)).Name
@@ -771,13 +781,13 @@ func sysbenchOltpWriteOnly(s sysbenchClient, rng *rand.Rand) error {
 		return err
 	}
 	if err := sysbenchExecuteIndexUpdates(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "index-updates")
 	}
 	if err := sysbenchExecuteNonIndexUpdates(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "non-index-updates")
 	}
 	if err := sysbenchExecuteDeleteInserts(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "delete-inserts")
 	}
 	return s.Commit()
 }
@@ -788,28 +798,28 @@ func sysbenchOltpReadWrite(s sysbenchClient, rng *rand.Rand) error {
 		return err
 	}
 	if err := sysbenchExecutePointSelects(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "point-selects")
 	}
 	if err := sysbenchExecuteSimpleRanges(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "simple-ranges")
 	}
 	if err := sysbenchExecuteSumRanges(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "sum-ranges")
 	}
 	if err := sysbenchExecuteOrderRanges(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "order-ranges")
 	}
 	if err := sysbenchExecuteDistinctRanges(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "distinct-ranges")
 	}
 	if err := sysbenchExecuteIndexUpdates(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "index-updates")
 	}
 	if err := sysbenchExecuteNonIndexUpdates(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "non-index-updates")
 	}
 	if err := sysbenchExecuteDeleteInserts(s, rng); err != nil {
-		return err
+		return errors.Wrap(err, "delete-inserts")
 	}
 	return s.Commit()
 }
@@ -843,9 +853,10 @@ func benchmarkSysbenchImpl(b *testing.B, parallel bool) {
 		name          string
 		constructorFn sysbenchDriverConstructor
 	}{
-		{"SQL/1node_local", newSysbenchSQL(1, true)},
-		{"SQL/1node_remote", newSysbenchSQL(1, false)},
-		{"SQL/3node", newSysbenchSQL(3, false)},
+		{"SQL/1node_local", newSysbenchSQL(1, sysbenchOptions{rpcFastPath: true})},
+		{"SQL/1node_remote", newSysbenchSQL(1, sysbenchOptions{rpcFastPath: false})},
+		{"SQL/3node", newSysbenchSQL(3, sysbenchOptions{rpcFastPath: false})},
+		{"SQL/3node_buffered", newSysbenchSQL(3, sysbenchOptions{rpcFastPath: false, bufferedWrites: true})},
 		{"KV/1node_local", newSysbenchKV(1, true)},
 		{"KV/1node_remote", newSysbenchKV(1, false)},
 		{"KV/3node", newSysbenchKV(3, false)},
