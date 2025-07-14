@@ -151,7 +151,7 @@ func (b *bank) Tables() []workload.Table {
 				payloadCol.Reset()
 				for rowIdx := rowBegin; rowIdx < rowEnd; rowIdx++ {
 					var payload []byte
-					*a, payload = a.Alloc(b.payloadBytes)
+					*a, payload = a.Alloc(b.payloadBytes, 0 /* extraCap */)
 					randStringLetters(rng, payload)
 
 					rowOffset := rowIdx - rowBegin

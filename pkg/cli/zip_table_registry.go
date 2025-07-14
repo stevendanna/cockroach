@@ -272,19 +272,6 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
 		},
 	},
-	`"".crdb_internal.create_trigger_statements`: {
-		nonSensitiveCols: NonSensitiveColumns{
-			"database_id",
-			"database_name",
-			"schema_id",
-			"schema_name",
-			"table_id",
-			"table_name",
-			"trigger_id",
-			"trigger_name",
-			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
-		},
-	},
 	`"".crdb_internal.create_procedure_statements`: {
 		nonSensitiveCols: NonSensitiveColumns{
 			"database_id",
@@ -320,7 +307,7 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"is_virtual",
 			"is_temporary",
 			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
-			"crdb_internal.hide_sql_constants(fk_statements) as fk_statements",
+			"crdb_internal.hide_sql_constants(alter_statements) as alter_statements",
 			"crdb_internal.hide_sql_constants(create_nofks) as create_nofks",
 			"crdb_internal.redact(create_redactable) as create_redactable",
 		},
@@ -382,21 +369,25 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 	},
 	// `statement` column can contain customer URI params such as
 	// AWS_ACCESS_KEY_ID.
-	// `error` column contains error text that may contain sensitive data.
+	// `error`, `execution_errors`, and `execution_events` columns contain
+	// error text that may contain sensitive data.
 	"crdb_internal.jobs": {
 		nonSensitiveCols: NonSensitiveColumns{
 			"job_id",
 			"job_type",
 			"description",
 			"user_name",
+			"descriptor_ids",
 			"status",
 			"running_status",
 			"created",
+			"started",
 			"finished",
 			"modified",
 			"fraction_completed",
 			"high_water_timestamp",
 			"coordinator_id",
+			"trace_id",
 		},
 	},
 	"crdb_internal.system_jobs": {

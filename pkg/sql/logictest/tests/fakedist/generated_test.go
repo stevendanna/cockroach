@@ -577,13 +577,6 @@ func TestLogic_dependencies(
 	runLogicTest(t, "dependencies")
 }
 
-func TestLogic_direct_columnar_scans(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "direct_columnar_scans")
-}
-
 func TestLogic_discard(
 	t *testing.T,
 ) {
@@ -1037,13 +1030,6 @@ func TestLogic_insert(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "insert")
-}
-
-func TestLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
 }
 
 func TestLogic_int_size(
@@ -1928,13 +1914,6 @@ func TestLogic_show_create(
 	runLogicTest(t, "show_create")
 }
 
-func TestLogic_show_create_all_routines(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_routines")
-}
-
 func TestLogic_show_create_all_schemas(
 	t *testing.T,
 ) {
@@ -1954,13 +1933,6 @@ func TestLogic_show_create_all_tables_builtin(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "show_create_all_tables_builtin")
-}
-
-func TestLogic_show_create_all_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_triggers")
 }
 
 func TestLogic_show_create_all_types(
@@ -2362,25 +2334,18 @@ func TestLogic_udf_fk(
 	runLogicTest(t, "udf_fk")
 }
 
+func TestLogic_udf_in_column_defaults(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runLogicTest(t, "udf_in_column_defaults")
+}
+
 func TestLogic_udf_in_constraints(
 	t *testing.T,
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "udf_in_constraints")
-}
-
-func TestLogic_udf_in_index(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "udf_in_index")
-}
-
-func TestLogic_udf_in_table(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "udf_in_table")
 }
 
 func TestLogic_udf_insert(

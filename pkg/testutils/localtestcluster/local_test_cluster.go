@@ -208,13 +208,10 @@ func (ltc *LocalTestCluster) Start(t testing.TB, initFactory InitFactoryFn) {
 		livenessInterval, heartbeatInterval := cfg.StoreLivenessDurations()
 		supportGracePeriod := cfg.RPCContext.StoreLivenessWithdrawalGracePeriod()
 		options := storeliveness.NewOptions(livenessInterval, heartbeatInterval, supportGracePeriod)
-		transport, err := storeliveness.NewTransport(
+		transport := storeliveness.NewTransport(
 			cfg.AmbientCtx, ltc.stopper, ltc.Clock,
-			nil /* dialer */, nil /* grpcServer */, nil /* drpcServer */, nil, /* knobs */
+			nil /* dialer */, nil /* grpcServer */, nil, /* knobs */
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
 		knobs := cfg.TestingKnobs.StoreLivenessKnobs
 		cfg.StoreLiveness = storeliveness.NewNodeContainer(ltc.stopper, options, transport, knobs)
 	}

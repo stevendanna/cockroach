@@ -1242,7 +1242,6 @@ func TestLint(t *testing.T) {
 			":!rpc/context.go",
 			":!rpc/nodedialer/nodedialer_test.go",
 			":!util/grpcutil/grpc_util_test.go",
-			":!util/log/otlp_client_test.go",
 			":!server/server_obs_service.go",
 			":!server/testserver.go",
 			":!util/tracing/*_test.go",
@@ -1395,7 +1394,6 @@ func TestLint(t *testing.T) {
 			"--",
 			"*.go",
 			":!testutils/skip/skip.go",
-			":!util/randutil/rand.go",
 			":!cmd/roachtest/*.go",
 			":!acceptance/compose/*.go",
 			":!util/syncutil/*.go",
@@ -2856,8 +2854,7 @@ func TestLint(t *testing.T) {
 		}
 	})
 
-	// Test forbidden roachtest imports. The mixedversion and task packages are
-	// allowed because they are part of the roachtest framework.
+	// Test forbidden roachtest imports.
 	t.Run("TestRoachtestForbiddenImports", func(t *testing.T) {
 		t.Parallel()
 
@@ -2893,8 +2890,7 @@ func TestLint(t *testing.T) {
 			filter,
 			stream.Sort(),
 			stream.Uniq(),
-			stream.Grep(`cockroach/pkg/cmd/roachtest/.*: `),
-			stream.GrepNot(`cockroach/pkg/cmd/roachtest/roachtestutil/(mixedversion|task): `),
+			stream.Grep(`cockroach/pkg/cmd/roachtest/(tests|operations): `),
 		), func(s string) {
 			pkgStr := strings.Split(s, ": ")
 			_, importedPkg := pkgStr[0], pkgStr[1]

@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treecmp"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 )
 
@@ -115,27 +114,15 @@ func (tc *Catalog) CreateTable(stmt *tree.CreateTable) *Table {
 		// so use type STRING instead.
 		oid := types.String.Oid()
 
-		// Add a region column only if one doesn't already exist.
-		hasRegionCol := false
-		for _, def := range stmt.Defs {
-			if colDef, ok := def.(*tree.ColumnTableDef); ok {
-				if colDef.Name == tree.RegionalByRowRegionDefaultColName {
-					hasRegionCol = true
-					break
-				}
-			}
-		}
-		if !hasRegionCol {
-			evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
-			crdbRegionDef :=
-				multiregion.RegionalByRowDefaultColDef(
-					oid,
-					multiregion.RegionalByRowGatewayRegionDefaultExpr(oid),
-					multiregion.MaybeRegionalByRowOnUpdateExpr(&evalCtx, oid),
-				)
-			crdbRegionDef.Type = types.String
-			stmt.Defs = append(stmt.Defs, crdbRegionDef)
-		}
+		evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+		crdbRegionDef :=
+			multiregion.RegionalByRowDefaultColDef(
+				oid,
+				multiregion.RegionalByRowGatewayRegionDefaultExpr(oid),
+				multiregion.MaybeRegionalByRowOnUpdateExpr(&evalCtx, oid),
+			)
+		crdbRegionDef.Type = types.String
+		stmt.Defs = append(stmt.Defs, crdbRegionDef)
 		tab.implicitRBRIndexElem =
 			&tree.IndexElem{
 				Column: tree.RegionalByRowRegionDefaultColName,
@@ -636,20 +623,10 @@ func (tc *Catalog) resolveFK(tab *Table, d *tree.ForeignKeyConstraintTableDef) {
 	var targetUniqueConstraint *UniqueConstraint
 	targetCols := toCols
 	if targetTable.IsRegionalByRow() {
-		// Add the RBR column for validation if it wasn't specified.
-		rbrCol := targetTable.FindOrdinal(string(targetTable.implicitRBRIndexElem.Column))
-		rbrColSpecified := false
-		for _, col := range toCols {
-			if col == rbrCol {
-				rbrColSpecified = true
-				break
-			}
-		}
-		if !rbrColSpecified {
-			targetCols = make([]int, 0, len(toCols)+1)
-			targetCols = append(targetCols, rbrCol)
-			targetCols = append(targetCols, toCols...)
-		}
+		targetCols = make([]int, 0, len(toCols)+1)
+		targetCols =
+			append(targetCols, targetTable.FindOrdinal(string(targetTable.implicitRBRIndexElem.Column)))
+		targetCols = append(targetCols, toCols...)
 	}
 	for _, idx := range targetTable.Indexes {
 		if indexMatches(idx, targetCols, true /* strict */) {
@@ -986,19 +963,6 @@ func (tt *Table) addIndexWithVersion(
 						MaxCells: 3,
 					}},
 				}
-			}
-		}
-
-		if isLastIndexCol && def.Type == idxtype.VECTOR {
-			idx.vecConfig = vecpb.Config{
-				Dims: col.DatumType().Width(),
-				Seed: 42,
-			}
-			switch colDef.OpClass {
-			case "vector_cosine_ops":
-				idx.vecConfig.DistanceMetric = vecpb.CosineDistance
-			case "vector_ip_ops":
-				idx.vecConfig.DistanceMetric = vecpb.InnerProductDistance
 			}
 		}
 	}

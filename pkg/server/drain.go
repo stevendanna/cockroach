@@ -88,12 +88,6 @@ var (
 // instructs the process to terminate.
 // This method is part of the serverpb.AdminClient interface.
 func (s *adminServer) Drain(req *serverpb.DrainRequest, stream serverpb.Admin_DrainServer) error {
-	return s.drain(req, stream)
-}
-
-func (s *adminServer) drain(
-	req *serverpb.DrainRequest, stream serverpb.RPCAdmin_DrainStream,
-) error {
 	ctx := stream.Context()
 	ctx = s.AnnotateCtx(ctx)
 
@@ -120,28 +114,11 @@ func (s *adminServer) drain(
 	return s.drainServer.handleDrain(ctx, req, stream)
 }
 
-// Drain puts the node into the specified drain mode(s) and optionally
-// instructs the process to terminate.
-func (s *drpcAdminServer) Drain(
-	req *serverpb.DrainRequest, stream serverpb.DRPCAdmin_DrainStream,
-) error {
-	return s.adminServer.drain(req, stream)
-}
-
-// Drain puts the node into the specified drain mode(s) and optionally
-// instructs the process to terminate.
-func (s *drpcSystemAdminServer) Drain(
-	req *serverpb.DrainRequest, stream serverpb.DRPCAdmin_DrainStream,
-) error {
-	return s.adminServer.drain(req, stream)
-}
-
 type drainServer struct {
 	stopper *stop.Stopper
 	// stopTrigger is used to request that the server is shut down.
 	stopTrigger  *stopTrigger
 	grpc         *grpcServer
-	drpc         *drpcServer
 	sqlServer    *SQLServer
 	drainSleepFn func(time.Duration)
 	serverCtl    *serverController
@@ -158,7 +135,6 @@ func newDrainServer(
 	stopper *stop.Stopper,
 	stopTrigger *stopTrigger,
 	grpc *grpcServer,
-	drpc *drpcServer,
 	sqlServer *SQLServer,
 ) *drainServer {
 	var drainSleepFn = time.Sleep
@@ -171,7 +147,6 @@ func newDrainServer(
 		stopper:      stopper,
 		stopTrigger:  stopTrigger,
 		grpc:         grpc,
-		drpc:         drpc,
 		sqlServer:    sqlServer,
 		drainSleepFn: drainSleepFn,
 	}
@@ -184,7 +159,7 @@ func (s *drainServer) setNode(node *Node, nodeLiveness *liveness.NodeLiveness) {
 }
 
 func (s *drainServer) handleDrain(
-	ctx context.Context, req *serverpb.DrainRequest, stream serverpb.RPCAdmin_DrainStream,
+	ctx context.Context, req *serverpb.DrainRequest, stream serverpb.Admin_DrainServer,
 ) error {
 	log.Ops.Infof(ctx, "drain request received with doDrain = %v, shutdown = %v", req.DoDrain, req.Shutdown)
 
@@ -261,8 +236,8 @@ func (s *drainServer) maybeShutdownAfterDrain(
 func delegateDrain(
 	ctx context.Context,
 	req *serverpb.DrainRequest,
-	client serverpb.RPCAdminClient,
-	stream serverpb.RPCAdmin_DrainStream,
+	client serverpb.AdminClient,
+	stream serverpb.Admin_DrainServer,
 ) error {
 	// Retrieve the stream interface to the target node.
 	drainClient, err := client.Drain(ctx, req)
@@ -409,7 +384,6 @@ func (s *drainServer) drainClients(
 	// Set the gRPC mode of the node to "draining" and mark the node as "not ready".
 	// Probes to /health?ready=1 will now notice the change in the node's readiness.
 	s.grpc.setMode(modeDraining)
-	s.drpc.setMode(modeDraining)
 	s.sqlServer.isReady.Store(false)
 
 	// Log the number of connections periodically.

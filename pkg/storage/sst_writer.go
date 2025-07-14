@@ -82,17 +82,20 @@ func (*noopFinishAbort) Abort() {}
 // also used when constructing sstables for backups (because these sstables may
 // ultimately be ingested during online restore).
 func MakeIngestionWriterOptions(ctx context.Context, cs *cluster.Settings) sstable.WriterOptions {
-	// TODO(jackson): Tie the table format to the cluster version using
-	// FormatMajorVersion.MaxTableFormat.
-	format := sstable.TableFormatPebblev5
+	// All supported versions understand TableFormatPebblev4. If columnar blocks
+	// are enabled and the active cluster version is at least 24.3, use
+	// TableFormatPebblev5.
+	format := sstable.TableFormatPebblev4
+	if ColumnarBlocksEnabled.Get(&cs.SV) {
+		format = sstable.TableFormatPebblev5
+	}
 
 	opts := DefaultPebbleOptions().MakeWriterOptions(0, format)
-	// By default, compress with the algorithm used for L6 in a Pebble store.
+	// By default, compress with the algorithm used for storage in a Pebble store.
 	// There are other, more specific, use cases that may call for a different
 	// algorithm, which can be set by overriding the default (see
 	// MakeIngestionSSTWriterWithOverrides).
-	dbCompression := CompressionAlgorithmStorage.Get(&cs.SV).DBCompressionSettings()
-	opts.Compression = dbCompression.Levels[len(dbCompression.Levels)-1]
+	opts.Compression = getCompressionAlgorithm(ctx, cs, CompressionAlgorithmStorage)
 	opts.MergerName = "nullptr"
 	if !IngestionValueBlocksEnabled.Get(&cs.SV) {
 		opts.DisableValueBlocks = true
@@ -119,9 +122,13 @@ func makeSSTRewriteOptions(
 // scanned and their keys inserted into new sstables (NB: constructed using
 // MakeIngestionSSTWriter) that ultimately are uploaded to object storage.
 func MakeTransportSSTWriter(ctx context.Context, cs *cluster.Settings, f io.Writer) SSTWriter {
-	// TODO(jackson): Tie the table format to the cluster version using
-	// FormatMajorVersion.MaxTableFormat.
-	format := sstable.TableFormatPebblev5
+	// By default, take a conservative approach and assume we don't have newer
+	// table features available. Upgrade to an appropriate version only if the
+	// cluster supports it.
+	format := sstable.TableFormatPebblev4
+	if ColumnarBlocksEnabled.Get(&cs.SV) {
+		format = sstable.TableFormatPebblev5
+	}
 
 	opts := DefaultPebbleOptions().MakeWriterOptions(0, format)
 
@@ -135,7 +142,7 @@ func MakeTransportSSTWriter(ctx context.Context, cs *cluster.Settings, f io.Writ
 	// block checksums and more index entries are just overhead and smaller blocks
 	// reduce compression ratio.
 	opts.BlockSize = 128 << 10
-	opts.Compression = CompressionAlgorithmBackupTransport.Get(&cs.SV).CompressionProfile()
+	opts.Compression = getCompressionAlgorithm(ctx, cs, CompressionAlgorithmBackupTransport)
 	opts.MergerName = "nullptr"
 	return SSTWriter{
 		fw: sstable.NewWriter(&noopFinishAbort{f}, opts),
@@ -164,12 +171,10 @@ var WithValueBlocksDisabled SSTWriterOption = func(opts *sstable.WriterOptions) 
 // WithCompressionFromClusterSetting sets the compression algorithm for an
 // SSTable based on the value of the given cluster setting.
 func WithCompressionFromClusterSetting(
-	ctx context.Context,
-	cs *cluster.Settings,
-	setting *settings.EnumSetting[SSTableCompressionProfile],
+	ctx context.Context, cs *cluster.Settings, setting *settings.EnumSetting[compressionAlgorithm],
 ) SSTWriterOption {
 	return func(opts *sstable.WriterOptions) {
-		opts.Compression = setting.Get(&cs.SV).CompressionProfile()
+		opts.Compression = getCompressionAlgorithm(ctx, cs, setting)
 	}
 }
 

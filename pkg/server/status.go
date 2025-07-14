@@ -45,7 +45,6 @@ import (
 	raft "github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
@@ -95,7 +94,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"storj.io/drpc"
 )
 
 const (
@@ -126,7 +124,7 @@ const (
 
 type metricMarshaler interface {
 	json.Marshaler
-	PrintAsText(io.Writer, expfmt.Format, bool) error
+	PrintAsText(io.Writer, expfmt.Format) error
 	ScrapeIntoPrometheus(pm *metric.PrometheusExporter)
 }
 
@@ -149,7 +147,6 @@ type baseStatusServer struct {
 	rpcCtx             *rpc.Context
 	stopper            *stop.Stopper
 	serverIterator     ServerIterator
-	nd                 rpcbase.NodeDialer
 	clock              *hlc.Clock
 }
 
@@ -608,7 +605,6 @@ func newStatusServer(
 			rpcCtx:             rpcCtx,
 			stopper:            stopper,
 			serverIterator:     serverIterator,
-			nd:                 &nodeDialer{si: serverIterator},
 			clock:              clock,
 		},
 		cfg:              cfg,
@@ -696,11 +692,6 @@ func (s *statusServer) RegisterService(g *grpc.Server) {
 	serverpb.RegisterStatusServer(g, s)
 }
 
-// RegisterService registers the DRPC service.
-func (s *statusServer) RegisterDRPCService(d drpc.Mux) error {
-	return serverpb.DRPCRegisterStatus(d, s)
-}
-
 // RegisterGateway starts the gateway (i.e. reverse
 // proxy) that proxies HTTP requests to the appropriate gRPC endpoints.
 func (s *statusServer) RegisterGateway(
@@ -715,27 +706,24 @@ func (s *systemStatusServer) RegisterService(g *grpc.Server) {
 	serverpb.RegisterStatusServer(g, s)
 }
 
-// RegisterService registers the DRPC service.
-func (s *systemStatusServer) RegisterDRPCService(d drpc.Mux) error {
-	return serverpb.DRPCRegisterStatus(d, s)
-}
-
 func (s *statusServer) parseNodeID(nodeIDParam string) (roachpb.NodeID, bool, error) {
 	id, local, err := s.serverIterator.parseServerID(nodeIDParam)
 	return roachpb.NodeID(id), local, err
 }
 
-// dialNode dials a connection to the node with the given nodeID and returns
-// a StatusClient.
 func (s *statusServer) dialNode(
 	ctx context.Context, nodeID roachpb.NodeID,
-) (serverpb.RPCStatusClient, error) {
+) (serverpb.StatusClient, error) {
 	if s.knobs != nil && s.knobs.DialNodeCallback != nil {
 		if err := s.knobs.DialNodeCallback(ctx, nodeID); err != nil {
 			return nil, err
 		}
 	}
-	return serverpb.DialStatusClient(s.nd, ctx, nodeID)
+	conn, err := s.serverIterator.dialNode(ctx, serverID(nodeID))
+	if err != nil {
+		return nil, err
+	}
+	return serverpb.NewStatusClient(conn), nil
 }
 
 // Gossip returns current state of gossip information on the given node
@@ -800,22 +788,6 @@ func (s *statusServer) redactGossipResponse(resp *gossip.InfoStatus) *gossip.Inf
 	}
 
 	return resp
-}
-
-// EngineStats returns statistical information of storage layer on the given node
-// which is crucial for diagnosing issues related to disk usage,compaction efficiency,
-// read/write amplification and other storage engine metrics critical for database
-// performance.
-func (t *statusServer) EngineStats(
-	ctx context.Context, req *serverpb.EngineStatsRequest,
-) (*serverpb.EngineStatsResponse, error) {
-	ctx = t.AnnotateCtx(ctx)
-
-	if err := t.privilegeChecker.RequireViewClusterMetadataPermission(ctx); err != nil {
-		return nil, err
-	}
-
-	return t.sqlServer.tenantConnect.EngineStats(ctx, req)
 }
 
 func (s *systemStatusServer) EngineStats(
@@ -1295,7 +1267,7 @@ func (s *statusServer) GetFiles(
 	cfg := s.sqlServer.cfg
 	return getLocalFiles(
 		req, cfg.HeapProfileDirName, cfg.GoroutineDumpDirName,
-		cfg.CPUProfileDirName, cfg.ExecutionTraceDirName, os.Stat, os.ReadFile,
+		cfg.CPUProfileDirName, os.Stat, os.ReadFile,
 	)
 }
 
@@ -1749,7 +1721,7 @@ func (s *statusServer) fetchProfileFromAllNodes(
 	senderServerVersion := resp.Desc.ServerVersion
 
 	opName := redact.Sprintf("fetch cluster-wide %s profile", req.Type)
-	nodeFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, nodeID roachpb.NodeID) (*profData, error) {
+	nodeFn := func(ctx context.Context, statusClient serverpb.StatusClient, nodeID roachpb.NodeID) (*profData, error) {
 		var pd *profData
 		err := timeutil.RunWithTimeout(ctx, opName, 1*time.Minute, func(ctx context.Context) error {
 			resp, err := statusClient.Profile(ctx, &serverpb.ProfileRequest{
@@ -2250,7 +2222,7 @@ func (s *systemStatusServer) NetworkConnectivity(
 				peer.Error = errors.UnwrapAll(err).Error()
 				continue
 			}
-			if err = s.rpcCtx.ConnHealth(addr.String(), targetNodeId, rpcbase.SystemClass); err != nil {
+			if err = s.rpcCtx.ConnHealth(addr.String(), targetNodeId, rpc.SystemClass); err != nil {
 				if errors.Is(rpc.ErrNotHeartbeated, err) {
 					peer.Status = serverpb.NetworkConnectivityResponse_ESTABLISHING
 				} else {
@@ -2274,7 +2246,7 @@ func (s *systemStatusServer) NetworkConnectivity(
 
 	// No NodeID parameter specified, so fan-out to all nodes and collect results.
 	remoteRequest := serverpb.NetworkConnectivityRequest{NodeID: "local"}
-	nodeFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, _ roachpb.NodeID) (*serverpb.NetworkConnectivityResponse, error) {
+	nodeFn := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.NetworkConnectivityResponse, error) {
 		return statusClient.NetworkConnectivity(ctx, &remoteRequest)
 	}
 	responseFn := func(nodeID roachpb.NodeID, r *serverpb.NetworkConnectivityResponse) {
@@ -2421,9 +2393,8 @@ func (s *systemStatusServer) RaftDebug(
 }
 
 type varsHandler struct {
-	metricSource    metricMarshaler
-	st              *cluster.Settings
-	useStaticLabels bool
+	metricSource metricMarshaler
+	st           *cluster.Settings
 }
 
 func (h varsHandler) handleVars(w http.ResponseWriter, r *http.Request) {
@@ -2431,7 +2402,7 @@ func (h varsHandler) handleVars(w http.ResponseWriter, r *http.Request) {
 
 	contentType := expfmt.Negotiate(r.Header)
 	w.Header().Set(httputil.ContentTypeHeader, string(contentType))
-	err := h.metricSource.PrintAsText(w, contentType, h.useStaticLabels)
+	err := h.metricSource.PrintAsText(w, contentType)
 	if err != nil {
 		log.Errorf(ctx, "%v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2963,7 +2934,7 @@ func (s *systemStatusServer) HotRangesV2(
 		PerNodeLimit: req.PerNodeLimit,
 		StatsOnly:    req.StatsOnly,
 	}
-	nodeFn := func(ctx context.Context, status serverpb.RPCStatusClient, nodeID roachpb.NodeID) ([]*serverpb.HotRangesResponseV2_HotRange, error) {
+	nodeFn := func(ctx context.Context, status serverpb.StatusClient, nodeID roachpb.NodeID) ([]*serverpb.HotRangesResponseV2_HotRange, error) {
 		nodeResp, err := status.HotRangesV2(ctx, &remoteRequest)
 		if err != nil {
 			return nil, err
@@ -3196,7 +3167,7 @@ func (s *statusServer) Range(
 		RangeIDs: []roachpb.RangeID{roachpb.RangeID(req.RangeId)},
 	}
 
-	nodeFn := func(ctx context.Context, status serverpb.RPCStatusClient, _ roachpb.NodeID) (*serverpb.RangesResponse, error) {
+	nodeFn := func(ctx context.Context, status serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.RangesResponse, error) {
 		return status.Ranges(ctx, rangesRequest)
 	}
 	nowNanos := timeutil.Now().UnixNano()
@@ -3386,7 +3357,7 @@ func paginatedIterateNodes[Result any](
 	pagState paginationState,
 	requestedNodes []roachpb.NodeID,
 	nodeFnTimeout time.Duration,
-	nodeFn func(ctx context.Context, client serverpb.RPCStatusClient, nodeID roachpb.NodeID) ([]Result, error),
+	nodeFn func(ctx context.Context, client serverpb.StatusClient, nodeID roachpb.NodeID) ([]Result, error),
 	responseFn func(nodeID roachpb.NodeID, resp []Result),
 	errorFn func(nodeID roachpb.NodeID, nodeFnError error),
 ) (next paginationState, err error) {
@@ -3420,7 +3391,7 @@ func paginatedIterateNodes[Result any](
 	}
 	nodeIDs = append(nodeIDs, pagState.nodesToQuery...)
 
-	paginator := &rpcNodePaginator[serverpb.RPCStatusClient, Result]{
+	paginator := &rpcNodePaginator[serverpb.StatusClient, Result]{
 		limit:        limit,
 		numNodes:     len(nodeIDs),
 		errorCtx:     errorCtx,
@@ -3467,7 +3438,7 @@ func (s *statusServer) listSessionsHelper(
 		InternalAppNamePrefix: catconstants.InternalAppNamePrefix,
 	}
 
-	nodeFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, _ roachpb.NodeID) ([]serverpb.Session, error) {
+	nodeFn := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) ([]serverpb.Session, error) {
 		resp, err := statusClient.ListLocalSessions(ctx, req)
 		if resp != nil && err == nil {
 			if len(resp.Errors) > 0 {
@@ -3706,7 +3677,7 @@ func (s *statusServer) ListContentionEvents(
 	}
 
 	var response serverpb.ListContentionEventsResponse
-	nodeFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, _ roachpb.NodeID) (*serverpb.ListContentionEventsResponse, error) {
+	nodeFn := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.ListContentionEventsResponse, error) {
 		resp, err := statusClient.ListLocalContentionEvents(ctx, req)
 		if err != nil {
 			return nil, err
@@ -3751,7 +3722,7 @@ func (s *statusServer) ListDistSQLFlows(
 	}
 
 	var response serverpb.ListDistSQLFlowsResponse
-	nodeFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, _ roachpb.NodeID) (*serverpb.ListDistSQLFlowsResponse, error) {
+	nodeFn := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.ListDistSQLFlowsResponse, error) {
 		resp, err := statusClient.ListLocalDistSQLFlows(ctx, request)
 		if err != nil {
 			return nil, err
@@ -3812,7 +3783,7 @@ func (s *statusServer) ListExecutionInsights(
 
 	var response serverpb.ListExecutionInsightsResponse
 
-	nodeFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, nodeID roachpb.NodeID) (*serverpb.ListExecutionInsightsResponse, error) {
+	nodeFn := func(ctx context.Context, statusClient serverpb.StatusClient, nodeID roachpb.NodeID) (*serverpb.ListExecutionInsightsResponse, error) {
 		resp, err := statusClient.ListExecutionInsights(ctx, &localRequest)
 		if err != nil {
 			return nil, err
@@ -3905,7 +3876,7 @@ func (s *systemStatusServer) TenantServiceStatus(
 
 	// Send TenantStatusService request to all stores on all nodes.
 	remoteRequest := serverpb.TenantServiceStatusRequest{NodeID: "local", TenantID: req.TenantID}
-	nodeFn := func(ctx context.Context, status serverpb.RPCStatusClient, _ roachpb.NodeID) (*serverpb.TenantServiceStatusResponse, error) {
+	nodeFn := func(ctx context.Context, status serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.TenantServiceStatusResponse, error) {
 		return status.TenantServiceStatus(ctx, &remoteRequest)
 	}
 	responseFn := func(nodeID roachpb.NodeID, remoteResp *serverpb.TenantServiceStatusResponse) {
@@ -4242,7 +4213,7 @@ func (s *statusServer) TransactionContentionEvents(
 		return statusClient.TransactionContentionEvents(ctx, req)
 	}
 
-	rpcCallFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, _ roachpb.NodeID) (*serverpb.TransactionContentionEventsResponse, error) {
+	rpcCallFn := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.TransactionContentionEventsResponse, error) {
 		return statusClient.TransactionContentionEvents(ctx, &serverpb.TransactionContentionEventsRequest{
 			NodeID: "local",
 		})
@@ -4391,7 +4362,7 @@ func (s *statusServer) GetThrottlingMetadata(
 		return statusClient.GetThrottlingMetadata(ctx, req)
 	}
 
-	rpcCallFn := func(ctx context.Context, statusClient serverpb.RPCStatusClient, _ roachpb.NodeID) (*serverpb.GetThrottlingMetadataResponse, error) {
+	rpcCallFn := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (*serverpb.GetThrottlingMetadataResponse, error) {
 		return statusClient.GetThrottlingMetadata(ctx, &serverpb.GetThrottlingMetadataRequest{
 			NodeID: "local",
 		})

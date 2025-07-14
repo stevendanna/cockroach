@@ -388,7 +388,6 @@ vectorized: true
                     │ table: bc@bc_pkey
                     │ equality: (?column?) = (b)
                     │ equality cols are key
-                    │ parallel
                     │
                     └── • distinct
                         │ columns: (c_comp, "?column?")
@@ -1763,7 +1762,6 @@ vectorized: true
     │ estimated row count: 111 (missing stats)
     │ table: g@g_pkey
     │ key columns: rowid
-    │ parallel
     │
     └── • scan
           columns: (rowid)

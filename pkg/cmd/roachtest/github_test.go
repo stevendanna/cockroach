@@ -35,10 +35,12 @@ var (
 	teamsYaml = `cockroachdb/unowned:
   aliases:
     cockroachdb/rfc-prs: other
+  triage_column_id: 0
 cockroachdb/test-eng:
   label: T-testeng
+  triage_column_id: 14041337
 cockroachdb/dev-inf:
-  label: T-dev-inf`
+  triage_column_id: 10210759`
 
 	validTeamsFn   = func() (team.Map, error) { return loadYamlTeams(teamsYaml) }
 	invalidTeamsFn = func() (team.Map, error) { return loadYamlTeams("invalid yaml") }
@@ -212,8 +214,6 @@ func TestCreatePostRequest(t *testing.T) {
 							refError = vmPreemptionError("my_VM")
 						case "vm-host-error":
 							refError = vmHostError("my_VM")
-						case "live-migration-error":
-							refError = liveMigrationError("my_VM")
 						case "error-with-owner-sql-foundations":
 							refError = registry.ErrorWithOwner(registry.OwnerSQLFoundations, refError)
 						case "error-with-owner-test-eng":

@@ -278,7 +278,6 @@ func makeTestKafkaSink(
 				client := &fakeKafkaClient{config}
 				return client, nil
 			},
-			BypassConnectionCheck: true,
 		},
 	}
 	err = s.Dial()

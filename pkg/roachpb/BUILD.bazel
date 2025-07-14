@@ -163,5 +163,4 @@ stringer(
 disallowed_imports_test(
     "roachpb",
     disallow_cdeps = True,
-    disallowed_list = [],
 )

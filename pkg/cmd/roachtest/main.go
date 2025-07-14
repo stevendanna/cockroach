@@ -8,12 +8,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"math"
 	"math/rand"
 	"os"
 	"os/user"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/testselector"
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/errors"
 	_ "github.com/lib/pq" // register postgres driver
 	"github.com/spf13/cobra"
@@ -53,8 +52,6 @@ const (
 )
 
 func main() {
-	_ = roachprod.InitProviders()
-
 	cobra.EnableCommandSorting = false
 
 	var rootCmd = &cobra.Command{
@@ -316,12 +313,7 @@ func testsToRun(
 		}
 	}
 
-	var stdout io.Writer
-	if print {
-		stdout = os.Stdout
-	}
-	rng, _ := randutil.NewPseudoRand()
-	return selectSpecs(notSkipped, rng, selectProbability, true, stdout), nil
+	return selectSpecs(notSkipped, selectProbability, true, print), nil
 }
 
 // updateSpecForSelectiveTests is responsible for updating the test spec skip and skip details
@@ -442,18 +434,14 @@ func opsToRun(r testRegistryImpl, filter string) ([]registry.OperationSpec, erro
 // testRegistryImpl.AllTests().
 // TODO(smg260): Perhaps expose `atLeastOnePerPrefix` via CLI
 func selectSpecs(
-	specs []registry.TestSpec,
-	rng *rand.Rand,
-	samplePct float64,
-	atLeastOnePerPrefix bool,
-	stdout io.Writer,
+	specs []registry.TestSpec, samplePct float64, atLeastOnePerPrefix bool, print bool,
 ) []registry.TestSpec {
 	if samplePct == 1 || len(specs) == 0 {
 		return specs
 	}
 
 	var sampled []registry.TestSpec
-	selectedIndexes := make(map[int]struct{})
+	var selectedIdxs []int
 
 	prefix := strings.Split(specs[0].Name, "/")[0]
 	prefixSelected := false
@@ -461,9 +449,9 @@ func selectSpecs(
 
 	// Selects one random spec from the range [start, end) and appends it to sampled.
 	collectRandomSpecFromRange := func(start, end int) {
-		i := start + rng.Intn(end-start)
+		i := start + rand.Intn(end-start)
 		sampled = append(sampled, specs[i])
-		selectedIndexes[i] = struct{}{}
+		selectedIdxs = append(selectedIdxs, i)
 	}
 	for i, s := range specs {
 		if atLeastOnePerPrefix {
@@ -479,9 +467,9 @@ func selectSpecs(
 			}
 		}
 
-		if rng.Float64() < samplePct {
+		if rand.Float64() < samplePct {
 			sampled = append(sampled, s)
-			selectedIndexes[i] = struct{}{}
+			selectedIdxs = append(selectedIdxs, i)
 			prefixSelected = true
 			continue
 		}
@@ -492,18 +480,27 @@ func selectSpecs(
 		}
 	}
 
-	// Print a skip message for all tests that are not selected.
-	for i, s := range specs {
-		if _, ok := selectedIndexes[i]; !ok {
-			if stdout != nil && roachtestflags.TeamCity {
-				fmt.Fprintf(stdout, "##teamcity[testIgnored name='%s' message='excluded via sampling']\n",
+	p := 0
+	// The list would already be sorted were it not for the lookback to
+	// ensure at least one test per prefix.
+	if atLeastOnePerPrefix {
+		sort.Ints(selectedIdxs)
+	}
+	// This loop depends on an ordered list as we are essentially
+	// skipping all values in between the selected indexes.
+	for _, i := range selectedIdxs {
+		for j := p; j < i; j++ {
+			s := specs[j]
+			if print && roachtestflags.TeamCity {
+				fmt.Fprintf(os.Stdout, "##teamcity[testIgnored name='%s' message='excluded via sampling']\n",
 					s.Name)
 			}
 
-			if stdout != nil {
-				fmt.Fprintf(stdout, "--- SKIP: %s (%s)\n\texcluded via sampling\n", s.Name, "0.00s")
+			if print {
+				fmt.Fprintf(os.Stdout, "--- SKIP: %s (%s)\n\texcluded via sampling\n", s.Name, "0.00s")
 			}
 		}
+		p = i + 1
 	}
 
 	return sampled

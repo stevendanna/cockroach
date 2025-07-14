@@ -121,45 +121,13 @@ distribution: local
 vectorized: true
 ·
 • sort
-│ order: -column70,-created
+│ order: -column26,-started
 │
 └── • render
     │
-    └── • union all
         │
-        ├── • render
-        │   │
-        │   └── • merge join (left outer)
-        │       │ equality: (id) = (job_id)
-        │       │
-        │       ├── • merge join (right outer)
-        │       │   │ equality: (job_id) = (id)
-        │       │   │ right cols are key
-        │       │   │
-        │       │   ├── • scan
-        │       │   │     missing stats
-        │       │   │     table: job_progress@primary
-        │       │   │     spans: FULL SCAN
-        │       │   │
-        │       │       │
-        │       │       └── • scan
-        │       │             missing stats
-        │       │             table: jobs@primary
-        │       │             spans: FULL SCAN
-        │       │
-        │       └── • scan
-        │             missing stats
-        │             table: job_status@primary
-        │             spans: FULL SCAN
-        │
-        └── • render
-            │
-                │ estimated row count: 3
-                │
-                └── • project set
-                    │ estimated row count: 10
-                    │
-                    └── • emptyrow
+        └── • virtual table
+              table: jobs@primary
 
 statement ok
 CREATE INDEX a ON foo(x)
@@ -482,7 +450,7 @@ vectorized: true
         │       │                       └── • render
         │       │                           │
         │       │                           └── • filter
-        │       │                               │ filter: classoid = 4294967082
+        │       │                               │ filter: classoid = 4294967083
         │       │                               │
         │       │                               └── • virtual table
         │       │                                     table: kv_catalog_comments@primary
@@ -791,18 +759,17 @@ vectorized: true
                     └── • sort
                         │ estimated row count: 3
                         │ order: +username,+option
-                        │ already ordered: +username
                         │
                         └── • render
                             │
-                            └── • merge join (left outer)
+                            └── • hash join (left outer)
                                 │ estimated row count: 3
                                 │ equality: (username) = (username)
                                 │ left cols are key
                                 │
                                 ├── • scan
                                 │     estimated row count: 3 (100% of the table; stats collected <hidden> ago)
-                                │     table: users@primary
+                                │     table: users@users_user_id_idx
                                 │     spans: FULL SCAN
                                 │
                                 └── • scan
@@ -1025,7 +992,6 @@ vectorized: true
     │ estimated row count: 10 (missing stats)
     │ table: tc@tc_pkey
     │ key columns: rowid
-    │ parallel
     │
     └── • scan
           columns: (a, rowid)
@@ -1054,7 +1020,6 @@ vectorized: true
     │ estimated row count: 10 (missing stats)
     │ table: tc@tc_pkey
     │ key columns: rowid
-    │ parallel
     │
     └── • scan
           columns: (a, rowid)
@@ -2497,34 +2462,3 @@ vectorized: true
       estimated row count: 1,000,000,000,000 (100% of the table; stats collected <hidden> ago)
       table: very_large_table@very_large_table_pkey
       spans: FULL SCAN
-
-statement ok
-CREATE TABLE t_float (k FLOAT PRIMARY KEY);
-
-# A query with relatively large number of physical spans.
-query T
-EXPLAIN (VERBOSE) SELECT count(*) FROM t_float
-  WHERE k = ANY (
-                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-                 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-                 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-                 31, 32, 33, 34, 35, 36, 37, 38, 39, 40
-                );
-----
-distribution: local
-vectorized: true
-·
-• group (scalar)
-│ columns: (count)
-│ estimated row count: 1 (missing stats)
-│ aggregate 0: count_rows()
-│
-└── • project
-    │ columns: ()
-    │
-    └── • scan
-          columns: (k)
-          estimated row count: 40 (missing stats)
-          table: t_float@t_float_pkey
-          spans: /1/0 /2/0 /3/0 /4/0 /5/0 /6/0 /7/0 /8/0 /9/0 /10/0 /11/0 /12/0 /13/0 /14/0 /15/0 /16/0 /17/0 /18/0 /19/0 /20/0 … (20 more)
-          parallel

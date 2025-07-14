@@ -541,6 +541,7 @@ func (b *Builder) buildValuesRows(values *memo.ValuesExpr) ([][]tree.TypedExpr, 
 	numCols := len(values.Cols)
 
 	rows := makeTypedExprMatrix(len(values.Rows), numCols)
+	scalarCtx := buildScalarCtx{}
 	for i := range rows {
 		tup := values.Rows[i].(*memo.TupleExpr)
 		if len(tup.Elems) != numCols {
@@ -548,7 +549,7 @@ func (b *Builder) buildValuesRows(values *memo.ValuesExpr) ([][]tree.TypedExpr, 
 		}
 		var err error
 		for j := 0; j < numCols; j++ {
-			rows[i][j], err = b.buildScalar(&emptyBuildScalarCtx, tup.Elems[j])
+			rows[i][j], err = b.buildScalar(&scalarCtx, tup.Elems[j])
 			if err != nil {
 				return nil, err
 			}
@@ -2486,13 +2487,9 @@ func (b *Builder) buildIndexJoin(
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}
-	// We know that there's exactly one lookup row for each input row, so we
-	// assume it's always safe to get the DistSender-level parallelism.
-	const parallelize = true
 	var res execPlan
 	res.root, err = b.factory.ConstructIndexJoin(
-		input.root, tab, keyCols, needed, reqOrdering, locking,
-		join.RequiredPhysical().LimitHintInt64(), parallelize,
+		input.root, tab, keyCols, needed, reqOrdering, locking, join.RequiredPhysical().LimitHintInt64(),
 	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
@@ -2762,19 +2759,14 @@ func (b *Builder) buildLookupJoin(
 		lookupCols.Remove(join.ContinuationCol)
 	}
 
-	numInputCols := inputCols.MaxOrd() + 1
-	var lookupOrdinals exec.TableColumnOrdinalSet
+	lookupOrdinals, lookupColMap := b.getColumns(lookupCols, join.Table)
+
 	// leftAndRightCols are the columns used in expressions evaluated by this
 	// join.
-	leftAndRightCols := b.colOrdsAlloc.Copy(inputCols)
-	for i, rightOrd, n := 0, 0, md.Table(join.Table).ColumnCount(); i < n; i++ {
-		colID := join.Table.ColumnID(i)
-		if lookupCols.Contains(colID) {
-			lookupOrdinals.Add(i)
-			leftAndRightCols.Set(colID, rightOrd+numInputCols)
-			rightOrd++
-		}
-	}
+	leftAndRightCols := b.joinOutputMap(inputCols, lookupColMap)
+
+	// lookupColMap is no longer used, so it can be freed.
+	b.colOrdsAlloc.Free(lookupColMap)
 
 	// Create the output column mapping.
 	switch {
@@ -2872,25 +2864,6 @@ func (b *Builder) buildLookupJoin(
 		return execPlan{}, colOrdMap{}, errors.AssertionFailedf("lookup join can't provide required ordering")
 	}
 	reverse := requiredDirection == ordering.ReverseDirection
-	// The joiner has a choice to make between getting DistSender-level
-	// parallelism for its lookup batches and setting row and memory limits (due
-	// to implementation limitations, you can't have both at the same time).
-	var parallelize bool
-	if join.LookupColsAreTableKey {
-		// We choose parallelism when we know that each lookup returns at most
-		// one row.
-		parallelize = true
-	} else if b.evalCtx.SessionData().ParallelizeMultiKeyLookupJoinsEnabled {
-		parallelize = true
-	}
-	for _, c := range reqOrdering {
-		if c.ColIdx >= numInputCols {
-			// We need to maintain lookup ordering, in which case we cannot use
-			// the DistSender-level parallelism.
-			parallelize = false
-			break
-		}
-	}
 	var res execPlan
 	res.root, err = b.factory.ConstructLookupJoin(
 		joinType,
@@ -2910,7 +2883,6 @@ func (b *Builder) buildLookupJoin(
 		join.RequiredPhysical().LimitHintInt64(),
 		join.RemoteOnlyLookups,
 		reverse,
-		parallelize,
 	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
@@ -3564,10 +3536,11 @@ func (b *Builder) buildCall(c *memo.CallExpr) (_ execPlan, outputCols colOrdMap,
 
 	// Build the argument expressions.
 	var args tree.TypedExprs
+	ctx := buildScalarCtx{}
 	if len(udf.Args) > 0 {
 		args = make(tree.TypedExprs, len(udf.Args))
 		for i := range udf.Args {
-			args[i], err = b.buildScalar(&emptyBuildScalarCtx, udf.Args[i])
+			args[i], err = b.buildScalar(&ctx, udf.Args[i])
 			if err != nil {
 				return execPlan{}, colOrdMap{}, err
 			}
@@ -3991,7 +3964,8 @@ func (b *Builder) buildVectorSearch(
 		}
 	}
 	outColOrds, outColMap := b.getColumns(search.Cols, search.Table)
-	queryVector, err := b.buildScalar(&emptyBuildScalarCtx, search.QueryVector)
+	ctx := buildScalarCtx{}
+	queryVector, err := b.buildScalar(&ctx, search.QueryVector)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}

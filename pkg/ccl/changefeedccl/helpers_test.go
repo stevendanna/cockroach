@@ -18,7 +18,6 @@ import (
 	"os"
 	"reflect"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,8 +44,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -57,7 +54,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -76,11 +72,8 @@ func maybeDisableDeclarativeSchemaChangesForTest(t testing.TB, sqlDB *sqlutils.S
 	disable := rand.Float32() < 0.1
 	if disable {
 		t.Log("using legacy schema changer")
-		sqlDB.Exec(t, "SET create_table_with_schema_locked=false")
 		sqlDB.Exec(t, "SET use_declarative_schema_changer='off'")
 		sqlDB.Exec(t, "SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer='off'")
-		sqlDB.Exec(t, "SET CLUSTER SETTING sql.defaults.create_table_with_schema_locked='off'")
-
 	}
 	return disable
 }
@@ -266,7 +259,6 @@ func assertPayloadsBase(
 	envelopeType changefeedbase.EnvelopeType,
 ) {
 	t.Helper()
-
 	timeout := assertPayloadsTimeout()
 	if len(expected) > 100 {
 		// Webhook sink is very slow; We have few tests that read 1000 messages.
@@ -281,64 +273,6 @@ func assertPayloadsBase(
 		))
 }
 
-func enrichedMessageToWrappedMessage(m cdctest.TestFeedMessage) (cdctest.TestFeedMessage, error) {
-	if len(m.Resolved) > 0 {
-		return m, nil
-	}
-
-	key, err := parseJSON(string(m.Key))
-	if err != nil {
-		return cdctest.TestFeedMessage{}, err
-	}
-	val, err := parseJSON(string(m.Value))
-	if err != nil {
-		return cdctest.TestFeedMessage{}, err
-	}
-
-	source := val["source"].(map[string]any)
-
-	// Convert the key, which is a JSON object, to an array, using the schema info in the source,
-	primaryKeys := source["primary_keys"].([]any)
-	keyArray := make([]any, len(primaryKeys))
-	for i, keyCol := range primaryKeys {
-		keyArray[i] = key[keyCol.(string)]
-	}
-
-	// Set updated & mvcc_timestamp if present.
-	if updated, ok := source["ts_hlc"]; ok {
-		val["updated"] = updated
-	}
-	if mvccTimestamp, ok := source["mvcc_timestamp"]; ok {
-		val["mvcc_timestamp"] = mvccTimestamp
-	}
-
-	assertPresentAndDelete := func(key string) error {
-		if _, ok := val[key]; ok {
-			delete(val, key)
-			return nil
-		}
-		return errors.Newf("expected %s to be present in %v", key, val)
-	}
-	// Delete fields on the value that differ between the enriched and wrapped envelopes.
-	err = errors.Join(assertPresentAndDelete("op"), assertPresentAndDelete("ts_ns"), assertPresentAndDelete("source"))
-	if err != nil {
-		return cdctest.TestFeedMessage{}, err
-	}
-
-	keyJ, err := json.MakeJSON(keyArray)
-	if err != nil {
-		return cdctest.TestFeedMessage{}, err
-	}
-	valJ, err := json.MakeJSON(val)
-	if err != nil {
-		return cdctest.TestFeedMessage{}, err
-	}
-	m.Key = []byte(keyJ.String())
-	m.Value = []byte(valJ.String())
-
-	return m, nil
-}
-
 func assertPayloadsBaseErr(
 	ctx context.Context,
 	f cdctest.TestFeed,
@@ -348,13 +282,6 @@ func assertPayloadsBaseErr(
 	sourceAssertion func(map[string]any),
 	envelopeType changefeedbase.EnvelopeType,
 ) error {
-	didForceEnriched := func() bool {
-		if ef, ok := f.(cdctest.EnterpriseTestFeed); ok {
-			return ef.ForcedEnriched()
-		}
-		return false
-	}()
-
 	if log.V(1) {
 		log.Infof(ctx, "expected messages: \n%s", strings.Join(expected, "\n"))
 	}
@@ -362,16 +289,6 @@ func assertPayloadsBaseErr(
 	actual, err := readNextMessages(ctx, f, len(expected))
 	if err != nil {
 		return err
-	}
-
-	if didForceEnriched {
-		for i, m := range actual {
-			em, err := enrichedMessageToWrappedMessage(m)
-			if err != nil {
-				return err
-			}
-			actual[i] = em
-		}
 	}
 
 	var actualFormatted []string
@@ -488,19 +405,6 @@ func avroToJSON(t testing.TB, reg *cdctest.SchemaRegistry, avroBytes []byte) []b
 	json, err := reg.AvroToJSON(avroBytes)
 	require.NoError(t, err)
 	return json
-}
-
-func parseJSON(s string) (map[string]any, error) {
-	dec := gojson.NewDecoder(bytes.NewBufferString(s))
-	dec.UseNumber()
-	var m map[string]any
-	if err := dec.Decode(&m); err != nil {
-		return nil, err
-	}
-	if dec.InputOffset() != int64(len(s)) {
-		return nil, errors.Newf("parsing json did not consume all bytes: %d != %d", dec.InputOffset(), len(s))
-	}
-	return m, nil
 }
 
 func assertRegisteredSubjects(t testing.TB, reg *cdctest.SchemaRegistry, expected []string) {
@@ -776,7 +680,6 @@ type feedTestOptions struct {
 	debugUseAfterFinish          bool
 	clusterName                  string
 	locality                     roachpb.Locality
-	forceKafkaV1ConnectionCheck  bool
 }
 
 type feedTestOption func(opts *feedTestOptions)
@@ -795,12 +698,6 @@ var feedTestNoExternalConnection = func(opts *feedTestOptions) { opts.forceNoExt
 // tests randomly choose between the root user connection or a test user connection where the test user
 // has privileges to create changefeeds on tables in the default database `d` only.
 var feedTestUseRootUserConnection = func(opts *feedTestOptions) { opts.forceRootUserConnection = true }
-
-// feedTestForceKafkaV1ConnectionCheck is a feedTestOption that will force the connection check
-// inside Dial() when using a Kafka v1 sink.
-var feedTestForceKafkaV1ConnectionCheck = func(opts *feedTestOptions) {
-	opts.forceKafkaV1ConnectionCheck = true
-}
 
 var feedTestForceSink = func(sinkType string) feedTestOption {
 	return feedTestRestrictSinks(sinkType)
@@ -1002,113 +899,15 @@ func makeSpanGroupFromCheckpoint(
 	return spanGroup
 }
 
-var forceEnrichedEnvelope = metamorphic.ConstantWithTestBool("changefeed-force-enriched-envelope", false)
-
-type optOutOfMetamorphicEnrichedEnvelope struct {
-	reason string
-}
-
 func feed(
 	t testing.TB, f cdctest.TestFeedFactory, create string, args ...interface{},
 ) cdctest.TestFeed {
 	t.Helper()
-
-	create, args, forced, err := maybeForceEnrichedEnvelope(t, create, f, args)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	feed, err := f.Feed(create, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if forced {
-		if ej, ok := feed.(cdctest.EnterpriseTestFeed); ok {
-			ej.SetForcedEnriched(true)
-		}
-	}
-
 	return feed
-}
-
-func maybeForceEnrichedEnvelope(
-	t testing.TB, create string, f cdctest.TestFeedFactory, args []any,
-) (newCreate string, newArgs []any, forced bool, _ error) {
-	for i, arg := range args {
-		if o, ok := arg.(optOutOfMetamorphicEnrichedEnvelope); ok {
-			t.Logf("opted out of metamorphic enriched envelope for %s: %s", create, o.reason)
-			newArgs = slices.Clone(args)
-			newArgs = slices.Delete(newArgs, i, i+1)
-			return create, newArgs, false, nil
-		}
-	}
-
-	if !forceEnrichedEnvelope {
-		return create, args, false, nil
-	}
-
-	switch f := f.(type) {
-	case *externalConnectionFeedFactory:
-		return maybeForceEnrichedEnvelope(t, create, f.TestFeedFactory, args)
-	// Skip these because:
-	// - sinkless feeds can't be tracked by job id
-	// - sql & pulsar are not supported
-	// - cloudstorage uses parquet sometimes which complicates things
-	// - pubsub feeds have an issue with leaking goroutines; see #144102
-	case *sinklessFeedFactory, *tableFeedFactory, *pulsarFeedFactory, *cloudFeedFactory, *pubsubFeedFactory:
-		t.Logf("did not force enriched envelope for %s because %T is not supported", create, f)
-		return create, args, false, nil
-	}
-
-	createStmt, err := parser.ParseOne(create)
-	if err != nil {
-		return "", args, false, err
-	}
-	createAST := createStmt.AST.(*tree.CreateChangefeed)
-
-	// CDC Queries aren't supported in enriched envelopes.
-	if createAST.Select != nil {
-		t.Logf("did not force enriched envelope for %s because it is a CDC query", create)
-		return create, args, false, nil
-	}
-
-	opts := createAST.Options
-	var envelopeKV *tree.KVOption
-	for _, opt := range opts {
-		if strings.EqualFold(opt.Key.String(), "format") {
-			if opt.Value.String() != "'json'" {
-				t.Logf("did not force enriched envelope for %s because format=%s", create, opt.Value.String())
-				return create, args, false, nil
-			}
-		}
-		if strings.EqualFold(opt.Key.String(), "envelope") {
-			envelopeKV = &opt
-		}
-	}
-	if envelopeKV != nil {
-		if envelopeKV.Value.String() != "wrapped" {
-			t.Logf("did not force enriched envelope for %s because it specified envelope=%s", create, envelopeKV.Value.String())
-			return create, args, false, nil
-		}
-		envelopeKV.Value = tree.NewDString("enriched")
-	} else {
-		opts = append(opts, tree.KVOption{
-			Key:   "envelope",
-			Value: tree.NewDString("enriched"),
-		})
-	}
-	// Include the source so we can transform the messages back to wrapped properly.
-	opts = append(opts, tree.KVOption{
-		Key:   "enriched_properties",
-		Value: tree.NewDString("source"),
-	})
-
-	createStmt.AST.(*tree.CreateChangefeed).Options = opts
-	create = tree.AsStringWithFlags(createStmt.AST, tree.FmtShowPasswords)
-
-	t.Logf("forcing enriched envelope for %T - %s", f, create)
-	return create, args, true, nil
 }
 
 func asUser(
@@ -1346,7 +1145,7 @@ func makeFeedFactoryWithOptions(
 	}
 	switch sinkType {
 	case "kafka":
-		f := makeKafkaFeedFactoryWithConnectionCheck(t, srvOrCluster, db, options.forceKafkaV1ConnectionCheck)
+		f := makeKafkaFeedFactory(t, srvOrCluster, db)
 		userDB, cleanup := getInitialDBForEnterpriseFactory(t, s, db, options)
 		f.(*kafkaFeedFactory).configureUserDB(userDB)
 		return f, func() { cleanup() }
@@ -1659,27 +1458,41 @@ func verifyLogsWithEmittedBytesAndMessages(
 }
 
 func checkCreateChangefeedLogs(t *testing.T, startTime int64) []eventpb.CreateChangefeed {
-	return checkStructuredChangefeedLogs[eventpb.CreateChangefeed](t, `create_changefeed`, startTime)
-}
+	var matchingEntries []eventpb.CreateChangefeed
 
-func checkAlterChangefeedLogs(t *testing.T, startTime int64) []eventpb.AlterChangefeed {
-	return checkStructuredChangefeedLogs[eventpb.AlterChangefeed](t, `alter_changefeed`, startTime)
+	for _, m := range checkStructuredLogs(t, "create_changefeed", startTime) {
+		jsonPayload := []byte(m)
+		var event eventpb.CreateChangefeed
+		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
+			t.Errorf("unmarshalling %q: %v", m, err)
+		}
+		matchingEntries = append(matchingEntries, event)
+	}
+
+	return matchingEntries
 }
 
 func checkChangefeedFailedLogs(t *testing.T, startTime int64) []eventpb.ChangefeedFailed {
-	return checkStructuredChangefeedLogs[eventpb.ChangefeedFailed](t, `changefeed_failed`, startTime)
+	var matchingEntries []eventpb.ChangefeedFailed
+
+	for _, m := range checkStructuredLogs(t, "changefeed_failed", startTime) {
+		jsonPayload := []byte(m)
+		var event eventpb.ChangefeedFailed
+		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
+			t.Errorf("unmarshalling %q: %v", m, err)
+		}
+		matchingEntries = append(matchingEntries, event)
+	}
+
+	return matchingEntries
 }
 
 func checkChangefeedCanceledLogs(t *testing.T, startTime int64) []eventpb.ChangefeedCanceled {
-	return checkStructuredChangefeedLogs[eventpb.ChangefeedCanceled](t, `changefeed_canceled`, startTime)
-}
+	var matchingEntries []eventpb.ChangefeedCanceled
 
-func checkStructuredChangefeedLogs[E any](t *testing.T, name string, startTime int64) []E {
-	var matchingEntries []E
-
-	for _, m := range checkStructuredLogs(t, name, startTime) {
+	for _, m := range checkStructuredLogs(t, "changefeed_canceled", startTime) {
 		jsonPayload := []byte(m)
-		var event E
+		var event eventpb.ChangefeedCanceled
 		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
 			t.Errorf("unmarshalling %q: %v", m, err)
 		}
@@ -1746,7 +1559,6 @@ func ChangefeedJobPermissionsTestSetup(t *testing.T, s TestServer) {
 
 		`CREATE USER adminUser`,
 		`GRANT ADMIN TO adminUser`,
-		`CREATE ROLE feedowner`,
 
 		`CREATE USER otherAdminUser`,
 		`GRANT ADMIN TO otherAdminUser`,
@@ -1758,7 +1570,6 @@ func ChangefeedJobPermissionsTestSetup(t *testing.T, s TestServer) {
 		`CREATE USER jobController with CONTROLJOB`,
 
 		`CREATE USER userWithAllGrants`,
-		`GRANT feedowner TO userWithAllGrants`,
 		`GRANT CHANGEFEED ON table_a TO userWithAllGrants`,
 		`GRANT CHANGEFEED ON table_b TO userWithAllGrants`,
 

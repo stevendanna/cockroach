@@ -239,7 +239,6 @@ func makeSharedProcessTenantServerConfig(
 	baseCfg.DefaultZoneConfig = kvServerCfg.BaseConfig.DefaultZoneConfig
 	baseCfg.HeapProfileDirName = kvServerCfg.BaseConfig.HeapProfileDirName
 	baseCfg.CPUProfileDirName = kvServerCfg.BaseConfig.CPUProfileDirName
-	baseCfg.ExecutionTraceDirName = kvServerCfg.BaseConfig.ExecutionTraceDirName
 	baseCfg.GoroutineDumpDirName = kvServerCfg.BaseConfig.GoroutineDumpDirName
 
 	// The ListenerFactory allows us to dynamically choose a
@@ -295,7 +294,6 @@ func makeSharedProcessTenantServerConfig(
 	baseCfg.GoroutineDumpDirName = ""
 	baseCfg.HeapProfileDirName = ""
 	baseCfg.CPUProfileDirName = ""
-	baseCfg.ExecutionTraceDirName = ""
 
 	// Expose the process-wide runtime metrics to the tenant's metric
 	// collector. Since they are process-wide, all tenants can see them.
@@ -319,11 +317,9 @@ func makeSharedProcessTenantServerConfig(
 		useStore := tempStorageCfg.Spec
 		// TODO(knz): Make tempDir configurable.
 		tempDir := useStore.Path
-		var unlockDirFn func()
-		if tempStorageCfg.Path, unlockDirFn, err = fs.CreateTempDir(tempDir, TempDirPrefix); err != nil {
+		if tempStorageCfg.Path, err = fs.CreateTempDir(tempDir, TempDirPrefix, stopper); err != nil {
 			return BaseConfig{}, SQLConfig{}, errors.Wrap(err, "could not create temporary directory for temp storage")
 		}
-		stopper.AddCloser(stop.CloserFn(unlockDirFn))
 		if useStore.Path != "" {
 			recordPath := filepath.Join(useStore.Path, TempDirsRecordFilename)
 			if err := fs.RecordTempDir(recordPath, tempStorageCfg.Path); err != nil {

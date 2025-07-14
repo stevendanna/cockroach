@@ -385,6 +385,12 @@ SecondaryIndex :  EmbeddedExpr
 SecondaryIndex :  RecreateSourceIndexID
 SecondaryIndex :  RecreateTargetIndexID
 
+object SecondaryIndexPartial
+
+SecondaryIndexPartial :  TableID
+SecondaryIndexPartial :  IndexID
+SecondaryIndexPartial :  Expression
+
 object Sequence
 
 Sequence :  SequenceID
@@ -468,7 +474,6 @@ object TriggerDeps
 TriggerDeps :  TableID
 TriggerDeps :  TriggerID
 TriggerDeps : []UsesRelationIDs
-TriggerDeps : []UsesRelations
 TriggerDeps : []UsesTypeIDs
 TriggerDeps : []UsesRoutineIDs
 
@@ -550,7 +555,6 @@ object View
 View :  ViewID
 View : []UsesTypeIDs
 View : []UsesRelationIDs
-View : []UsesRoutineIDs
 View : []ForwardReferences
 View :  IsTemporary
 View :  IsMaterialized
@@ -641,6 +645,7 @@ Schema <|-- SchemaComment
 Schema <|-- SchemaParent
 Table <|-- SecondaryIndex
 View <|-- SecondaryIndex
+SecondaryIndex <|-- SecondaryIndexPartial
 Sequence <|-- SequenceOption
 Column <|-- SequenceOwner
 Table <|-- TableComment

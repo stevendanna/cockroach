@@ -35,7 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/disk"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/cidr"
@@ -183,9 +183,6 @@ type BaseConfig struct {
 	// Only used if DisableRuntimeStatsMonitor is false.
 	CPUProfileDirName string
 
-	// ExecutionTraceDirName is the directory name for Go execution traces.
-	ExecutionTraceDirName string
-
 	// InflightTraceDirName is the directory name for job traces.
 	InflightTraceDirName string
 
@@ -227,7 +224,7 @@ type BaseConfig struct {
 
 	// StorageConfig is the configuration of storage based on the Stores,
 	// WALFailover and SharedStorage and BootstrapMount.
-	StorageConfig storageconfig.Node
+	StorageConfig storagepb.NodeConfig
 
 	EarlyBootExternalStorageAccessor *cloud.EarlyBootExternalStorageAccessor
 	// ExternalIODirConfig is used to configure external storage
@@ -312,7 +309,7 @@ func (cfg *BaseConfig) SetDefaults(
 	cfg.MaxOffset = MaxOffsetType(base.DefaultMaxClockOffset)
 	cfg.DisableMaxOffsetCheck = false
 	cfg.DefaultZoneConfig = zonepb.DefaultZoneConfig()
-	cfg.StorageConfig.WALFailover = storageconfig.WALFailover{}
+	cfg.StorageConfig.WALFailover = storagepb.WALFailover{}
 	cfg.TestingInsecureWebAccess = disableWebLogin
 	cfg.Stores = base.StoreSpecList{
 		Specs: []base.StoreSpec{storeSpec},
@@ -346,6 +343,7 @@ func (cfg *BaseConfig) InitTestingKnobs() {
 		}
 		storeKnobs := cfg.TestingKnobs.Store.(*kvserver.StoreTestingKnobs)
 		storeKnobs.GlobalMVCCRangeTombstone = true
+		storeKnobs.EvalKnobs.DisableInitPutFailOnTombstones = true
 		cfg.TestingKnobs.RangeFeed.(*rangefeed.TestingKnobs).IgnoreOnDeleteRangeError = true
 	}
 
@@ -773,7 +771,7 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 
 		storageConfigOpts := []storage.ConfigOption{
 			walFailoverConfig,
-			storage.Attributes(roachpb.Attributes{Attrs: spec.Attributes}),
+			storage.Attributes(spec.Attributes),
 			storage.If(storeKnobs.SmallEngineBlocks, storage.BlockSize(1)),
 			storage.BlockConcurrencyLimitDivisor(len(cfg.Stores.Specs)),
 		}
@@ -785,7 +783,7 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 		}
 
 		if spec.InMemory {
-			var sizeInBytes = spec.Size.Bytes
+			var sizeInBytes = spec.Size.Capacity
 			if spec.Size.Percent > 0 {
 				sysMem, err := status.GetTotalMemory(ctx)
 				if err != nil {
@@ -810,7 +808,7 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			if err != nil {
 				return Engines{}, errors.Wrap(err, "retrieving disk usage")
 			}
-			var sizeInBytes = spec.Size.Bytes
+			var sizeInBytes = spec.Size.Capacity
 			if spec.Size.Percent > 0 {
 				sizeInBytes = int64(float64(du.TotalBytes) * spec.Size.Percent / 100)
 			}

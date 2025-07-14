@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/distinguishedname"
 	"github.com/cockroachdb/cockroach/pkg/security/password"
-	"github.com/cockroachdb/cockroach/pkg/security/provisioning"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -83,7 +82,6 @@ func GetUserSessionInitInfo(
 	isSuperuser bool,
 	defaultSettings []sessioninit.SettingsCacheEntry,
 	subject *ldap.DN,
-	provisioningSource *provisioning.Source,
 	pwRetrieveFn func(ctx context.Context) (expired bool, hashedPassword password.PasswordHash, err error),
 	err error,
 ) {
@@ -112,7 +110,7 @@ func GetUserSessionInitInfo(
 		// Root user cannot have password expiry and must have login.
 		// It also never has default settings applied to it, and it cannot
 		// have its SUBJECT configured.
-		return true, true, true, true, true, nil, nil, nil, rootFn, nil
+		return true, true, true, true, true, nil, nil, rootFn, nil
 	}
 
 	var authInfo sessioninit.AuthInfo
@@ -208,7 +206,6 @@ func GetUserSessionInitInfo(
 		isSuperuser,
 		settingsEntries,
 		authInfo.Subject,
-		authInfo.ProvisioningSource,
 		func(ctx context.Context) (expired bool, ret password.PasswordHash, err error) {
 			ret = authInfo.HashedPassword
 			if authInfo.ValidUntil != nil {
@@ -387,15 +384,6 @@ func retrieveAuthInfo(
 					}
 					aInfo.Subject = dn
 				}
-			case "PROVISIONSRC":
-				if row[1] != tree.DNull {
-					sourceStr := string(tree.MustBeDString(row[1]))
-					source, err := provisioning.ParseProvisioningSource(sourceStr)
-					if err != nil {
-						return err
-					}
-					aInfo.ProvisioningSource = source
-				}
 			}
 		}
 		if loopErr != nil {
@@ -488,6 +476,7 @@ var userLoginTimeout = settings.RegisterDurationSetting(
 	"server.user_login.timeout",
 	"timeout after which client authentication times out if some system range is unavailable (0 = no timeout)",
 	10*time.Second,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // GetAllRoles returns a "set" (map) of Roles -> true.

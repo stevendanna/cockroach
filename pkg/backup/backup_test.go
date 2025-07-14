@@ -1556,6 +1556,7 @@ func TestRestoreReplanOnLag(t *testing.T) {
 				// procCompleteCh receives a ping.
 				timer.Reset(replanFreq * 2)
 				for range timer.C {
+					timer.Read = true
 					break
 				}
 			},
@@ -5344,7 +5345,7 @@ func TestBackupRestoreSequencesInViews(t *testing.T) {
 		sqlDB.CheckQueryResults(t, `SELECT * FROM d.v`, [][]string{{"2"}})
 		sqlDB.CheckQueryResults(t, `SHOW CREATE VIEW d.v`, [][]string{{
 			"d.public.v", "CREATE VIEW public.v (\n\tk\n) AS " +
-				"SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\";",
+				"SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\"",
 		}})
 
 		// Test that references are still tracked.
@@ -5370,7 +5371,7 @@ func TestBackupRestoreSequencesInViews(t *testing.T) {
 		sqlDB.Exec(t, `RESTORE TABLE s, v FROM LATEST IN 'nodelocal://1/test/'`)
 		sqlDB.CheckQueryResults(t, `SHOW CREATE VIEW d.v`, [][]string{{
 			"d.public.v", "CREATE VIEW public.v (\n\tk\n) AS " +
-				"(SELECT k FROM (SELECT nextval('public.s'::REGCLASS) AS k) AS \"?subquery1?\");",
+				"(SELECT k FROM (SELECT nextval('public.s'::REGCLASS) AS k) AS \"?subquery1?\")",
 		}})
 
 		// Check that v is not corrupted.
@@ -5380,7 +5381,7 @@ func TestBackupRestoreSequencesInViews(t *testing.T) {
 		sqlDB.Exec(t, `ALTER SEQUENCE s RENAME TO s2`)
 		sqlDB.CheckQueryResults(t, `SHOW CREATE VIEW d.v`, [][]string{{
 			"d.public.v", "CREATE VIEW public.v (\n\tk\n) AS " +
-				"(SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\");",
+				"(SELECT k FROM (SELECT nextval('public.s2'::REGCLASS) AS k) AS \"?subquery1?\")",
 		}})
 		sqlDB.CheckQueryResults(t, `SELECT * FROM v`, [][]string{{"2"}})
 
@@ -8777,15 +8778,8 @@ func TestBackupOnlyPublicIndexes(t *testing.T) {
 	// appear in the backup once it is PUBLIC.
 	var g errgroup.Group
 	g.Go(func() error {
-		// This test intentionally uses hooks that require the legacy schema changer. Because
-		// the legacy schema changer cannot toggle schema_locked for backfilling schema changes,
-		// we will manually do that here.
-		_, err := sqlDB.DB.ExecContext(ctx, `ALTER TABLE data.bank SET (schema_locked=false)`)
-		if err != nil {
-			return errors.Wrap(err, "unsetting schema_locked")
-		}
 		// We use the underlying DB since the goroutine should not call t.Fatal.
-		_, err = sqlDB.DB.ExecContext(ctx,
+		_, err := sqlDB.DB.ExecContext(ctx,
 			`CREATE INDEX new_balance_idx ON data.bank(balance)`)
 		return errors.Wrap(err, "creating index")
 	})
@@ -9830,13 +9824,13 @@ func TestBackupRestoreSystemUsers(t *testing.T) {
 			{"app_role", "app", "false"},
 			{"app_role", "test_role", "false"},
 		})
-		sqlDBRestore.CheckQueryResults(t, "SELECT username, options, member_of from [SHOW USERS] ORDER BY username", [][]string{
-			{"admin", "{}", "{}"},
-			{"app", "{}", "{admin,app_role}"},
-			{"app_role", "{NOLOGIN}", "{}"},
-			{"root", "{}", "{admin}"},
-			{"test", "{}", "{}"},
-			{"test_role", "{NOLOGIN}", "{app_role}"},
+		sqlDBRestore.CheckQueryResults(t, "SHOW USERS", [][]string{
+			{"admin", "", "{}"},
+			{"app", "", "{admin,app_role}"},
+			{"app_role", "NOLOGIN", "{}"},
+			{"root", "", "{admin}"},
+			{"test", "", "{}"},
+			{"test_role", "NOLOGIN", "{app_role}"},
 		})
 	})
 
@@ -9860,13 +9854,13 @@ func TestBackupRestoreSystemUsers(t *testing.T) {
 			{"test", "false"},
 			{"test_role", "true"},
 		})
-		sqlDBRestore1.CheckQueryResults(t, "SELECT username, options, member_of from [SHOW USERS] ORDER BY username", [][]string{
-			{"admin", "{}", "{}"},
-			{"app", "{}", "{}"},
-			{"app_role", "{}", "{}"},
-			{"root", "{}", "{admin}"},
-			{"test", "{}", "{}"},
-			{"test_role", "{}", "{}"},
+		sqlDBRestore1.CheckQueryResults(t, "SHOW USERS", [][]string{
+			{"admin", "", "{}"},
+			{"app", "", "{}"},
+			{"app_role", "", "{}"},
+			{"root", "", "{admin}"},
+			{"test", "", "{}"},
+			{"test_role", "", "{}"},
 		})
 	})
 	_, sqlDBRestore2, cleanupEmptyCluster2 := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication, base.TestClusterArgs{})
@@ -9888,14 +9882,14 @@ func TestBackupRestoreSystemUsers(t *testing.T) {
 			{"test_role", "true"},
 			{"testuser", "false"},
 		})
-		sqlDBRestore2.CheckQueryResults(t, "SELECT username, options, member_of from [SHOW USERS] ORDER BY username", [][]string{
-			{"admin", "{}", "{}"},
-			{"app", "{}", "{}"},
-			{"app_role", "{}", "{}"},
-			{"root", "{}", "{admin}"},
-			{"test", "{}", "{}"},
-			{"test_role", "{}", "{}"},
-			{"testuser", "{}", "{}"},
+		sqlDBRestore2.CheckQueryResults(t, "SHOW USERS", [][]string{
+			{"admin", "", "{}"},
+			{"app", "", "{}"},
+			{"app_role", "", "{}"},
+			{"root", "", "{admin}"},
+			{"test", "", "{}"},
+			{"test_role", "", "{}"},
+			{"testuser", "", "{}"},
 		})
 	})
 }
@@ -10616,7 +10610,7 @@ func TestBackupDoNotIncludeViewSpans(t *testing.T) {
 
 	sqlDB.Exec(t, "DROP DATABASE d")
 	sqlDB.Exec(t, "RESTORE DATABASE d FROM LATEST IN $1", localFoo)
-	sqlDB.CheckQueryResults(t, "SHOW CREATE VIEW d.tview", [][]string{{"d.public.tview", "CREATE VIEW public.tview (\n\tk,\n\tb\n) AS SELECT k, b FROM d.public.t;"}})
+	sqlDB.CheckQueryResults(t, "SHOW CREATE VIEW d.tview", [][]string{{"d.public.tview", "CREATE VIEW public.tview (\n\tk,\n\tb\n) AS SELECT k, b FROM d.public.t"}})
 	sqlDB.CheckQueryResults(t, "SELECT * from d.tview", [][]string{{"1", "101"}, {"2", "202"}})
 }
 
@@ -11165,7 +11159,7 @@ CREATE TABLE child_pk (k INT8 PRIMARY KEY REFERENCES parent);
 		sqlDB.Exec(t, `CREATE DATABASE test`)
 		sqlDB.Exec(t, fmt.Sprintf(`RESTORE TABLE test.circular FROM LATEST IN $1 AS OF SYSTEM TIME %s`, ts[0]), localFoo)
 		require.Equal(t, [][]string{
-			{"test.public.circular", "CREATE TABLE public.circular (\n\tk INT8 NOT NULL,\n\tselfid INT8 NULL,\n\tCONSTRAINT circular_pkey PRIMARY KEY (k ASC),\n\tCONSTRAINT self_fk FOREIGN KEY (selfid) REFERENCES public.circular(selfid) NOT VALID,\n\tUNIQUE INDEX circular_selfid_key (selfid ASC)\n) WITH (schema_locked = true);"},
+			{"test.public.circular", "CREATE TABLE public.circular (\n\tk INT8 NOT NULL,\n\tselfid INT8 NULL,\n\tCONSTRAINT circular_pkey PRIMARY KEY (k ASC),\n\tCONSTRAINT self_fk FOREIGN KEY (selfid) REFERENCES public.circular(selfid) NOT VALID,\n\tUNIQUE INDEX circular_selfid_key (selfid ASC)\n)"},
 		}, sqlDB.QueryStr(t, `SHOW CREATE TABLE test.circular`))
 		sqlDB.Exec(t, fmt.Sprintf(`RESTORE TABLE test.parent, test.child FROM LATEST IN $1 AS OF SYSTEM TIME %s `, ts[0]), localFoo)
 		sqlDB.Exec(t, `SELECT * FROM pg_catalog.pg_constraint`)

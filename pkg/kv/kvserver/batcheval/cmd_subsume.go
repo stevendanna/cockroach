@@ -199,7 +199,7 @@ func Subsume(
 			statsDelta := enginepb.MVCCStats{}
 			for _, acq := range acquisitions {
 				if err := storage.MVCCAcquireLock(ctx, readWriter,
-					&acq.Txn, acq.IgnoredSeqNums, acq.Strength, acq.Key, &statsDelta, 0, 0, true /* allowSequenceNumberRegression */); err != nil {
+					&acq.Txn, acq.IgnoredSeqNums, acq.Strength, acq.Key, &statsDelta, 0, 0); err != nil {
 					return result.Result{}, err
 				}
 			}
@@ -245,7 +245,7 @@ func Subsume(
 	// Set DoTimelyApplicationToAllReplicas so that merges are applied on all
 	// replicas. This is needed since Replica.AdminMerge calls
 	// waitForApplication when sending a kvpb.SubsumeRequest.
-	if cArgs.EvalCtx.ClusterSettings().Version.IsActive(ctx, clusterversion.TODO_Delete_V25_1_AddRangeForceFlushKey) {
+	if cArgs.EvalCtx.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_1_AddRangeForceFlushKey) {
 		pd.Replicated.DoTimelyApplicationToAllReplicas = true
 	}
 	pd.Local.RepopulateSubsumeResponseLAI = args.PreserveUnreplicatedLocks

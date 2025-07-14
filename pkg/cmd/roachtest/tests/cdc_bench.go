@@ -114,7 +114,6 @@ func registerCDCBench(r registry.Registry) {
 				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 					runCDCBenchScan(ctx, t, c, scanType, rows, ranges, format)
 				},
-				PostProcessPerfMetrics: postProcessScanPerfMetrics,
 			})
 
 			// Enriched envelope benchmarks, using the same parameters.
@@ -298,7 +297,7 @@ func runCDCBenchScan(
 	opts, settings := makeCDCBenchOptions(c)
 
 	c.Start(ctx, t.L(), opts, settings, nData)
-	m := c.NewDeprecatedMonitor(ctx, nData.Merge(nCoord))
+	m := c.NewMonitor(ctx, nData.Merge(nCoord))
 
 	conn := c.Conn(ctx, t.L(), nData[0])
 	defer conn.Close()
@@ -482,7 +481,7 @@ func runCDCBenchWorkload(
 	}
 
 	c.Start(ctx, t.L(), opts, settings, nData)
-	m := c.NewDeprecatedMonitor(ctx, nData.Merge(nCoord))
+	m := c.NewMonitor(ctx, nData.Merge(nCoord))
 
 	conn := c.Conn(ctx, t.L(), nData[0])
 	defer conn.Close()

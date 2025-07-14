@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -89,7 +88,7 @@ func newState(settings *config.SimulationSettings) *state {
 type rmap struct {
 	// NB: Both rangeTree and rangeMap hold references to ranges. They must
 	// both be updated on insertion and deletion to maintain consistent state.
-	rangeTree *btree.BTreeG[*rng]
+	rangeTree *btree.BTree
 	rangeMap  map[RangeID]*rng
 
 	// Unique ID generator for Ranges.
@@ -97,16 +96,18 @@ type rmap struct {
 }
 
 func newRMap() *rmap {
-	lessFn := func(a, b *rng) bool {
-		return a.startKey < b.startKey
-	}
 	rmap := &rmap{
-		rangeTree: btree.NewG[*rng](8, lessFn),
+		rangeTree: btree.New(8),
 		rangeMap:  make(map[RangeID]*rng),
 	}
 
 	rmap.initFirstRange()
 	return rmap
+}
+
+// Less is part of the btree.Item interface.
+func (r *rng) Less(than btree.Item) bool {
+	return r.startKey < than.(*rng).startKey
 }
 
 // initFirstRange initializes the first range within the rangemap, with
@@ -163,7 +164,8 @@ func (s *state) String() string {
 	builder := &strings.Builder{}
 
 	orderedRanges := []*rng{}
-	s.ranges.rangeTree.Ascend(func(r *rng) bool {
+	s.ranges.rangeTree.Ascend(func(i btree.Item) bool {
+		r := i.(*rng)
 		orderedRanges = append(orderedRanges, r)
 		return !r.desc.EndKey.Equal(MaxKey.ToRKey())
 	})
@@ -187,21 +189,16 @@ func (s *state) String() string {
 		}
 	}
 	builder.WriteString("] ")
-	builder.WriteString("\n")
 
 	nRanges := len(orderedRanges)
 	iterRanges := 0
 	builder.WriteString(fmt.Sprintf("ranges(%d)=[", nRanges))
-	numOfRangesPerLine := 5
 	for _, r := range orderedRanges {
 		builder.WriteString(r.String())
 		if iterRanges < nRanges-1 {
 			builder.WriteString(",")
 		}
 		iterRanges++
-		if iterRanges%numOfRangesPerLine == 0 {
-			builder.WriteString("\n")
-		}
 	}
 	builder.WriteString("]")
 
@@ -333,8 +330,8 @@ func (s *state) rangeFor(key Key) *rng {
 	var r *rng
 	// If keyToFind equals to MinKey of the range, we found the right range, if
 	// the range is less than keyToFind then this is the right range also.
-	s.ranges.rangeTree.DescendLessOrEqual(keyToFind, func(i *rng) bool {
-		r = i
+	s.ranges.rangeTree.DescendLessOrEqual(keyToFind, func(i btree.Item) bool {
+		r = i.(*rng)
 		return false
 	})
 	return r
@@ -518,7 +515,7 @@ func (s *state) AddStore(nodeID NodeID) (Store, bool) {
 	node := s.nodes[nodeID]
 	s.storeSeqGen++
 	storeID := s.storeSeqGen
-	sp, st := NewStorePool(s.NodeCountFn(), s.NodeLivenessFn(), hlc.NewClockForTesting(s.clock), s.settings.ST)
+	sp, st := NewStorePool(s.NodeCountFn(), s.NodeLivenessFn(), hlc.NewClockForTesting(s.clock))
 	store := &store{
 		storeID:   storeID,
 		nodeID:    nodeID,
@@ -691,7 +688,8 @@ func (s *state) SetSpanConfig(span roachpb.Span, config *roachpb.SpanConfig) {
 	//   [f, z)         - keeps old span config from [c,z)
 
 	splitsRequired := []Key{}
-	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: startKey}, func(cur *rng) bool {
+	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: startKey}, func(i btree.Item) bool {
+		cur, _ := i.(*rng)
 		rStart := cur.startKey
 		// There are two cases we handle:
 		// (1) rStart == startKey: We don't need to split.
@@ -704,7 +702,8 @@ func (s *state) SetSpanConfig(span roachpb.Span, config *roachpb.SpanConfig) {
 		return false
 	})
 
-	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: endKey}, func(cur *rng) bool {
+	s.ranges.rangeTree.DescendLessOrEqual(&rng{startKey: endKey}, func(i btree.Item) bool {
+		cur, _ := i.(*rng)
 		rEnd := cur.endKey
 		rStart := cur.startKey
 		if rStart == endKey {
@@ -733,7 +732,8 @@ func (s *state) SetSpanConfig(span roachpb.Span, config *roachpb.SpanConfig) {
 	}
 
 	// Apply the span config to all the ranges affected.
-	s.ranges.rangeTree.AscendGreaterOrEqual(&rng{startKey: startKey}, func(cur *rng) bool {
+	s.ranges.rangeTree.AscendGreaterOrEqual(&rng{startKey: startKey}, func(i btree.Item) bool {
+		cur, _ := i.(*rng)
 		if cur.startKey == endKey {
 			return false
 		}
@@ -800,15 +800,16 @@ func (s *state) SplitRange(splitKey Key) (Range, Range, bool) {
 	endKey := Key(math.MaxInt32)
 	failed := false
 	// Find the sucessor range in the range map, to determine the endkey.
-	ranges.rangeTree.AscendGreaterOrEqual(r, func(i *rng) bool {
+	ranges.rangeTree.AscendGreaterOrEqual(r, func(i btree.Item) bool {
 		// The min key already exists in the range map, we cannot return a new
 		// range.
-		if r.startKey == i.startKey {
+		if !r.Less(i) {
 			failed = true
 			return false
 		}
 
-		endKey = i.startKey
+		successorRange, _ := i.(*rng)
+		endKey = successorRange.startKey
 		return false
 	})
 
@@ -821,10 +822,10 @@ func (s *state) SplitRange(splitKey Key) (Range, Range, bool) {
 	var predecessorRange *rng
 	// Find the predecessor range, to update it's endkey to the new range's min
 	// key.
-	ranges.rangeTree.DescendLessOrEqual(r, func(i *rng) bool {
+	ranges.rangeTree.DescendLessOrEqual(r, func(i btree.Item) bool {
 		// The case where the min key already exists cannot occur here, as the
 		// failed flag will have been set above.
-		predecessorRange = i
+		predecessorRange, _ = i.(*rng)
 		return false
 	})
 
@@ -997,7 +998,8 @@ func (s *state) ApplyLoad(lb workload.LoadBatch) {
 	// that range is not larger than the any key of the remaining load events.
 	iter := n - 1
 	max := &rng{startKey: Key(lb[iter].Key)}
-	s.ranges.rangeTree.DescendLessOrEqual(max, func(next *rng) bool {
+	s.ranges.rangeTree.DescendLessOrEqual(max, func(i btree.Item) bool {
+		next, _ := i.(*rng)
 		for iter > -1 && lb[iter].Key >= int64(next.startKey) {
 			s.applyLoad(next, lb[iter])
 			iter--
@@ -1068,7 +1070,7 @@ func (s *state) Clock() timeutil.TimeSource {
 // UpdateStorePool modifies the state of the StorePool for the Store with
 // ID StoreID.
 func (s *state) UpdateStorePool(
-	storeID StoreID, storeDescriptors map[roachpb.StoreID]*storepool.StoreDetailMu,
+	storeID StoreID, storeDescriptors map[roachpb.StoreID]*storepool.StoreDetail,
 ) {
 	var storeIDs roachpb.StoreIDSlice
 	for storeIDA := range storeDescriptors {
@@ -1077,8 +1079,10 @@ func (s *state) UpdateStorePool(
 	sort.Sort(storeIDs)
 	for _, gossipStoreID := range storeIDs {
 		detail := storeDescriptors[gossipStoreID]
-		copiedDetail := detail.Copy()
-		s.stores[storeID].storepool.Details.StoreDetails.Store(gossipStoreID, copiedDetail)
+		copiedDetail := *detail
+		copiedDesc := *detail.Desc
+		copiedDetail.Desc = &copiedDesc
+		s.stores[storeID].storepool.DetailsMu.StoreDetails[gossipStoreID] = &copiedDetail
 	}
 }
 
@@ -1279,7 +1283,7 @@ func (s *state) Scan(
 func (s *state) Report() roachpb.SpanConfigConformanceReport {
 	reporter := spanconfigreporter.New(
 		s.nodeLiveness, s, s, s,
-		s.settings.ST, &spanconfig.TestingKnobs{})
+		cluster.MakeClusterSettings(), &spanconfig.TestingKnobs{})
 	report, err := reporter.SpanConfigConformance(context.Background(), []roachpb.Span{{}})
 	if err != nil {
 		panic(fmt.Sprintf("programming error: error getting span config report %s", err.Error()))
@@ -1318,27 +1322,6 @@ func (s *state) publishNewCapacityEvent(capacity roachpb.StoreCapacity, storeID 
 // store.
 func (s *state) RegisterConfigChangeListener(listener ConfigChangeListener) {
 	s.configChangeListeners = append(s.configChangeListeners, listener)
-}
-
-// SetSimulationSettings sets the simulation setting for the given key to the
-// given value.
-func (s *state) SetSimulationSettings(Key string, Value interface{}) {
-	settingsValue := reflect.ValueOf(s.settings).Elem()
-	settingsType := settingsValue.Type()
-
-	for i := 0; i < settingsValue.NumField(); i++ {
-		field := settingsType.Field(i)
-		if field.Name == Key {
-			fieldValue := settingsValue.Field(i)
-			if fieldValue.CanSet() {
-				newValue := reflect.ValueOf(Value)
-				if newValue.Type().ConvertibleTo(fieldValue.Type()) {
-					fieldValue.Set(newValue.Convert(fieldValue.Type()))
-				}
-			}
-			break
-		}
-	}
 }
 
 // node is an implementation of the Node interface.

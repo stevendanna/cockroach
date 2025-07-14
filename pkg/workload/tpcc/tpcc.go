@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"io"
 	"math/rand/v2"
 	"os"
 	"regexp"
@@ -49,7 +48,6 @@ const (
 )
 
 type tpcc struct {
-	out          io.Writer
 	flags        workload.Flags
 	connFlags    *workload.ConnFlags
 	workloadName string
@@ -85,6 +83,9 @@ type tpcc struct {
 	activeWorkers          int
 	fks                    bool
 	separateColumnFamilies bool
+	// deprecatedFKIndexes adds in foreign key indexes that are no longer needed
+	// due to origin index restrictions being lifted.
+	deprecatedFkIndexes bool
 
 	txInfos []txInfo
 	// deck contains indexes into the txInfos slice.
@@ -135,14 +136,6 @@ type tpcc struct {
 	resetTableCancelFn context.CancelFunc
 
 	asOfSystemTime string
-
-	// Set to true if a literal implemenation of the workload is desired. In
-	// this case "literal" means that the New Order and Payments transactions
-	// are implemented statement-by-statement as specified in the specification.
-	// This avoids the use of RETURNING clauses to batch updates together with
-	// selects, and performs each row select/update separately, as opposed to
-	// batching them using an IN list.
-	literalImplementation bool
 }
 
 type waitSetter struct {
@@ -182,37 +175,6 @@ func (w *waitSetter) String() string {
 	default:
 		return fmt.Sprintf("%f", *w.val)
 	}
-}
-
-// lastDurationSetter is a pflag.Value implementation that sets the last
-// duration of a workload run for consistency checks. It is used to determine
-// which consistency checks to skip for long duration workloads. It sets the
-// `isLongDurationWorkload` field on the `tpcc` to true if the duration is
-// greater than or equal to the long duration workload threshold.
-type lastDurationSetter struct {
-	val  *time.Duration
-	tpcc *tpcc
-}
-
-// Set implements the pflag.Value interface.
-func (p *lastDurationSetter) Set(val string) error {
-	duration, err := time.ParseDuration(val)
-	if err != nil {
-		return err
-	}
-	p.val = &duration
-	p.tpcc.isLongDurationWorkload = duration >= longDurationWorkloadThreshold
-	return nil
-}
-
-// String implements the pflag.Value interface.
-func (p *lastDurationSetter) String() string {
-	return p.val.String()
-}
-
-// Type implements the pflag.Value interface.
-func (p *lastDurationSetter) Type() string {
-	return "duration"
 }
 
 var _ pgx.QueryTracer = fileLoggerQueryTracer{}
@@ -278,7 +240,6 @@ var tpccMeta = workload.Meta{
 	RandomSeed: RandomSeed,
 	New: func() workload.Generator {
 		g := &tpcc{
-			out:          os.Stdout,
 			workloadName: "tpcc",
 		}
 		g.flags.FlagSet = pflag.NewFlagSet(`tpcc`, pflag.ContinueOnError)
@@ -301,20 +262,20 @@ var tpccMeta = workload.Meta{
 			`txn-retries`:              {RuntimeOnly: true},
 			`repair-order-ids`:         {RuntimeOnly: true},
 			`expensive-checks`:         {RuntimeOnly: true, CheckConsistencyOnly: true},
-			`last-duration`:            {RuntimeOnly: true, CheckConsistencyOnly: true},
 			`local-warehouses`:         {RuntimeOnly: true},
 			`regions`:                  {RuntimeOnly: true},
 			`survival-goal`:            {RuntimeOnly: true},
 			`replicate-static-columns`: {RuntimeOnly: true},
+			`deprecated-fk-indexes`:    {RuntimeOnly: true},
 			`query-trace-file`:         {RuntimeOnly: true},
 			`fake-time`:                {RuntimeOnly: true},
 			`txn-preamble-file`:        {RuntimeOnly: true},
 			`aost`:                     {RuntimeOnly: true, CheckConsistencyOnly: true},
-			`literal-implementation`:   {RuntimeOnly: true},
 		}
 
 		g.flags.IntVar(&g.warehouses, `warehouses`, 1, `Number of warehouses for loading`)
 		g.flags.BoolVar(&g.fks, `fks`, true, `Add the foreign keys`)
+		g.flags.BoolVar(&g.deprecatedFkIndexes, `deprecated-fk-indexes`, false, `Add deprecated foreign keys (needed when running against v20.1 or below clusters)`)
 
 		g.flags.StringVar(&g.mix, `mix`,
 			`newOrder=10,payment=10,orderStatus=1,delivery=1,stockLevel=1`,
@@ -355,8 +316,6 @@ var tpccMeta = workload.Meta{
 		g.flags.StringVar(&g.asOfSystemTime, "aost", "",
 			"This is an optional parameter to specify AOST; used exclusively in conjunction with the TPC-C consistency "+
 				"check. Example values are (\"'-1m'\", \"'-1h'\")")
-		g.flags.BoolVar(&g.literalImplementation, "literal-implementation", false, "If true, use a literal implementation of the TPC-C kit instead of an optimized version")
-		g.flags.Var(&lastDurationSetter{val: &[]time.Duration{0}[0], tpcc: g}, "last-duration", "The duration of the previous workload run (Used to determine which consistency checks to skip for long duration workloads).")
 
 		RandomSeed.AddFlag(&g.flags)
 		g.connFlags = workload.NewConnFlags(&g.flags)
@@ -525,11 +484,9 @@ func (w *tpcc) Hooks() workload.Hooks {
 				if err != nil {
 					return errors.Wrap(err, "error creating multi-region partitioner")
 				}
-				w.auditor = newAuditor(w.activeWarehouses, w.wMRPart, w.affinityPartitions)
-			} else {
-				w.auditor = newAuditor(w.activeWarehouses, w.wPart, w.affinityPartitions)
 			}
 
+			w.auditor = newAuditor(w.activeWarehouses, w.wPart, w.affinityPartitions)
 			return initializeMix(w)
 		},
 		PreCreate: func(db *gosql.DB) error {
@@ -607,11 +564,18 @@ func (w *tpcc) Hooks() workload.Hooks {
 
 				for _, fkStmt := range fkStmts {
 					if _, err := db.Exec(fkStmt); err != nil {
-						// If the statement failed because the fk already
-						// exists, ignore it. Return the error for any other
-						// reason.
 						const duplFKErr = "columns cannot be used by multiple foreign key constraints"
-						if !strings.Contains(err.Error(), duplFKErr) {
+						const idxErr = "foreign key requires an existing index on columns"
+						switch {
+						case strings.Contains(err.Error(), idxErr):
+							fmt.Println(errors.WithHint(err, "try using the --deprecated-fk-indexes flag"))
+							// If the statement failed because of a missing FK index, suggest
+							// to use the deprecated-fks flag.
+							return errors.WithHint(err, "try using the --deprecated-fk-indexes flag")
+						case strings.Contains(err.Error(), duplFKErr):
+							// If the statement failed because the fk already exists,
+							// ignore it. Return the error for any other reason.
+						default:
 							return err
 						}
 					}
@@ -621,14 +585,7 @@ func (w *tpcc) Hooks() workload.Hooks {
 				// extraordinarily longer. If data is imported with IMPORT, this
 				// statement is idempotent.
 				if len(w.multiRegionCfg.regions) > 0 {
-					// Locality changes can only be made if schema_locked is toggled.
-					if _, err := db.Exec(`ALTER TABLE item SET (schema_locked=false)`); err != nil {
-						return err
-					}
 					if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE item SET %s`, localityGlobalSuffix)); err != nil {
-						return err
-					}
-					if _, err := db.Exec(`ALTER TABLE item SET (schema_locked=true)`); err != nil {
 						return err
 					}
 				}
@@ -645,7 +602,7 @@ func (w *tpcc) Hooks() workload.Hooks {
 		PostRun: func(startElapsed time.Duration) error {
 			w.auditor.runChecks(w.localWarehouses)
 			const totalHeader = "\n_elapsed_______tpmC____efc__avg(ms)__p50(ms)__p90(ms)__p95(ms)__p99(ms)_pMax(ms)"
-			fmt.Fprintln(w.out, totalHeader)
+			fmt.Println(totalHeader)
 
 			partitionFactor := 1
 			countAffinity := len(w.affinityPartitions)
@@ -657,7 +614,7 @@ func (w *tpcc) Hooks() workload.Hooks {
 			w.reg.Tick(func(t histogram.Tick) {
 				if newOrderName == t.Name {
 					tpmC := float64(t.Cumulative.TotalCount()) / startElapsed.Seconds() * 60
-					fmt.Fprintf(w.out, "%7.1fs %10.1f %5.1f%% %8.1f %8.1f %8.1f %8.1f %8.1f %8.1f\n",
+					fmt.Printf("%7.1fs %10.1f %5.1f%% %8.1f %8.1f %8.1f %8.1f %8.1f %8.1f\n",
 						startElapsed.Seconds(),
 						tpmC,
 						100*tpmC/(SpecWarehouseFactor*float64(w.activeWarehouses/partitionFactor)),
@@ -804,6 +761,10 @@ func (w *tpcc) Tables() []workload.Table {
 		Name: `history`,
 		Schema: makeSchema(
 			tpccHistorySchemaBase,
+			maybeAddFkSuffix(
+				w.deprecatedFkIndexes,
+				deprecatedTpccHistorySchemaFkSuffix,
+			),
 			maybeAddLocalityRegionalByRow(w.multiRegionCfg, `h_w_id`),
 		),
 		InitialRows: workload.BatchedTuples{
@@ -863,6 +824,10 @@ func (w *tpcc) Tables() []workload.Table {
 		Name: `stock`,
 		Schema: makeSchema(
 			tpccStockSchemaBase,
+			maybeAddFkSuffix(
+				w.deprecatedFkIndexes,
+				deprecatedTpccStockSchemaFkSuffix,
+			),
 			maybeAddLocalityRegionalByRow(w.multiRegionCfg, `s_w_id`),
 		),
 		InitialRows: workload.BatchedTuples{
@@ -875,6 +840,10 @@ func (w *tpcc) Tables() []workload.Table {
 		Name: `order_line`,
 		Schema: makeSchema(
 			tpccOrderLineSchemaBase,
+			maybeAddFkSuffix(
+				w.deprecatedFkIndexes,
+				deprecatedTpccOrderLineSchemaFkSuffix,
+			),
 			maybeAddLocalityRegionalByRow(w.multiRegionCfg, `ol_w_id`),
 		),
 		InitialRows: workload.BatchedTuples{
@@ -934,8 +903,8 @@ func (w *tpcc) Ops(
 	// Limit the number of connections per pool (otherwise preparing statements at
 	// startup can be slow).
 	cfg.MaxConnsPerPool = w.connFlags.Concurrency
-	fmt.Fprintf(w.out, "Max Total connections %d Max connections per pool %d \n", cfg.MaxTotalConnections, cfg.MaxConnsPerPool)
-	fmt.Fprintf(w.out, "Initializing %d connections...\n", w.numConns)
+	fmt.Printf("Max Total connections %d Max connections per pool %d \n", cfg.MaxTotalConnections, cfg.MaxConnsPerPool)
+	fmt.Printf("Initializing %d connections...\n", w.numConns)
 
 	// If queries were specified before each operation, then lets
 	// execute those.
@@ -1031,7 +1000,7 @@ func (w *tpcc) Ops(
 		}
 	}
 
-	fmt.Fprintf(w.out, "Initializing %d idle connections...\n", w.idleConns)
+	fmt.Printf("Initializing %d idle connections...\n", w.idleConns)
 	var conns []*pgx.Conn
 	for i := 0; i < w.idleConns; i++ {
 		for _, url := range urls {
@@ -1046,7 +1015,7 @@ func (w *tpcc) Ops(
 			conns = append(conns, conn)
 		}
 	}
-	fmt.Fprintf(w.out, "Initializing %d workers and preparing statements...\n", w.workers)
+	fmt.Printf("Initializing %d workers and preparing statements...\n", w.workers)
 	ql := workload.QueryLoad{}
 	ql.WorkerFns = make([]func(context.Context) error, 0, w.workers)
 	var group errgroup.Group
@@ -1142,13 +1111,6 @@ func (w *tpcc) Ops(
 		return nil
 	}
 	return ql, nil
-}
-
-// SetOutput allows overriding where the TPCC output is sent.
-// Note that this is not connected to the --display-format flag,
-// which lives at the main workload level.
-func (w *tpcc) SetOutput(out io.Writer) {
-	w.out = out
 }
 
 // executeTx runs fn inside a transaction with retries, if enabled. On

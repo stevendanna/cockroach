@@ -67,7 +67,6 @@ func (s *slowDisk) startTargetNode(ctx context.Context, t test.Test, v variation
 		s.staller = roachtestutil.NoopDiskStaller{}
 	} else {
 		s.staller = roachtestutil.MakeCgroupDiskStaller(t, v, false /* readsToo */, false /* logsToo */)
-		s.staller.Setup(ctx)
 	}
 }
 

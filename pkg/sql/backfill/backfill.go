@@ -12,16 +12,17 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
+	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
@@ -38,8 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecencoding"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecstore"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecstore/vecstorepb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -57,6 +56,7 @@ var IndexBackfillCheckpointInterval = settings.RegisterDurationSetting(
 	"bulkio.index_backfill.checkpoint_interval",
 	"the amount of time between index backfill checkpoint updates",
 	30*time.Second,
+	settings.NonNegativeDuration,
 )
 
 // MutationFilter is the type of a simple predicate on a mutation.
@@ -231,7 +231,7 @@ func (cb *ColumnBackfiller) InitForDistributedUse(
 	var defaultExprs, computedExprs []tree.TypedExpr
 	// Install type metadata in the target descriptors, as well as resolve any
 	// user defined types in the column expressions.
-	if err := flowCtx.Cfg.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
+	if err := flowCtx.Cfg.DB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 		resolver := flowCtx.NewTypeResolver(txn.KV())
 		// Hydrate all the types present in the table.
 		if err := typedesc.HydrateTypesInDescriptor(ctx, desc, &resolver); err != nil {
@@ -240,7 +240,6 @@ func (cb *ColumnBackfiller) InitForDistributedUse(
 		// Set up a SemaContext to type check the default and computed expressions.
 		semaCtx := tree.MakeSemaContext(&resolver)
 		semaCtx.UnsupportedTypeChecker = eval.NewUnsupportedTypeChecker(evalCtx.Settings.Version)
-		semaCtx.FunctionResolver = descs.NewDistSQLFunctionResolver(txn.Descriptors(), txn.KV())
 		var err error
 		defaultExprs, err = schemaexpr.MakeDefaultExprs(
 			ctx, cb.added, &transform.ExprTransformContext{}, evalCtx, &semaCtx,
@@ -406,9 +405,8 @@ func (cb *ColumnBackfiller) RunColumnBackfillChunk(
 		// VectorIndexUpdateHelper in this case.
 		var pm row.PartialIndexUpdateHelper
 		var vh row.VectorIndexUpdateHelper
-		var oth row.OriginTimestampCPutHelper
 		if _, err := ru.UpdateRow(
-			ctx, b, oldValues, updateValues, pm, vh, oth, false /* mustValidateOldPKValues */, traceKV,
+			ctx, b, oldValues, updateValues, pm, vh, nil, false /* mustValidateOldPKValues */, traceKV,
 		); err != nil {
 			return roachpb.Key{}, err
 		}
@@ -450,7 +448,7 @@ func ConvertBackfillError(
 	if err != nil {
 		return err
 	}
-	return row.ConvertBatchError(ctx, desc, b, true /* alwaysConvertCondFailed */)
+	return row.ConvertBatchError(ctx, desc, b)
 }
 
 type muBoundAccount struct {
@@ -478,12 +476,8 @@ type VectorIndexHelper struct {
 	numPrefixCols int
 	// vecIndex is the vector index retrieved from the vector index manager.
 	vecIndex *cspann.Index
-	// fullVecFetchSpec is the fetch spec for the full vector.
-	fullVecFetchSpec vecstorepb.GetFullVectorsFetchSpec
 	// indexPrefix are the prefix bytes for this index (/Tenant/Table/Index).
 	indexPrefix []byte
-	// evalCtx is the evaluation context used for vector operations.
-	evalCtx *eval.Context
 }
 
 // ReEncodeVector takes a rowenc.indexEntry, extracts the key values, unquantized
@@ -514,8 +508,7 @@ func (vih *VectorIndexHelper) ReEncodeVector(
 
 	// Locate a new partition for the key and re-encode the vector.
 	var searcher vecindex.MutationSearcher
-	searcher.Init(vih.evalCtx, vih.vecIndex, txn, &vih.fullVecFetchSpec)
-
+	searcher.Init(vih.vecIndex, txn)
 	if err := searcher.SearchForInsert(ctx, roachpb.Key(key.Prefix), vec); err != nil {
 		return &rowenc.IndexEntry{}, err
 	}
@@ -604,7 +597,7 @@ func (ib *IndexBackfiller) InitForLocalUse(
 ) error {
 
 	// Initialize ib.added.
-	if err := ib.initIndexes(ctx, evalCtx, desc, nil /* allowList */, 0 /*sourceIndex*/, nil); err != nil {
+	if err := ib.initIndexes(ctx, evalCtx.Codec, desc, nil /* allowList */, 0 /*sourceIndex*/, nil); err != nil {
 		return err
 	}
 
@@ -750,14 +743,7 @@ func (ib *IndexBackfiller) InitForDistributedUse(
 	evalCtx := flowCtx.NewEvalCtx()
 
 	// Initialize ib.added.
-	if err := ib.initIndexes(
-		ctx,
-		evalCtx,
-		desc,
-		allowList,
-		sourceIndexID,
-		flowCtx.Cfg.VecIndexManager.(*vecindex.Manager),
-	); err != nil {
+	if err := ib.initIndexes(ctx, evalCtx.Codec, desc, allowList, sourceIndexID, flowCtx.Cfg.VecIndexManager.(*vecindex.Manager)); err != nil {
 		return err
 	}
 
@@ -772,7 +758,7 @@ func (ib *IndexBackfiller) InitForDistributedUse(
 
 	// Install type metadata in the target descriptors, as well as resolve any
 	// user defined types in partial index predicate expressions.
-	if err := flowCtx.Cfg.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) (err error) {
+	if err := flowCtx.Cfg.DB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
 		resolver := flowCtx.NewTypeResolver(txn.KV())
 		// Hydrate all the types present in the table.
 		if err = typedesc.HydrateTypesInDescriptor(ctx, desc, &resolver); err != nil {
@@ -781,7 +767,6 @@ func (ib *IndexBackfiller) InitForDistributedUse(
 		// Set up a SemaContext to type check the default and computed expressions.
 		semaCtx := tree.MakeSemaContext(&resolver)
 		semaCtx.UnsupportedTypeChecker = eval.NewUnsupportedTypeChecker(evalCtx.Settings.Version)
-		semaCtx.FunctionResolver = descs.NewDistSQLFunctionResolver(txn.Descriptors(), txn.KV())
 		// Convert any partial index predicate strings into expressions.
 		predicates, colExprs, referencedColumns, err = constructExprs(
 			ctx, desc, ib.added, ib.cols, ib.addedCols, ib.computedCols, evalCtx, &semaCtx,
@@ -851,7 +836,7 @@ func (ib *IndexBackfiller) initCols(desc catalog.TableDescriptor) (err error) {
 // If `allowList` is nil, we add all adding index mutations.
 func (ib *IndexBackfiller) initIndexes(
 	ctx context.Context,
-	evalCtx *eval.Context,
+	codec keys.SQLCodec,
 	desc catalog.TableDescriptor,
 	allowList []catid.IndexID,
 	sourceIndexID catid.IndexID,
@@ -880,7 +865,7 @@ func (ib *IndexBackfiller) initIndexes(
 			(allowListAsSet.Empty() || allowListAsSet.Contains(m.AsIndex().GetID())) {
 			idx := m.AsIndex()
 			ib.added = append(ib.added, idx)
-			keyPrefix := rowenc.MakeIndexKeyPrefix(evalCtx.Codec, desc.GetID(), idx.GetID())
+			keyPrefix := rowenc.MakeIndexKeyPrefix(codec, desc.GetID(), idx.GetID())
 			ib.keyPrefixes = append(ib.keyPrefixes, keyPrefix)
 		}
 	}
@@ -904,29 +889,18 @@ func (ib *IndexBackfiller) initIndexes(
 			return err
 		}
 
-		vecIndex, err := vecIndexManager.Get(ctx, desc.GetID(), idx.GetID())
+		vecIndex, err := vecIndexManager.GetWithDesc(ctx, desc, idx)
 		if err != nil {
 			return err
 		}
 
-		helper := VectorIndexHelper{
+		ib.VectorIndexes[idx.GetID()] = VectorIndexHelper{
 			vectorOrd:     vectorCol.Ordinal(),
 			centroid:      make(vector.T, idx.GetVecConfig().Dims),
 			numPrefixCols: idx.NumKeyColumns() - 1,
 			vecIndex:      vecIndex,
-			indexPrefix:   rowenc.MakeIndexKeyPrefix(evalCtx.Codec, desc.GetID(), idx.GetID()),
-			evalCtx:       ib.evalCtx,
+			indexPrefix:   rowenc.MakeIndexKeyPrefix(codec, desc.GetID(), idx.GetID()),
 		}
-		if err := vecstore.InitGetFullVectorsFetchSpec(
-			&helper.fullVecFetchSpec,
-			evalCtx,
-			desc,
-			idx,
-			ib.sourceIndex,
-		); err != nil {
-			return err
-		}
-		ib.VectorIndexes[idx.GetID()] = helper
 	}
 
 	return nil

@@ -2396,7 +2396,6 @@ func mvccPutInternal(
 	// definition for rationale.
 	readTimestamp := timestamp
 	writeTimestamp := timestamp
-	exclusionTimestamp := opts.ExclusionTimestamp
 	if opts.Txn != nil {
 		readTimestamp = opts.Txn.ReadTimestamp
 		if readTimestamp != timestamp {
@@ -2659,15 +2658,13 @@ func mvccPutInternal(
 			// NB: even if metaTimestamp is less than writeTimestamp, we can't
 			// avoid the WriteTooOld error if metaTimestamp is equal to or
 			// greater than readTimestamp. This is because certain operations
-			// like ConditionalPuts avoid ever needing refreshes by ensuring
-			// that they propagate WriteTooOld errors immediately instead of
-			// allowing their transactions to continue and be retried before
-			// committing.
+			// like ConditionalPuts and InitPuts avoid ever needing refreshes
+			// by ensuring that they propagate WriteTooOld errors immediately
+			// instead of allowing their transactions to continue and be retried
+			// before committing.
 			writeTimestamp.Forward(metaTimestamp.Next())
 			writeTooOldErr := kvpb.NewWriteTooOldError(readTimestamp, writeTimestamp, key)
 			return false, roachpb.LockAcquisition{}, writeTooOldErr
-		} else if !exclusionTimestamp.IsEmpty() && exclusionTimestamp.LessEq(metaTimestamp) {
-			return false, roachpb.LockAcquisition{}, kvpb.NewExclusionViolationError(exclusionTimestamp, metaTimestamp, key)
 		} else /* meta.Txn == nil && metaTimestamp.Less(readTimestamp) */ {
 			// If a valueFn is specified, read the existing value using iter.
 			opts := MVCCGetOptions{
@@ -3058,6 +3055,101 @@ func mvccConditionalPutUsingIter(
 	}
 
 	return mvccPutUsingIter(ctx, writer, iter, ltScanner, key, timestamp, noValue, valueFn, opts.MVCCWriteOptions)
+}
+
+// MVCCInitPut sets the value for a specified key if the key doesn't exist. It
+// returns a ConditionFailedError when the write fails or if the key exists with
+// an existing value that is different from the supplied value. If
+// failOnTombstones is set to true, tombstones count as mismatched values and
+// will cause a ConditionFailedError.
+//
+// Note that, when writing transactionally, the txn's timestamps
+// dictate the timestamp of the operation, and the timestamp parameter is
+// confusing and redundant. See the comment on mvccPutInternal for details.
+func MVCCInitPut(
+	ctx context.Context,
+	rw ReadWriter,
+	key roachpb.Key,
+	timestamp hlc.Timestamp,
+	value roachpb.Value,
+	failOnTombstones bool,
+	opts MVCCWriteOptions,
+) (roachpb.LockAcquisition, error) {
+	iter, err := newMVCCIterator(
+		ctx, rw, timestamp, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
+		IterOptions{
+			KeyTypes:     IterKeyTypePointsAndRanges,
+			Prefix:       true,
+			ReadCategory: opts.Category,
+		},
+	)
+	if err != nil {
+		return roachpb.LockAcquisition{}, err
+	}
+	defer iter.Close()
+
+	inlinePut := timestamp.IsEmpty()
+	var ltScanner *lockTableKeyScanner
+	if !inlinePut {
+		ltScanner, err = newLockTableKeyScanner(
+			ctx, rw, opts.TxnID(), lock.Intent, opts.MaxLockConflicts, opts.TargetLockConflictBytes, opts.Category)
+		if err != nil {
+			return roachpb.LockAcquisition{}, err
+		}
+		defer ltScanner.close()
+	}
+
+	return mvccInitPutUsingIter(ctx, rw, iter, ltScanner, key, timestamp, value, failOnTombstones, opts)
+}
+
+// MVCCBlindInitPut is a fast-path of MVCCInitPut. See the MVCCInitPut
+// comments for details of the semantics. MVCCBlindInitPut skips
+// retrieving the existing metadata for the key requiring the caller
+// to guarantee no version for the key currently exist.
+//
+// Note that, when writing transactionally, the txn's timestamps
+// dictate the timestamp of the operation, and the timestamp parameter is
+// confusing and redundant. See the comment on mvccPutInternal for details.
+func MVCCBlindInitPut(
+	ctx context.Context,
+	w Writer,
+	key roachpb.Key,
+	timestamp hlc.Timestamp,
+	value roachpb.Value,
+	failOnTombstones bool,
+	opts MVCCWriteOptions,
+) (roachpb.LockAcquisition, error) {
+	return mvccInitPutUsingIter(
+		ctx, w, nil, nil, key, timestamp, value, failOnTombstones, opts)
+}
+
+func mvccInitPutUsingIter(
+	ctx context.Context,
+	w Writer,
+	iter MVCCIterator,
+	ltScanner *lockTableKeyScanner,
+	key roachpb.Key,
+	timestamp hlc.Timestamp,
+	value roachpb.Value,
+	failOnTombstones bool,
+	opts MVCCWriteOptions,
+) (roachpb.LockAcquisition, error) {
+	valueFn := func(existVal optionalValue) (roachpb.Value, error) {
+		if failOnTombstones && existVal.IsTombstone() {
+			// We found a tombstone and failOnTombstones is true: fail.
+			return roachpb.Value{}, &kvpb.ConditionFailedError{
+				ActualValue: existVal.ToPointer(),
+			}
+		}
+		if existVal.IsPresent() && !existVal.Value.EqualTagAndData(value) {
+			// The existing value does not match the supplied value.
+			return roachpb.Value{}, &kvpb.ConditionFailedError{
+				ActualValue: existVal.ToPointer(),
+			}
+		}
+		return value, nil
+	}
+	return mvccPutUsingIter(ctx, w, iter, ltScanner, key, timestamp, noValue, valueFn, opts)
 }
 
 // mvccKeyFormatter is an fmt.Formatter for MVCC Keys.
@@ -4033,7 +4125,7 @@ func MVCCPredicateDeleteRange(
 			if runSize < rangeTombstoneThreshold {
 				// Only buffer keys if there's a possibility of issuing point tombstones.
 				var keyCopy roachpb.Key
-				keyAlloc, keyCopy = keyAlloc.Copy(runEnd)
+				keyAlloc, keyCopy = keyAlloc.Copy(runEnd, 0)
 				buf = append(buf, keyCopy)
 			}
 
@@ -4615,7 +4707,6 @@ type MVCCWriteOptions struct {
 	// See the comment on mvccPutInternal for details on these parameters.
 	Txn                            *roachpb.Transaction
 	LocalTimestamp                 hlc.ClockTimestamp
-	ExclusionTimestamp             hlc.Timestamp
 	Stats                          *enginepb.MVCCStats
 	ReplayWriteTimestampProtection bool
 	OmitInRangefeeds               bool
@@ -5974,7 +6065,6 @@ func MVCCAcquireLock(
 	ms *enginepb.MVCCStats,
 	maxLockConflicts int64,
 	targetLockConflictBytes int64,
-	allowSequenceNumberRegression bool,
 ) error {
 	if txn == nil {
 		// Non-transactional requests cannot acquire locks that outlive their
@@ -6028,8 +6118,7 @@ func MVCCAcquireLock(
 				continue
 			}
 			// If the found lock has the same strength as the acquisition then this is
-			// usually an unexpected case. We are likely part of a replayed batch and either:
-			//
+			// an unexpected case. We are likely part of a replayed batch and either:
 			// 1. the lock was reacquired at a later sequence number and the minimum
 			//    acquisition sequence number was not properly retained (bug!). See
 			//    below about why we preserve the earliest non-rolled back sequence
@@ -6038,21 +6127,10 @@ func MVCCAcquireLock(
 			//    subsequently acquired again at a higher sequence number. In such
 			//    cases, we can return an error as the client is no longer waiting for
 			//    a response.
-			//
-			// IFF the caller sets allowSequenceNumberRegression, we don't consider
-			// this an error. The only callers who set this are callers who are
-			// flushing locks that were originally taken as unreplicated locks as
-			// replicated locks. In this case, it is possible that the unreplicated
-			// lock was being tracked at a lower sequence number and that the
-			// replicated re-acquisition didn't clear it from the lock table.
-			if !allowSequenceNumberRegression {
-				return errors.Errorf(
-					"cannot acquire lock with strength %s at seq number %d, "+
-						"already held at higher seq number %d in txn %s",
-					str.String(), txn.Sequence, foundLock.Txn.Sequence, txn.ID)
-			} else {
-				rolledBack = true
-			}
+			return errors.Errorf(
+				"cannot acquire lock with strength %s at seq number %d, "+
+					"already held at higher seq number %d",
+				str.String(), txn.Sequence, foundLock.Txn.Sequence)
 		} else if enginepb.TxnSeqIsIgnored(foundLock.Txn.Sequence, ignoredSeqNums) {
 			// Acquiring at same epoch and new sequence number after
 			// previous sequence number was rolled back.

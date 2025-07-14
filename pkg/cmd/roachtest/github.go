@@ -179,6 +179,7 @@ func (g *githubIssues) createPostRequest(
 	params map[string]string,
 ) (issues.PostRequest, error) {
 	var mention []string
+	var projColID int
 
 	var (
 		issueOwner    = spec.Owner
@@ -217,7 +218,6 @@ func (g *githubIssues) createPostRequest(
 	const infraFlakeLabel = "X-infra-flake"
 	const runtimeAssertionsLabel = "B-runtime-assertions-enabled"
 	const coverageLabel = "B-coverage-enabled"
-	const s390xTestFailureLabel = "s390x-test-failure"
 	labels := []string{"O-roachtest"}
 	if infraFlake {
 		labels = append(labels, infraFlakeLabel)
@@ -236,11 +236,6 @@ func (g *githubIssues) createPostRequest(
 			labels = append(labels, coverageLabel)
 		}
 	}
-	// N.B. To simplify tracking failures on s390x, we add the designated s390x-test-failure label. This could be removed
-	// in the future, i.e., after several major releases, when we expect s390x to be sufficiently stable.
-	if arch := params["arch"]; vm.CPUArch(arch) == vm.ArchS390x {
-		labels = append(labels, s390xTestFailureLabel)
-	}
 	labels = append(labels, spec.ExtraLabels...)
 
 	teams, err := g.teamLoader()
@@ -254,8 +249,11 @@ func (g *githubIssues) createPostRequest(
 			if mentionTeam {
 				mention = append(mention, "@"+string(alias))
 			}
-			labels = append(labels, teams[alias].Labels()...)
+			if label := teams[alias].Label; label != "" {
+				labels = append(labels, label)
+			}
 		}
+		projColID = teams[sl[0]].TriageColumnID
 	}
 
 	branch := os.Getenv("TC_BUILD_BRANCH")
@@ -290,6 +288,7 @@ func (g *githubIssues) createPostRequest(
 
 	return issues.PostRequest{
 		MentionOnCreate: mention,
+		ProjectColumnID: projColID,
 		PackageName:     "roachtest",
 		TestName:        issueName,
 		Labels:          labels,

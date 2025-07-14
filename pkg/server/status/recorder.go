@@ -98,6 +98,16 @@ var includeAggregateMetricsEnabled = settings.RegisterBoolSetting(
 	true,
 	settings.WithPublic)
 
+// bugfix149481Enabled is a (temporary) cluster setting that fixes
+// https://github.com/cockroachdb/cockroach/issues/149481. It is true (enabled) by default on master,
+// and false on backports.
+var bugfix149481Enabled = settings.RegisterBoolSetting(
+	settings.ApplicationLevel, "server.child_metrics.bugfix_missing_sql_metrics_149481.enabled",
+	"fixes bug where certain SQL metrics are not being reported, see: "+
+		"https://github.com/cockroachdb/cockroach/issues/149481",
+	true,
+	settings.WithVisibility(settings.Reserved))
+
 // MetricsRecorder is used to periodically record the information in a number of
 // metric registries.
 //
@@ -336,50 +346,35 @@ func (mr *MetricsRecorder) MarshalJSON() ([]byte, error) {
 // ScrapeIntoPrometheus updates the passed-in prometheusExporter's metrics
 // snapshot.
 func (mr *MetricsRecorder) ScrapeIntoPrometheus(pm *metric.PrometheusExporter) {
-	mr.ScrapeIntoPrometheusWithStaticLabels(false)(pm)
-}
-
-func (mr *MetricsRecorder) ScrapeIntoPrometheusWithStaticLabels(
-	useStaticLabels bool,
-) func(pm *metric.PrometheusExporter) {
-	return func(pm *metric.PrometheusExporter) {
-		mr.mu.RLock()
-		defer mr.mu.RUnlock()
-
-		includeChildMetrics := ChildMetricsEnabled.Get(&mr.settings.SV)
-		includeAggregateMetrics := includeAggregateMetricsEnabled.Get(&mr.settings.SV)
-		scrapeOptions := []metric.ScrapeOption{
-			metric.WithIncludeChildMetrics(includeChildMetrics),
-			metric.WithIncludeAggregateMetrics(includeAggregateMetrics),
-			metric.WithUseStaticLabels(useStaticLabels),
+	mr.mu.RLock()
+	defer mr.mu.RUnlock()
+	if mr.mu.nodeRegistry == nil {
+		// We haven't yet processed initialization information; output nothing.
+		if log.V(1) {
+			log.Warning(context.TODO(), "MetricsRecorder asked to scrape metrics before NodeID allocation")
 		}
-		if mr.mu.nodeRegistry == nil {
-			// We haven't yet processed initialization information; output nothing.
-			if log.V(1) {
-				log.Warning(context.TODO(), "MetricsRecorder asked to scrape metrics before NodeID allocation")
-			}
-		}
-		pm.ScrapeRegistry(mr.mu.nodeRegistry, scrapeOptions...)
-		pm.ScrapeRegistry(mr.mu.appRegistry, scrapeOptions...)
-		pm.ScrapeRegistry(mr.mu.logRegistry, scrapeOptions...)
-		pm.ScrapeRegistry(mr.mu.sysRegistry, scrapeOptions...)
-		for _, reg := range mr.mu.storeRegistries {
-			pm.ScrapeRegistry(reg, scrapeOptions...)
-		}
-		for _, tenantRegistry := range mr.mu.tenantRegistries {
-			pm.ScrapeRegistry(tenantRegistry, scrapeOptions...)
-		}
+	}
+	includeChildMetrics := ChildMetricsEnabled.Get(&mr.settings.SV)
+	includeAggregateMetrics := includeAggregateMetricsEnabled.Get(&mr.settings.SV)
+	reinitialisableBugFixEnabled := bugfix149481Enabled.Get(&mr.settings.SV)
+	pm.ScrapeRegistry(mr.mu.nodeRegistry, metric.WithIncludeChildMetrics(includeChildMetrics), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(reinitialisableBugFixEnabled))
+	pm.ScrapeRegistry(mr.mu.appRegistry, metric.WithIncludeChildMetrics(includeChildMetrics), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(reinitialisableBugFixEnabled))
+	pm.ScrapeRegistry(mr.mu.logRegistry, metric.WithIncludeChildMetrics(includeChildMetrics), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(reinitialisableBugFixEnabled))
+	pm.ScrapeRegistry(mr.mu.sysRegistry, metric.WithIncludeChildMetrics(includeChildMetrics), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(reinitialisableBugFixEnabled))
+	for _, reg := range mr.mu.storeRegistries {
+		pm.ScrapeRegistry(reg, metric.WithIncludeChildMetrics(includeChildMetrics), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(reinitialisableBugFixEnabled))
+	}
+	for _, tenantRegistry := range mr.mu.tenantRegistries {
+		pm.ScrapeRegistry(tenantRegistry, metric.WithIncludeChildMetrics(includeChildMetrics), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(reinitialisableBugFixEnabled))
 	}
 }
 
 // PrintAsText writes the current metrics values as plain-text to the writer.
 // We write metrics to a temporary buffer which is then copied to the writer.
 // This is to avoid hanging requests from holding the lock.
-func (mr *MetricsRecorder) PrintAsText(
-	w io.Writer, contentType expfmt.Format, useStaticLabels bool,
-) error {
+func (mr *MetricsRecorder) PrintAsText(w io.Writer, contentType expfmt.Format) error {
 	var buf bytes.Buffer
-	if err := mr.prometheusExporter.ScrapeAndPrintAsText(&buf, contentType, mr.ScrapeIntoPrometheusWithStaticLabels(useStaticLabels)); err != nil {
+	if err := mr.prometheusExporter.ScrapeAndPrintAsText(&buf, contentType, mr.ScrapeIntoPrometheus); err != nil {
 		return err
 	}
 	_, err := buf.WriteTo(w)

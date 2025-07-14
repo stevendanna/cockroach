@@ -37,7 +37,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tochar"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/grpcinterceptor"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -96,12 +95,6 @@ func NewServer(
 	ds.remoteFlowRunner.Init(ds.Metrics)
 
 	return ds
-}
-
-type drpcServerImpl ServerImpl
-
-func (ds *ServerImpl) AsDRPCServer() execinfrapb.DRPCDistSQLServer {
-	return (*drpcServerImpl)(ds)
 }
 
 // Start launches workers for the server.
@@ -600,13 +593,13 @@ func (ds *ServerImpl) setupSpanForIncomingRPC(
 		// It's not expected to have a span in the context since the gRPC server
 		// interceptor that generally opens spans exempts this particular RPC. Note
 		// that this method is not called for flows local to the gateway.
-		return tr.StartSpanCtx(ctx, tracingutil.SetupFlowMethodName,
+		return tr.StartSpanCtx(ctx, grpcinterceptor.SetupFlowMethodName,
 			tracing.WithParent(parentSpan),
 			tracing.WithServerSpanKind)
 	}
 
 	if !req.TraceInfo.Empty() {
-		return tr.StartSpanCtx(ctx, tracingutil.SetupFlowMethodName,
+		return tr.StartSpanCtx(ctx, grpcinterceptor.SetupFlowMethodName,
 			tracing.WithRemoteParentFromTraceInfo(req.TraceInfo),
 			tracing.WithServerSpanKind)
 	}
@@ -616,16 +609,9 @@ func (ds *ServerImpl) setupSpanForIncomingRPC(
 	if err != nil {
 		log.Warningf(ctx, "error extracting tracing info from gRPC: %s", err)
 	}
-	return tr.StartSpanCtx(ctx, tracingutil.SetupFlowMethodName,
+	return tr.StartSpanCtx(ctx, grpcinterceptor.SetupFlowMethodName,
 		tracing.WithRemoteParentFromSpanMeta(remoteParent),
 		tracing.WithServerSpanKind)
-}
-
-// SetupFlow is part of the execinfrapb.DRPCDistSQLServer interface.
-func (ds *drpcServerImpl) SetupFlow(
-	ctx context.Context, req *execinfrapb.SetupFlowRequest,
-) (*execinfrapb.SimpleResponse, error) {
-	return (*ServerImpl)(ds).SetupFlow(ctx, req)
 }
 
 // SetupFlow is part of the execinfrapb.DistSQLServer interface.
@@ -690,13 +676,6 @@ func (ds *ServerImpl) SetupFlow(
 	return &execinfrapb.SimpleResponse{}, nil
 }
 
-// CancelDeadFlows is part of the execinfrapb.DRPCDistSQLServer interface.
-func (ds *drpcServerImpl) CancelDeadFlows(
-	ctx context.Context, req *execinfrapb.CancelDeadFlowsRequest,
-) (*execinfrapb.SimpleResponse, error) {
-	return (*ServerImpl)(ds).CancelDeadFlows(ctx, req)
-}
-
 // CancelDeadFlows is part of the execinfrapb.DistSQLServer interface.
 func (ds *ServerImpl) CancelDeadFlows(
 	ctx context.Context, req *execinfrapb.CancelDeadFlowsRequest,
@@ -707,7 +686,7 @@ func (ds *ServerImpl) CancelDeadFlows(
 }
 
 func (ds *ServerImpl) flowStreamInt(
-	ctx context.Context, stream execinfrapb.RPCDistSQL_FlowStreamStream,
+	ctx context.Context, stream execinfrapb.DistSQL_FlowStreamServer,
 ) error {
 	// Receive the first message.
 	msg, err := stream.Recv()
@@ -741,17 +720,8 @@ func (ds *ServerImpl) flowStreamInt(
 	return streamStrategy.Run(ctx, stream, msg, f)
 }
 
-// FlowStream is part of the execinfrapb.DRPCDistSQLServer interface.
-func (ds *drpcServerImpl) FlowStream(stream execinfrapb.DRPCDistSQL_FlowStreamStream) error {
-	return (*ServerImpl)(ds).flowStream(stream)
-}
-
 // FlowStream is part of the execinfrapb.DistSQLServer interface.
 func (ds *ServerImpl) FlowStream(stream execinfrapb.DistSQL_FlowStreamServer) error {
-	return ds.flowStream(stream)
-}
-
-func (ds *ServerImpl) flowStream(stream execinfrapb.RPCDistSQL_FlowStreamStream) error {
 	ctx := ds.AnnotateCtx(stream.Context())
 	err := ds.flowStreamInt(ctx, stream)
 	if err != nil && log.V(2) {
