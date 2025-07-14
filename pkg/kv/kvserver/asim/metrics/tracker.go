@@ -6,10 +6,9 @@
 package metrics
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/state"
@@ -38,44 +37,6 @@ type StoreMetrics struct {
 	RebalanceRcvdBytes int64
 	RangeSplits        int64
 	DiskFractionUsed   float64
-}
-
-// GetMetricValue extracts the requested metric value from StoreMetrics.
-func (sm *StoreMetrics) GetMetricValue(stat string) float64 {
-	switch stat {
-	case "qps":
-		return float64(sm.QPS)
-	// case "cpu":
-	// 	value = float64(sm.CPU)
-	// case "write_bytes_per_second":
-	// 	value = float64(sm.WriteBytesPerSecond)
-	case "write":
-		return float64(sm.WriteKeys)
-	case "write_b":
-		return float64(sm.WriteBytes)
-	case "read":
-		return float64(sm.ReadKeys)
-	case "read_b":
-		return float64(sm.ReadBytes)
-	case "replicas":
-		return float64(sm.Replicas)
-	case "leases":
-		return float64(sm.Leases)
-	case "lease_moves":
-		return float64(sm.LeaseTransfers)
-	case "replica_moves":
-		return float64(sm.Rebalances)
-	case "replica_b_rcvd":
-		return float64(sm.RebalanceRcvdBytes)
-	case "replica_b_sent":
-		return float64(sm.RebalanceSentBytes)
-	case "range_splits":
-		return float64(sm.RangeSplits)
-	case "disk_fraction_used":
-		return sm.DiskFractionUsed
-	default:
-		return 0
-	}
 }
 
 // the MetricsTracker to report new store metrics for a tick.
@@ -158,8 +119,8 @@ func (mt *Tracker) Tick(ctx context.Context, tick time.Time, s state.State) {
 		sms = append(sms, sm)
 	}
 
-	slices.SortFunc(sms, func(a, b StoreMetrics) int {
-		return cmp.Compare(a.StoreID, b.StoreID)
+	sort.Slice(sms, func(i, j int) bool {
+		return sms[i].StoreID < sms[j].StoreID
 	})
 
 	for _, listener := range mt.storeListeners {

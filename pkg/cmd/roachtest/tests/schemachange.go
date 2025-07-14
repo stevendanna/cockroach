@@ -14,8 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -35,17 +33,17 @@ func registerSchemaChangeDuringKV(r registry.Registry) {
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			const fixturePath = `gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=10?AUTH=implicit`
+			const fixturePath = `gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=10/backup?AUTH=implicit`
 
 			c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.All())
 			db := c.Conn(ctx, t.L(), 1)
 			defer db.Close()
 
-			m := c.NewDeprecatedMonitor(ctx, c.All())
+			m := c.NewMonitor(ctx, c.All())
 			m.Go(func(ctx context.Context) error {
 				t.Status("loading fixture")
 				if _, err := db.Exec(
-					`RESTORE DATABASE tpch FROM 'backup' IN $1 WITH unsafe_restore_incompatible_version`, fixturePath); err != nil {
+					`RESTORE DATABASE tpch FROM $1 WITH unsafe_restore_incompatible_version`, fixturePath); err != nil {
 					t.Fatal(err)
 				}
 				return nil
@@ -55,13 +53,20 @@ func registerSchemaChangeDuringKV(r registry.Registry) {
 			c.Run(ctx, option.WithNodes(c.Node(1)), `./cockroach workload init kv --drop --db=test {pgurl:1}`)
 			for node := 1; node <= c.Spec().NodeCount; node++ {
 				node := node
-				t.Go(func(taskCtx context.Context, _ *logger.Logger) error {
+				// TODO(dan): Ideally, the test would fail if this queryload failed,
+				// but we can't put it in monitor as-is because the test deadlocks.
+				go func() {
 					const cmd = `./cockroach workload run kv --tolerate-errors --min-block-bytes=8 --max-block-bytes=127 --db=test {pgurl%s}`
-					return c.RunE(taskCtx, option.WithNodes(c.Node(node)), fmt.Sprintf(cmd, c.Nodes(node)))
-				}, task.Name(fmt.Sprintf(`kv-%d`, node)))
+					l, err := t.L().ChildLogger(fmt.Sprintf(`kv-%d`, node))
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer l.Close()
+					_ = c.RunE(ctx, option.WithNodes(c.Node(node)), fmt.Sprintf(cmd, c.Nodes(node)))
+				}()
 			}
 
-			m = c.NewDeprecatedMonitor(ctx, c.All())
+			m = c.NewMonitor(ctx, c.All())
 			m.Go(func(ctx context.Context) error {
 				t.Status("running schema change tests")
 				return waitForSchemaChanges(ctx, t.L(), db)
@@ -304,7 +309,7 @@ func makeIndexAddTpccTest(
 		Cluster:          spec,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
-		Leases:           registry.DefaultLeases,
+		Leases:           registry.MetamorphicLeases,
 		Timeout:          length * 3,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCC(ctx, t, t.L(), c, tpccOptions{
@@ -314,15 +319,13 @@ func makeIndexAddTpccTest(
 				ExtraRunArgs: fmt.Sprintf("--wait=false --tolerate-errors --workers=%d", warehouses),
 				During: func(ctx context.Context) error {
 					return runAndLogStmts(ctx, t, c, "addindex", []string{
-						`SET CLUSTER SETTING bulkio.index_backfill.ingest_concurrency = 2;`,
 						`CREATE UNIQUE INDEX ON tpcc.order (o_entry_d, o_w_id, o_d_id, o_carrier_id, o_id);`,
 						`CREATE INDEX ON tpcc.order (o_carrier_id);`,
 						`CREATE INDEX ON tpcc.customer (c_last, c_first);`,
 					})
 				},
-				DisableDefaultScheduledBackup: true,
-				Duration:                      length,
-				SetupType:                     usingImport,
+				Duration:  length,
+				SetupType: usingImport,
 			})
 		},
 	}
@@ -331,7 +334,7 @@ func makeIndexAddTpccTest(
 func registerSchemaChangeBulkIngest(r registry.Registry) {
 	// Allow a long running time to account for runs that use a
 	// cockroach build with runtime assertions enabled.
-	r.Add(makeSchemaChangeBulkIngestTest(r, 12, 4_000_000_000, 5*time.Hour))
+	r.Add(makeSchemaChangeBulkIngestTest(r, 5, 100000000, time.Minute*60))
 }
 
 func makeSchemaChangeBulkIngestTest(
@@ -340,56 +343,25 @@ func makeSchemaChangeBulkIngestTest(
 	return registry.TestSpec{
 		Name:             "schemachange/bulkingest",
 		Owner:            registry.OwnerSQLFoundations,
-		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(numNodes, spec.WorkloadNode(), spec.SSD(4)),
+		Cluster:          r.MakeClusterSpec(numNodes, spec.WorkloadNode()),
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Timeout:          length * 2,
-		PostProcessPerfMetrics: func(test string, histogram *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
-			// The histogram tracks the total elapsed time for the CREATE INDEX operation.
-			totalElapsed := histogram.Elapsed
-
-			// Calculate the approximate data size for the index.
-			// The index is on (payload, a) where payload is 40 bytes.
-			// Approximate size per row for index: 40 bytes (payload) + 8 bytes (a) = 48 bytes
-			rowsIndexed := int64(numRows)
-			bytesPerRow := int64(48)
-			mb := int64(1 << 20)
-			dataSizeInMB := (rowsIndexed * bytesPerRow) / mb
-
-			// Calculate throughput in MB/s per node.
-			indexDuration := int64(totalElapsed / 1000) // Convert to seconds.
-			if indexDuration == 0 {
-				indexDuration = 1 // Avoid division by zero.
-			}
-			avgRatePerNode := roachtestutil.MetricPoint(float64(dataSizeInMB) / float64(int64(numNodes)*indexDuration))
-
-			return roachtestutil.AggregatedPerfMetrics{
-				{
-					Name:           fmt.Sprintf("%s_throughput", test),
-					Value:          avgRatePerNode,
-					Unit:           "MB/s/node",
-					IsHigherBetter: true,
-				},
-			}, nil
-		},
 		// `fixtures import` (with the workload paths) is not supported in 2.1
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			// Configure column a to have sequential ascending values. The payload
-			// column will be randomized and thus uncorrelated with the primary key
-			// (a, b, c).
-			bNum := 1000
-			cNum := 1000
-			aNum := numRows / (bNum * cNum)
+			// Configure column a to have sequential ascending values, and columns b and c to be constant.
+			// The payload column will be randomized and thus uncorrelated with the primary key (a, b, c).
+			aNum := numRows
 			if c.IsLocal() {
 				aNum = 100000
-				bNum = 1
-				cNum = 1
 			}
-			payloadBytes := 40
+			bNum := 1
+			cNum := 1
+			payloadBytes := 4
 
-			settings := install.MakeClusterSettings()
+			// TODO (lucy): Remove flag once the faster import is enabled by default
+			settings := install.MakeClusterSettings(install.EnvOption([]string{"COCKROACH_IMPORT_WORKLOAD_FASTER=true"}))
 			c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, c.CRDBNodes())
 
 			// Don't add another index when importing.
@@ -402,12 +374,7 @@ func makeSchemaChangeBulkIngestTest(
 
 			c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmdWrite)
 
-			// Set up histogram exporter for performance metrics.
-			exporter := roachtestutil.CreateWorkloadHistogramExporter(t, c)
-			tickHistogram, perfBuf := initBulkJobPerfArtifacts(length*2, t, exporter)
-			defer roachtestutil.CloseExporter(ctx, exporter, t, c, perfBuf, c.Node(1), "")
-
-			m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+			m := c.NewMonitor(ctx, c.CRDBNodes())
 
 			indexDuration := length
 			if c.IsLocal() {
@@ -437,14 +404,10 @@ func makeSchemaChangeBulkIngestTest(
 				}
 
 				t.L().Printf("Creating index")
-				// Tick once before starting the index creation.
-				tickHistogram()
 				before := timeutil.Now()
 				if _, err := db.Exec(`CREATE INDEX payload_a ON bulkingest.bulkingest (payload, a)`); err != nil {
 					t.Fatal(err)
 				}
-				// Tick once after the index creation to capture the total elapsed time.
-				tickHistogram()
 				t.L().Printf("CREATE INDEX took %v\n", timeutil.Since(before))
 				return nil
 			})

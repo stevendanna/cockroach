@@ -8,7 +8,6 @@ package builtins
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,9 +64,7 @@ func makeNotUsableFalseBuiltin() builtinDefinition {
 // programmatically determine whether or not this underscore is present, hence
 // the existence of this map.
 var typeBuiltinsHaveUnderscore = map[oid.Oid]struct{}{
-	// We don't make builtins for T_any because PG's builtins just error but, if we did, they would have underscores.
 	types.Any.Oid():         {},
-	types.AnyElement.Oid():  {},
 	types.AnyArray.Oid():    {},
 	types.Date.Oid():        {},
 	types.Time.Oid():        {},
@@ -108,20 +105,11 @@ func init() {
 
 	// Make non-array type i/o builtins.
 	for _, typ := range types.OidToType {
+		// Skip most array types. We're doing them separately below.
 		switch typ.Oid() {
-		case oid.T_any:
-			// Postgres doesn't have any_send or any_recv. It does have any_in and any_out,
-			// but they always error, so let's just skip these builtins altogether.
-			continue
-		case oid.T_trigger:
-			// TRIGGER is not valid in any context apart from the return-type of a
-			// trigger function.
-			continue
 		case oid.T_int2vector, oid.T_oidvector:
-			// Handled separately below.
 		default:
 			if typ.Family() == types.ArrayFamily {
-				// Array types are handled separately below.
 				continue
 			}
 		}
@@ -183,16 +171,8 @@ func init() {
 			},
 		)
 	})
-	// Add casts between the same type in deterministic order.
-	typOIDs := make([]oid.Oid, 0, len(castBuiltins))
-	for typOID := range castBuiltins {
-		typOIDs = append(typOIDs, typOID)
-	}
-	sort.Slice(typOIDs, func(i, j int) bool {
-		return typOIDs[i] < typOIDs[j]
-	})
-	for _, typOID := range typOIDs {
-		def := castBuiltins[typOID]
+	// Add casts between the same type.
+	for typOID, def := range castBuiltins {
 		typ := types.OidToType[typOID]
 		if !shouldMakeFromCastBuiltin(typ) {
 			continue
@@ -262,9 +242,6 @@ func shouldMakeFromCastBuiltin(in *types.T) bool {
 		return false
 	case in.Family() == types.FloatFamily && in.Oid() != oid.T_float8:
 		return false
-	case in.Family() == types.TriggerFamily:
-		// TRIGGER is not a valid cast target.
-		return false
 	}
 	return true
 }
@@ -303,11 +280,11 @@ func makeTypeIOBuiltins(builtinPrefix string, typ *types.T) map[string]builtinDe
 		// Note: PG takes type 2281 "internal" for these builtins, which we don't
 		// provide. We won't implement these functions anyway, so it shouldn't
 		// matter.
-		builtinPrefix + "recv": makeTypeIOBuiltin(tree.ParamTypes{{Name: "input", Typ: types.AnyElement}}, typ),
+		builtinPrefix + "recv": makeTypeIOBuiltin(tree.ParamTypes{{Name: "input", Typ: types.Any}}, typ),
 		// Note: PG returns 'cstring' for these builtins, but we don't support that.
 		builtinPrefix + "out": makeTypeIOBuiltin(tree.ParamTypes{{Name: typname, Typ: typ}}, types.Bytes),
 		// Note: PG takes 'cstring' for these builtins, but we don't support that.
-		builtinPrefix + "in": makeTypeIOBuiltin(tree.ParamTypes{{Name: "input", Typ: types.AnyElement}}, typ),
+		builtinPrefix + "in": makeTypeIOBuiltin(tree.ParamTypes{{Name: "input", Typ: types.Any}}, typ),
 	}
 }
 
@@ -434,7 +411,7 @@ func makePGPrivilegeInquiryDef(
 					user = username.MakeSQLUsernameFromPreNormalizedString(userS)
 					if user.Undefined() {
 						if _, ok := arg.(*tree.DOid); ok {
-							// Postgres returns false if no matching user is
+							// Postgres returns falseifn no matching user is
 							// found when given an OID.
 							return tree.DBoolFalse, nil
 						}
@@ -560,9 +537,7 @@ func makeCreateRegDef(typ *types.T) builtinDefinition {
 			},
 			ReturnType: tree.FixedReturnType(typ),
 			Fn: func(_ context.Context, _ *eval.Context, d tree.Datums) (tree.Datum, error) {
-				return tree.NewDOidWithTypeAndName(
-					tree.MustBeDOid(d[0]).Oid, typ, string(tree.MustBeDString(d[1])),
-				), nil
+				return tree.NewDOidWithName(tree.MustBeDOid(d[0]).Oid, typ, string(tree.MustBeDString(d[1]))), nil
 			},
 			Info:       notUsableInfo,
 			Volatility: volatility.Immutable,
@@ -571,11 +546,7 @@ func makeCreateRegDef(typ *types.T) builtinDefinition {
 }
 
 func makeToRegOverload(typ *types.T, helpText string) builtinDefinition {
-	return makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true,
-		},
+	return makeBuiltin(tree.FunctionProperties{Category: builtinconstants.CategorySystemInfo},
 		tree.Overload{
 			Types: tree.ParamTypes{
 				{Name: "text", Typ: types.String},
@@ -583,9 +554,8 @@ func makeToRegOverload(typ *types.T, helpText string) builtinDefinition {
 			ReturnType: tree.FixedReturnType(types.RegType),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				typName := tree.MustBeDString(args[0])
-				_, err := strconv.Atoi(strings.TrimSpace(string(typName)))
-				if err == nil {
-					// If a number was passed in, return NULL.
+				int, _ := strconv.Atoi(strings.TrimSpace(string(typName)))
+				if int > 0 {
 					return tree.DNull, nil
 				}
 				typOid, err := eval.ParseDOid(ctx, evalCtx, string(typName), typ)
@@ -641,7 +611,7 @@ var pgBuiltins = map[string]builtinDefinition{
 			},
 			ReturnType: tree.FixedReturnType(types.String),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if cmp, err := args[0].Compare(ctx, evalCtx, DatEncodingUTFId); err != nil {
+				if cmp, err := args[0].CompareError(evalCtx, DatEncodingUTFId); err != nil {
 					return tree.DNull, err
 				} else if cmp == 0 {
 					return datEncodingUTF8ShortName, nil
@@ -922,10 +892,7 @@ var pgBuiltins = map[string]builtinDefinition{
 	// none.
 	// https://www.postgresql.org/docs/11/functions-info.html
 	"pg_my_temp_schema": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+		tree.FunctionProperties{Category: builtinconstants.CategorySystemInfo},
 		tree.Overload{
 			Types:      tree.ParamTypes{},
 			ReturnType: tree.FixedReturnType(types.Oid),
@@ -958,10 +925,7 @@ var pgBuiltins = map[string]builtinDefinition{
 	// session's temporary schema.
 	// https://www.postgresql.org/docs/11/functions-info.html
 	"pg_is_other_temp_schema": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+		tree.FunctionProperties{Category: builtinconstants.CategorySystemInfo},
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "oid", Typ: types.Oid}},
 			ReturnType: tree.FixedReturnType(types.Bool),
@@ -995,7 +959,7 @@ var pgBuiltins = map[string]builtinDefinition{
 	// TODO(bram): Make sure the reported type is correct for tuples. See #25523.
 	"pg_typeof": makeBuiltin(defProps(),
 		tree.Overload{
-			Types:      tree.ParamTypes{{Name: "val", Typ: types.AnyElement}},
+			Types:      tree.ParamTypes{{Name: "val", Typ: types.Any}},
 			ReturnType: tree.FixedReturnType(types.String),
 			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
 				return tree.NewDString(args[0].ResolvedType().SQLStandardName()), nil
@@ -1010,7 +974,7 @@ var pgBuiltins = map[string]builtinDefinition{
 	"pg_collation_for": makeBuiltin(
 		tree.FunctionProperties{Category: builtinconstants.CategoryString},
 		tree.Overload{
-			Types:      tree.ParamTypes{{Name: "str", Typ: types.AnyElement}},
+			Types:      tree.ParamTypes{{Name: "str", Typ: types.Any}},
 			ReturnType: tree.FixedReturnType(types.String),
 			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
 				var collation string
@@ -1422,7 +1386,7 @@ var pgBuiltins = map[string]builtinDefinition{
 			Types:      tree.ParamTypes{{Name: "encoding", Typ: types.Int}},
 			ReturnType: tree.FixedReturnType(types.Int),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if cmp, err := args[0].Compare(ctx, evalCtx, DatEncodingUTFId); err != nil {
+				if cmp, err := args[0].CompareError(evalCtx, DatEncodingUTFId); err != nil {
 					return tree.DNull, err
 				} else if cmp == 0 {
 					return tree.NewDInt(4), nil
@@ -1873,35 +1837,6 @@ var pgBuiltins = map[string]builtinDefinition{
 		},
 	),
 
-	"has_system_privilege": makePGPrivilegeInquiryDef(
-		"system",
-		paramTypeOpts{},
-		func(ctx context.Context, evalCtx *eval.Context, args tree.Datums, user username.SQLUsername) (eval.HasAnyPrivilegeResult, error) {
-			// Build the privilege map dynamically from GlobalPrivileges so that
-			// this function automatically picks up new privileges as they are added.
-			m := make(privMap)
-			for _, priv := range privilege.GlobalPrivileges {
-				// ALL is not a valid input for this function.
-				if priv == privilege.ALL {
-					continue
-				}
-				privName := strings.ToUpper(string(priv.DisplayName()))
-				m[privName] = privilege.Privilege{Kind: priv}
-				m[privName+" WITH GRANT OPTION"] = privilege.Privilege{Kind: priv, GrantOption: true}
-			}
-
-			privs, err := parsePrivilegeStr(args[0], m)
-			if err != nil {
-				return eval.HasNoPrivilege, err
-			}
-
-			specifier := eval.HasPrivilegeSpecifier{
-				IsGlobalPrivilege: true,
-			}
-			return evalCtx.Planner.HasAnyPrivilegeForSpecifier(ctx, specifier, user, privs)
-		},
-	),
-
 	"pg_has_role": makePGPrivilegeInquiryDef(
 		"role",
 		paramTypeOpts{{"role", strOrOidTypes}},
@@ -2089,7 +2024,7 @@ var pgBuiltins = map[string]builtinDefinition{
 			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
 				var totalSize int
 				for _, arg := range args {
-					encodeTableValue, err := valueside.Encode(nil, valueside.NoColumnID, arg)
+					encodeTableValue, err := valueside.Encode(nil, valueside.NoColumnID, arg, nil)
 					if err != nil {
 						return tree.DNull, err
 					}
@@ -2098,7 +2033,7 @@ var pgBuiltins = map[string]builtinDefinition{
 				return tree.NewDInt(tree.DInt(totalSize)), nil
 			},
 			Info:       "Return size in bytes of the column provided as an argument",
-			Volatility: volatility.Stable,
+			Volatility: volatility.Immutable,
 		}),
 
 	// NOTE: these two builtins could be defined as user-defined functions, like

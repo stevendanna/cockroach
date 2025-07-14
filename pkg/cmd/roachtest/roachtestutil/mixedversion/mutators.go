@@ -53,7 +53,7 @@ func (m preserveDowngradeOptionRandomizerMutator) Probability() float64 {
 // current version is always mutated. The length of the returned
 // mutations is always even.
 func (m preserveDowngradeOptionRandomizerMutator) Generate(
-	rng *rand.Rand, plan *TestPlan, planner *testPlanner,
+	rng *rand.Rand, plan *TestPlan,
 ) []mutation {
 	var mutations []mutation
 	for _, upgradeSelector := range randomUpgrades(rng, plan) {
@@ -221,9 +221,7 @@ func (m clusterSettingMutator) Probability() float64 {
 // original test plan. Up to `maxChanges` steps will be added to the
 // plan. Changes may be concurrent with user-provided steps and may
 // happen any time after cluster setup.
-func (m clusterSettingMutator) Generate(
-	rng *rand.Rand, plan *TestPlan, planner *testPlanner,
-) []mutation {
+func (m clusterSettingMutator) Generate(rng *rand.Rand, plan *TestPlan) []mutation {
 	var mutations []mutation
 
 	// possiblePointsInTime is the list of steps in the plan that are
@@ -247,9 +245,11 @@ func (m clusterSettingMutator) Generate(
 					return false
 				}
 			}
-			// Cluster setting changes can be inserted concurrently, so we want to avoid
-			// inserting into any steps that cannot run concurrently with other steps.
-			return s.context.System.Stage >= OnStartupStage && !s.impl.ConcurrencyDisabled()
+
+			// We skip restart steps as we might insert the cluster setting
+			// change step concurrently with the selected step.
+			_, isRestartNode := s.impl.(restartWithNewBinaryStep)
+			return s.context.System.Stage >= OnStartupStage && !isRestartNode
 		})
 
 	for _, changeStep := range m.changeSteps(rng, len(possiblePointsInTime)) {
@@ -380,50 +380,4 @@ func (m clusterSettingMutator) changeSteps(
 	}
 
 	return steps
-}
-
-const (
-	// PanicNode is a mutator that will randomly cause a node to crash
-	// during the test, before restarting the node within the same step.
-	PanicNode = "panic_node"
-)
-
-type panicNodeMutator struct {
-}
-
-func (m panicNodeMutator) Name() string {
-	return PanicNode
-}
-
-func (m panicNodeMutator) Probability() float64 {
-	return 0.3
-}
-
-func (m panicNodeMutator) Generate(
-	rng *rand.Rand, plan *TestPlan, planner *testPlanner,
-) []mutation {
-	var mutations []mutation
-	maxPanics := len(plan.upgrades)
-	numPanics := 1 + rng.Intn(maxPanics)
-
-	idx := newStepIndex(plan)
-	possiblePointsInTime := plan.
-		newStepSelector().
-		// We don't want to panic concurrently with other steps, and inserting before a concurrent step
-		// causes the step to run concurrently with that step, so we filter out any concurrent steps.
-		Filter(func(s *singleStep) bool {
-			return s.context.System.Stage >= InitUpgradeStage && !idx.IsConcurrent(s)
-		})
-
-	for range numPanics {
-		nodeList := planner.currentContext.System.Descriptor.Nodes
-		targetNode := nodeList.SeededRandNode(rng)
-		addRandomly := possiblePointsInTime.
-			RandomStep(rng).
-			InsertBefore(panicNodeStep{planner.currentContext.System.Descriptor.Nodes[0], targetNode, planner.rt})
-
-		mutations = append(mutations, addRandomly...)
-	}
-
-	return mutations
 }
