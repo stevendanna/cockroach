@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
@@ -147,7 +146,6 @@ func (authenticator *jwtAuthenticator) ValidateJWTLogin(
 	tokenBytes []byte,
 	identMap *identmap.Conf,
 ) (detailedErrorMsg redact.RedactableString, authError error) {
-	authenticator.reloadConfig(ctx, st)
 	authenticator.mu.Lock()
 	defer authenticator.mu.Unlock()
 
@@ -372,42 +370,8 @@ func getOpenIdConfigEndpoint(issuerUrl string) string {
 	return openIdConfigEndpoint
 }
 
-// getHTTPResponse issues a GET request using the authenticator’s configured
-// HTTP client, optionally setting the supplied headers.
-//
-//	ctx – caller’s context (for cancellation / deadlines)
-//	url – absolute URL to fetch
-//	a   – the *jwtAuthenticator whose client must be reused
-//	hdr – optional: pass one http.Header with any extra headers, or omit entirely
-//
-// The function returns the response body (fully read) so that callers can
-// inspect the payload without worrying about closing the body.
-//
-// Callers should wrap the returned error with errors.WithDetailf to tag the
-// operation they’re performing.
-var getHttpResponse = func(
-	ctx context.Context,
-	url string,
-	authenticator *jwtAuthenticator,
-	header ...http.Header, // optional variadic param for extra headers
-) ([]byte, error) {
-
-	// Reject misuse: only zero or one header may be supplied.
-	if len(header) > 1 {
-		return nil, errors.New("getHttpResponse: provide at most one extra header")
-	}
-
-	// Build the request
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	if len(header) == 1 && header[0] != nil {
-		req.Header = header[0].Clone()
-	}
-
-	client := authenticator.mu.conf.httpClient
-	resp, err := client.Do(req)
+var getHttpResponse = func(ctx context.Context, url string, authenticator *jwtAuthenticator) ([]byte, error) {
+	resp, err := authenticator.mu.conf.httpClient.Get(context.Background(), url)
 	if err != nil {
 		return nil, err
 	}

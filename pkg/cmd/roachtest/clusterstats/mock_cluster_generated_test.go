@@ -9,14 +9,12 @@ import (
 	sql "database/sql"
 	fs "io/fs"
 	reflect "reflect"
-	time "time"
 
 	grafana "github.com/cockroachdb/cockroach/pkg/cmd/roachprod/grafana"
 	cluster "github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	option "github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	spec "github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	roachprod "github.com/cockroachdb/cockroach/pkg/roachprod"
-	failures "github.com/cockroachdb/cockroach/pkg/roachprod/failureinjection/failures"
 	install "github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	logger "github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	prometheus "github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
@@ -364,26 +362,6 @@ func (mr *MockClusterMockRecorder) Get(arg0, arg1, arg2, arg3 interface{}, arg4 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockCluster)(nil).Get), varargs...)
 }
 
-// GetFailer mocks base method.
-func (m *MockCluster) GetFailer(arg0 *logger.Logger, arg1 option.NodeListOption, arg2 string, arg3 ...failures.ClusterOptionFunc) (*failures.Failer, error) {
-	m.ctrl.T.Helper()
-	varargs := []interface{}{arg0, arg1, arg2}
-	for _, a := range arg3 {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "GetFailer", varargs...)
-	ret0, _ := ret[0].(*failures.Failer)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetFailer indicates an expected call of GetFailer.
-func (mr *MockClusterMockRecorder) GetFailer(arg0, arg1, arg2 interface{}, arg3 ...interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]interface{}{arg0, arg1, arg2}, arg3...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetFailer", reflect.TypeOf((*MockCluster)(nil).GetFailer), varargs...)
-}
-
 // GetPreemptedVMs mocks base method.
 func (m *MockCluster) GetPreemptedVMs(arg0 context.Context, arg1 *logger.Logger) ([]vm.PreemptedVM, error) {
 	m.ctrl.T.Helper()
@@ -572,23 +550,23 @@ func (mr *MockClusterMockRecorder) Name() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Name", reflect.TypeOf((*MockCluster)(nil).Name))
 }
 
-// NewDeprecatedMonitor mocks base method.
-func (m *MockCluster) NewDeprecatedMonitor(arg0 context.Context, arg1 ...option.Option) cluster.Monitor {
+// NewMonitor mocks base method.
+func (m *MockCluster) NewMonitor(arg0 context.Context, arg1 ...option.Option) cluster.Monitor {
 	m.ctrl.T.Helper()
 	varargs := []interface{}{arg0}
 	for _, a := range arg1 {
 		varargs = append(varargs, a)
 	}
-	ret := m.ctrl.Call(m, "NewDeprecatedMonitor", varargs...)
+	ret := m.ctrl.Call(m, "NewMonitor", varargs...)
 	ret0, _ := ret[0].(cluster.Monitor)
 	return ret0
 }
 
-// NewDeprecatedMonitor indicates an expected call of NewDeprecatedMonitor.
-func (mr *MockClusterMockRecorder) NewDeprecatedMonitor(arg0 interface{}, arg1 ...interface{}) *gomock.Call {
+// NewMonitor indicates an expected call of NewMonitor.
+func (mr *MockClusterMockRecorder) NewMonitor(arg0 interface{}, arg1 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]interface{}{arg0}, arg1...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NewDeprecatedMonitor", reflect.TypeOf((*MockCluster)(nil).NewDeprecatedMonitor), varargs...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NewMonitor", reflect.TypeOf((*MockCluster)(nil).NewMonitor), varargs...)
 }
 
 // Node mocks base method.
@@ -621,20 +599,6 @@ func (m *MockCluster) Nodes(arg0 ...int) option.NodeListOption {
 func (mr *MockClusterMockRecorder) Nodes(arg0 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Nodes", reflect.TypeOf((*MockCluster)(nil).Nodes), arg0...)
-}
-
-// PopulateEtcHosts mocks base method.
-func (m *MockCluster) PopulateEtcHosts(arg0 context.Context, arg1 *logger.Logger) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "PopulateEtcHosts", arg0, arg1)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// PopulateEtcHosts indicates an expected call of PopulateEtcHosts.
-func (mr *MockClusterMockRecorder) PopulateEtcHosts(arg0, arg1 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PopulateEtcHosts", reflect.TypeOf((*MockCluster)(nil).PopulateEtcHosts), arg0, arg1)
 }
 
 // Put mocks base method.
@@ -746,32 +710,6 @@ func (m *MockCluster) Reformat(arg0 context.Context, arg1 *logger.Logger, arg2 o
 func (mr *MockClusterMockRecorder) Reformat(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Reformat", reflect.TypeOf((*MockCluster)(nil).Reformat), arg0, arg1, arg2, arg3)
-}
-
-// RegisterClusterHook mocks base method.
-func (m *MockCluster) RegisterClusterHook(arg0 string, arg1 option.ClusterHookType, arg2 time.Duration, arg3 func(context.Context) error) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "RegisterClusterHook", arg0, arg1, arg2, arg3)
-}
-
-// RegisterClusterHook indicates an expected call of RegisterClusterHook.
-func (mr *MockClusterMockRecorder) RegisterClusterHook(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClusterHook", reflect.TypeOf((*MockCluster)(nil).RegisterClusterHook), arg0, arg1, arg2, arg3)
-}
-
-// Reset mocks base method.
-func (m *MockCluster) Reset(arg0 context.Context, arg1 *logger.Logger, arg2 option.NodeListOption) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Reset", arg0, arg1, arg2)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Reset indicates an expected call of Reset.
-func (mr *MockClusterMockRecorder) Reset(arg0, arg1, arg2 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Reset", reflect.TypeOf((*MockCluster)(nil).Reset), arg0, arg1, arg2)
 }
 
 // Run mocks base method.

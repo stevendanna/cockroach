@@ -96,7 +96,7 @@ func generateStaticTestdata() testData {
 func TestEventSizeCalculation(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	data := generateStaticTestdata()
-	storage.CompressionAlgorithmStorage.Override(context.Background(), &st.SV, storage.StoreCompressionSnappy)
+	storage.ColumnarBlocksEnabled.Override(context.Background(), &st.SV, true)
 
 	key := data.key
 	timestamp := data.timestamp

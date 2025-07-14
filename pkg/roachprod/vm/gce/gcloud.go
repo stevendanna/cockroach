@@ -60,6 +60,9 @@ const (
 	VolumeTypePersistent VolumeType = "persistent"
 )
 
+// providerInstance is the instance to be registered into vm.Providers by Init.
+var providerInstance = &Provider{}
+
 var (
 	defaultDefaultProject, defaultMetadataProject, defaultDNSProject, defaultDefaultServiceAccount string
 	// projects for which a cron GC job exists.
@@ -111,13 +114,13 @@ func Init() error {
 	initGCEProjectDefaults()
 	initDNSDefault()
 
-	providerInstance := &Provider{}
 	providerInstance.Projects = []string{defaultDefaultProject}
 	projectFromEnv := os.Getenv("GCE_PROJECT")
 	if projectFromEnv != "" {
-		fmt.Printf("WARN: `GCE_PROJECT` is deprecated; please, use `ROACHPROD_GCE_DEFAULT_PROJECT` instead\n")
+		fmt.Printf("WARNING: `GCE_PROJECT` is deprecated; please, use `ROACHPROD_GCE_DEFAULT_PROJECT` instead")
 		providerInstance.Projects = []string{projectFromEnv}
 	}
+	providerInstance.ServiceAccount = os.Getenv("GCE_SERVICE_ACCOUNT")
 	if _, err := exec.LookPath("gcloud"); err != nil {
 		vm.Providers[ProviderName] = flagstub.New(&Provider{}, "please install the gcloud CLI utilities "+
 			"(https://cloud.google.com/sdk/downloads)")
@@ -127,11 +130,10 @@ func Init() error {
 
 	providerInstance.defaultProject = defaultDefaultProject
 	providerInstance.metadataProject = defaultMetadataProject
+	providerInstance.defaultServiceAccount = defaultDefaultServiceAccount
 
 	initialized = true
 	vm.Providers[ProviderName] = providerInstance
-	Infrastructure = providerInstance
-
 	return nil
 }
 
@@ -188,10 +190,8 @@ type jsonVM struct {
 	MachineType string
 	// CPU platform corresponding to machine type; see https://cloud.google.com/compute/docs/cpu-platforms
 	CPUPlatform string
-	// Of the form  "https://www.googleapis.com/compute/v1/projects/cockroach-workers/zones/us-central1-a/instances/...".
-	// N.B. The self-link contains the name of the GCE project.
-	SelfLink string
-	Zone     string
+	SelfLink    string
+	Zone        string
 	instanceDisksResponse
 }
 
@@ -263,16 +263,6 @@ func (jsonVM *jsonVM) toVM(project string, dnsDomain string) (ret *vm.VM) {
 		}
 
 	}
-	// Parse jsonVM.SelfLink to extract the project name.
-	// N.B. The self-link contains the name of the GCE project. E.g.,
-	// "https://www.googleapis.com/compute/v1/projects/cockroach-workers/zones/us-central1-a/instances/..."
-	projectName := ""
-	if idx := strings.Index(jsonVM.SelfLink, "/projects/"); idx != -1 {
-		projectName = jsonVM.SelfLink[idx+len("/projects/"):]
-		if idx := strings.Index(projectName, "/"); idx != -1 {
-			projectName = projectName[:idx]
-		}
-	}
 
 	return &vm.VM{
 		Name:                   jsonVM.Name,
@@ -286,7 +276,6 @@ func (jsonVM *jsonVM) toVM(project string, dnsDomain string) (ret *vm.VM) {
 		Provider:               ProviderName,
 		DNSProvider:            ProviderName,
 		ProviderID:             jsonVM.Name,
-		ProviderAccountID:      projectName,
 		PublicIP:               publicIP,
 		PublicDNS:              fmt.Sprintf("%s.%s", jsonVM.Name, dnsDomain),
 		RemoteUser:             remoteUser,
@@ -323,9 +312,6 @@ func DefaultProviderOpts() *ProviderOpts {
 		TerminateOnMigration: false,
 		UseSpot:              false,
 		preemptible:          false,
-
-		defaultServiceAccount: defaultDefaultServiceAccount,
-		ServiceAccount:        os.Getenv("GCE_SERVICE_ACCOUNT"),
 	}
 }
 
@@ -341,7 +327,6 @@ type ProviderOpts struct {
 	// multiple projects or a single one.
 	MachineType      string
 	MinCPUPlatform   string
-	BootDiskType     string
 	Zones            []string
 	Image            string
 	SSDCount         int
@@ -354,12 +339,6 @@ type ProviderOpts struct {
 	// Use an instance template and a managed instance group to create VMs. This
 	// enables cluster resizing, load balancing, and health monitoring.
 	Managed bool
-	// Enable turbo mode for the instance. Only supported on C4 VM families.
-	// See: https://cloud.google.com/sdk/docs/release-notes#compute_engine_23
-	TurboMode string
-	// The number of visible threads per physical core.
-	// See: https://cloud.google.com/compute/docs/instances/configuring-simultaneous-multithreading.
-	ThreadsPerCore int
 	// This specifies a subset of the Zones above that will run on spot instances.
 	// VMs running in Zones not in this list will be provisioned on-demand. This
 	// is only used by managed instance groups.
@@ -372,18 +351,13 @@ type ProviderOpts struct {
 	TerminateOnMigration bool
 	// use preemptible instances
 	preemptible bool
-
-	ServiceAccount string
-
-	// The service account to use if the default project is in use and no
-	// ServiceAccount was specified.
-	defaultServiceAccount string
 }
 
 // Provider is the GCE implementation of the vm.Provider interface.
 type Provider struct {
 	*dnsProvider
-	Projects []string
+	Projects       []string
+	ServiceAccount string
 
 	// The project to use for looking up metadata. In particular, this includes
 	// user keys.
@@ -391,6 +365,10 @@ type Provider struct {
 
 	// The project that provides the core roachprod services.
 	defaultProject string
+
+	// The service account to use if the default project is in use and no
+	// ServiceAccount was specified.
+	defaultServiceAccount string
 }
 
 // LogEntry represents a single log entry from the gcloud logging(stack driver)
@@ -459,12 +437,6 @@ func (p *Provider) GetHostErrorVMs(
 		hostErrorVMs = append(hostErrorVMs, logEntry.ProtoPayload.ResourceName)
 	}
 	return hostErrorVMs, nil
-}
-
-func (p *Provider) GetLiveMigrationVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	return nil, nil
 }
 
 // GetVMSpecs returns a map from VM.Name to a map of VM attributes, provided by GCE
@@ -1009,7 +981,6 @@ func (p *Provider) AttachVolume(l *logger.Logger, volume vm.Volume, vm *vm.VM) (
 // (Provider.Projects).
 type ProjectsVal struct {
 	AcceptMultipleProjects bool
-	Provider               *Provider
 }
 
 // DefaultZones is the list of  zones used by default for cluster creation.
@@ -1022,7 +993,7 @@ type ProjectsVal struct {
 // ARM64 builds), but we randomize the specific zone. This is to avoid
 // "zone exhausted" errors in one particular zone, especially during
 // nightly roachtest runs.
-func DefaultZones(arch string, geoDistributed bool) []string {
+func DefaultZones(arch string) []string {
 	zones := []string{"us-east1-b", "us-east1-c", "us-east1-d"}
 	if vm.ParseArch(arch) == vm.ArchARM64 {
 		// T2A instances are only available in us-central1 in NA.
@@ -1030,21 +1001,17 @@ func DefaultZones(arch string, geoDistributed bool) []string {
 	}
 	rand.Shuffle(len(zones), func(i, j int) { zones[i], zones[j] = zones[j], zones[i] })
 
-	if geoDistributed {
-		return []string{
-			zones[0],
-			"us-west1-b",
-			"europe-west2-b",
-			zones[1],
-			"us-west1-c",
-			"europe-west2-c",
-			zones[2],
-			"us-west1-a",
-			"europe-west2-a",
-		}
+	return []string{
+		zones[0],
+		"us-west1-b",
+		"europe-west2-b",
+		zones[1],
+		"us-west1-c",
+		"europe-west2-c",
+		zones[2],
+		"us-west1-a",
+		"europe-west2-a",
 	}
-
-	return []string{zones[0]}
 }
 
 // Set is part of the pflag.Value interface.
@@ -1056,7 +1023,7 @@ func (v ProjectsVal) Set(projects string) error {
 	if !v.AcceptMultipleProjects && len(prj) > 1 {
 		return fmt.Errorf("multiple GCE projects not supported for command")
 	}
-	v.Provider.Projects = prj
+	providerInstance.Projects = prj
 	return nil
 }
 
@@ -1070,7 +1037,7 @@ func (v ProjectsVal) Type() string {
 
 // String is part of the pflag.Value interface.
 func (v ProjectsVal) String() string {
-	return strings.Join(v.Provider.Projects, ",")
+	return strings.Join(providerInstance.Projects, ",")
 }
 
 // GetProject returns the GCE project on which we're configured to operate.
@@ -1098,17 +1065,15 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 	flags.StringSliceVar(&o.ManagedSpotZones, ProviderName+"-managed-spot-zones", nil,
 		"subset of zones in managed instance groups that will use spot instances")
 
-	flags.StringVar(&o.ServiceAccount, ProviderName+"-service-account",
-		o.ServiceAccount, "Service account to use")
-	flags.StringVar(&o.defaultServiceAccount,
+	flags.StringVar(&providerInstance.ServiceAccount, ProviderName+"-service-account",
+		providerInstance.ServiceAccount, "Service account to use")
+	flags.StringVar(&providerInstance.defaultServiceAccount,
 		ProviderName+"-default-service-account", defaultDefaultServiceAccount,
 		"Service account to use if the default project is in use and no "+
 			"--gce-service-account was specified")
 
 	flags.StringVar(&o.MachineType, ProviderName+"-machine-type", "n2-standard-4",
 		"Machine type (see https://cloud.google.com/compute/docs/machine-types)")
-	flags.StringVar(&o.BootDiskType, ProviderName+"-boot-disk-type", "pd-ssd",
-		"Type of the boot disk volume")
 	flags.StringVar(&o.MinCPUPlatform, ProviderName+"-min-cpu-platform", "Intel Ice Lake",
 		"Minimum CPU platform (see https://cloud.google.com/compute/docs/instances/specify-min-cpu-platform)")
 	flags.StringVar(&o.Image, ProviderName+"-image", DefaultImage,
@@ -1132,7 +1097,7 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		fmt.Sprintf("Zones for cluster. If zones are formatted as AZ:N where N is an integer, the zone\n"+
 			"will be repeated N times. If > 1 zone specified, nodes will be geo-distributed\n"+
 			"regardless of geo (default [%s])",
-			strings.Join(DefaultZones(string(vm.ArchAMD64), true), ",")))
+			strings.Join(DefaultZones(string(vm.ArchAMD64)), ",")))
 	flags.BoolVar(&o.preemptible, ProviderName+"-preemptible", false,
 		"use preemptible GCE instances (lifetime cannot exceed 24h)")
 	flags.BoolVar(&o.UseSpot, ProviderName+"-use-spot", false,
@@ -1143,14 +1108,10 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		"use a managed instance group (enables resizing, load balancing, and health monitoring)")
 	flags.BoolVar(&o.EnableCron, ProviderName+"-enable-cron",
 		false, "Enables the cron service (it is disabled by default)")
-	flags.StringVar(&o.TurboMode, ProviderName+"-turbo-mode", "",
-		"enable turbo mode for the instance (only supported on C4 VM families, valid value: 'ALL_CORE_MAX')")
-	flags.IntVar(&o.ThreadsPerCore, ProviderName+"-threads-per-core", 0,
-		"the number of visible threads per physical core (valid values: 1 or 2), default is 0 (auto)")
 }
 
-// ConfigureProviderFlags implements Provider
-func (p *Provider) ConfigureProviderFlags(flags *pflag.FlagSet, opt vm.MultipleProjectsOption) {
+// ConfigureClusterFlags implements vm.ProviderFlags.
+func (o *ProviderOpts) ConfigureClusterFlags(flags *pflag.FlagSet, opt vm.MultipleProjectsOption) {
 	var usage string
 	if opt == vm.SingleProject {
 		usage = "GCE project to manage"
@@ -1161,14 +1122,14 @@ func (p *Provider) ConfigureProviderFlags(flags *pflag.FlagSet, opt vm.MultipleP
 	flags.Var(
 		ProjectsVal{
 			AcceptMultipleProjects: opt == vm.AcceptMultipleProjects,
-			Provider:               p,
 		},
 		ProviderName+"-project", /* name */
 		usage)
 
 	// Flags about DNS override the default values in
-	// dnsProvider.
-	dnsProviderInstance := p.dnsProvider
+	// providerInstance.dnsProvider.
+
+	dnsProviderInstance := providerInstance.dnsProvider
 	flags.StringVar(
 		&dnsProviderInstance.dnsProject, ProviderName+"-dns-project",
 		dnsProviderInstance.dnsProject,
@@ -1200,15 +1161,16 @@ func (p *Provider) ConfigureProviderFlags(flags *pflag.FlagSet, opt vm.MultipleP
 	)
 
 	// Flags about the GCE project to use override the defaults in
-	// the provider.
+	// providerInstance.
+
 	flags.StringVar(
-		&p.metadataProject, ProviderName+"-metadata-project",
-		p.metadataProject,
+		&providerInstance.metadataProject, ProviderName+"-metadata-project",
+		providerInstance.metadataProject,
 		"google cloud project to use to store and fetch SSH keys",
 	)
 	flags.StringVar(
-		&p.defaultProject, ProviderName+"-default-project",
-		p.defaultProject,
+		&providerInstance.defaultProject, ProviderName+"-default-project",
+		providerInstance.defaultProject,
 		"google cloud project to use to run core roachprod services",
 	)
 }
@@ -1219,7 +1181,7 @@ func (o *ProviderOpts) useArmAMI() bool {
 }
 
 // ConfigureClusterCleanupFlags is part of ProviderOpts. This implementation is a no-op.
-func (p *Provider) ConfigureClusterCleanupFlags(flags *pflag.FlagSet) {
+func (o *ProviderOpts) ConfigureClusterCleanupFlags(flags *pflag.FlagSet) {
 }
 
 // CleanSSH TODO(peter): document
@@ -1345,7 +1307,11 @@ func computeZones(opts vm.CreateOpts, providerOpts *ProviderOpts) ([]string, err
 		return nil, err
 	}
 	if len(zones) == 0 {
-		zones = DefaultZones(opts.Arch, opts.GeoDistributed)
+		if opts.GeoDistributed {
+			zones = DefaultZones(opts.Arch)
+		} else {
+			zones = []string{DefaultZones(opts.Arch)[0]}
+		}
 	}
 	if providerOpts.useArmAMI() {
 		if len(providerOpts.Zones) == 0 {
@@ -1403,20 +1369,14 @@ func (p *Provider) computeInstanceArgs(
 		"--scopes", "cloud-platform",
 		"--image", image,
 		"--image-project", imageProject,
-		"--boot-disk-type", providerOpts.BootDiskType,
+		"--boot-disk-type", "pd-ssd",
 	}
 
-	if project == p.defaultProject && providerOpts.ServiceAccount == "" {
-		providerOpts.ServiceAccount = providerOpts.defaultServiceAccount
+	if project == p.defaultProject && p.ServiceAccount == "" {
+		p.ServiceAccount = p.defaultServiceAccount
 	}
-	if providerOpts.ServiceAccount != "" {
-		args = append(args, "--service-account", providerOpts.ServiceAccount)
-	}
-	if providerOpts.TurboMode != "" {
-		args = append(args, "--turbo-mode", providerOpts.TurboMode)
-	}
-	if providerOpts.ThreadsPerCore > 0 {
-		args = append(args, "--threads-per-core", fmt.Sprintf("%d", providerOpts.ThreadsPerCore))
+	if p.ServiceAccount != "" {
+		args = append(args, "--service-account", p.ServiceAccount)
 	}
 
 	if providerOpts.preemptible {
@@ -1658,11 +1618,6 @@ func (p *Provider) Create(
 			return nil, err
 		}
 	}
-	if providerOpts.TurboMode != "" {
-		if err := checkSDKVersion("492.0.0" /* minVersion */, "required for turbo-mode setting"); err != nil {
-			return nil, err
-		}
-	}
 
 	instanceArgs, cleanUpFn, err := p.computeInstanceArgs(l, opts, providerOpts)
 	if cleanUpFn != nil {
@@ -1824,33 +1779,6 @@ func computeGrowDistribution(groups []jsonManagedInstanceGroup, newNodeCount int
 	return addCount
 }
 
-// computeHostNamesPerZone distributes VM hostnames across zones based on the required
-// node count. Groups must be sorted by size from smallest to largest before passing to
-// this function. It takes instance groups, available hostnames, and the number of new nodes,
-// then returns a mapping of zones to their assigned hostnames.
-func computeHostNamesPerZone(
-	groups []jsonManagedInstanceGroup, vmNames []string, newNodeCount int,
-) map[string][]string {
-	addCounts := computeGrowDistribution(groups, newNodeCount)
-	zoneToHostNames := make(map[string][]string)
-	nameIndex := 0
-	for idx, group := range groups {
-		addCount := addCounts[idx]
-		if addCount == 0 {
-			continue
-		}
-
-		vmNamesForZone := make([]string, addCount)
-		for i := 0; i < addCount; i++ {
-			vmNamesForZone[i] = vmNames[nameIndex]
-			nameIndex++
-		}
-
-		zoneToHostNames[group.Zone] = vmNamesForZone
-	}
-	return zoneToHostNames
-}
-
 // Shrink shrinks the cluster by deleting the given VMs. This is only supported
 // for managed instance groups. Currently, nodes should only be deleted from the
 // tail of the cluster, due to complexities thar arise when the node names are
@@ -1908,17 +1836,22 @@ func (p *Provider) Grow(
 	sort.Slice(groups, func(i, j int) bool {
 		return groups[i].Size < groups[j].Size
 	})
-	zoneToHostNames := computeHostNamesPerZone(groups, names, newNodeCount)
+	addCounts := computeGrowDistribution(groups, newNodeCount)
 
+	zoneToHostNames := make(map[string][]string)
 	addedVms := make(map[string]bool)
 	var g errgroup.Group
-	for _, group := range groups {
+	for idx, group := range groups {
+		addCount := addCounts[idx]
+		if addCount == 0 {
+			continue
+		}
 		createArgs := []string{"compute", "instance-groups", "managed", "create-instance", "--zone", group.Zone, groupName,
 			"--project", project}
-		for _, vmName := range zoneToHostNames[group.Zone] {
-			vmName := vmName
-			addedVms[vmName] = true
-			argsWithName := append(createArgs[:len(createArgs):len(createArgs)], []string{"--instance", vmName}...)
+		for i := 0; i < addCount; i++ {
+			addedVms[names[i]] = true
+			argsWithName := append(createArgs[:len(createArgs):len(createArgs)], []string{"--instance", names[i]}...)
+			zoneToHostNames[group.Zone] = append(zoneToHostNames[group.Zone], names[i])
 			g.Go(func() error {
 				cmd := exec.Command("gcloud", argsWithName...)
 				output, err := cmd.CombinedOutput()
@@ -2536,7 +2469,7 @@ type jsonInstanceTemplate struct {
 }
 
 func (t *jsonInstanceTemplate) getZone() string {
-	namePrefix := fmt.Sprintf("%s-", instanceTemplateNamePrefix(t.Properties.Labels[vm.TagCluster]))
+	namePrefix := instanceTemplateNamePrefix(t.Properties.Labels[vm.TagCluster])
 	return strings.TrimPrefix(t.Name, namePrefix)
 }
 
@@ -2565,7 +2498,7 @@ func (d *jsonInstanceTemplateDisk) toVolume(vmName, zone string) (*vm.Volume, Vo
 	diskSize, _ := strconv.Atoi(d.InitializeParams.DiskSizeGb)
 
 	// This is a scratch disk.
-	if d.Type == "SCRATCH" {
+	if d.InitializeParams.DiskType == "SCRATCH" {
 		return &vm.Volume{
 			Size:               diskSize,
 			ProviderVolumeType: "local-ssd",
@@ -3023,17 +2956,9 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 		args := []string{"compute", "instances", "list", "--project", prj, "--format", "json"}
 
 		// Run the command, extracting the JSON payload
-		allVMS := make([]jsonVM, 0)
-		if err := runJSONCommand(args, &allVMS); err != nil {
-			return nil, err
-		}
 		jsonVMS := make([]jsonVM, 0)
-		// Remove instances that weren't created by roachprod.
-		// N.B. The same filter is applied in other providers, i.e., aws and azure.
-		for _, v := range allVMS {
-			if v.Labels[vm.TagRoachprod] == "true" {
-				jsonVMS = append(jsonVMS, v)
-			}
+		if err := runJSONCommand(args, &jsonVMS); err != nil {
+			return nil, err
 		}
 
 		// Find all instance templates that are currently in use.

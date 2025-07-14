@@ -28,47 +28,6 @@ Events in this category pertain to changefeed usage and metrics.
 Events in this category are logged to the `TELEMETRY` channel.
 
 
-### `alter_changefeed`
-
-An event of type `alter_changefeed` is an event for any ALTER CHANGEFEED statements that are run.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `PreviousDescription` | The description of the changefeed job before the ALTER CHANGEFEED. | yes |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Description` | The description of that would show up in the job's description field, redacted | yes |
-| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
-| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
-| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
-| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
-| `Format` | The data format being emitted (ex: JSON, Avro). | no |
-| `JobId` | The job id for enterprise changefeeds. | no |
-
-### `changefeed_canceled`
-
-An event of type `changefeed_canceled` is an event for any changefeed cancellations.
-
-
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Description` | The description of that would show up in the job's description field, redacted | yes |
-| `SinkType` | The type of sink being emitted to (ex: kafka, nodelocal, webhook-https). | no |
-| `NumTables` | The number of tables listed in the query that the changefeed is to run on. | no |
-| `Resolved` | The behavior of emitted resolved spans (ex: yes, no, 10s) | no |
-| `InitialScan` | The desired behavior of initial scans (ex: yes, no, only) | no |
-| `Format` | The data format being emitted (ex: JSON, Avro). | no |
-| `JobId` | The job id for enterprise changefeeds. | no |
-
 ### `changefeed_emitted_bytes`
 
 An event of type `changefeed_emitted_bytes` is an event representing the bytes emitted by a changefeed over an interval.
@@ -201,29 +160,6 @@ events.
 |--|--|--|
 | `NodeID` | The node ID where the event was originated. | no |
 | `StoreID` |  | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-
-### `low_disk_space`
-
-An event of type `low_disk_space` is emitted when a store is reaching capacity, as we reach
-certain thresholds. It is emitted periodically while we are in a low disk
-state.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `NodeID` | The node ID where the event was originated. | no |
-| `StoreID` |  | no |
-| `PercentThreshold` | The free space percent threshold that we went under. | no |
-| `AvailableBytes` |  | no |
-| `TotalBytes` |  | no |
 
 
 #### Common fields
@@ -468,34 +404,6 @@ Events in this category pertain to the health of one or more servers.
 
 Events in this category are logged to the `HEALTH` channel.
 
-
-### `hot_ranges_stats`
-
-An event of type `hot_ranges_stats`
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `RangeID` |  | no |
-| `Qps` |  | no |
-| `SchemaName` | SchemaName is the name of the schema in which the index was created. | yes |
-| `LeaseholderNodeID` | LeaseholderNodeID indicates the Node ID that is the current leaseholder for the given range. | no |
-| `WritesPerSecond` | Writes per second is the recent number of keys written per second on this range. | no |
-| `ReadsPerSecond` | Reads per second is the recent number of keys read per second on this range. | no |
-| `WriteBytesPerSecond` | Write bytes per second is the recent number of bytes written per second on this range. | no |
-| `ReadBytesPerSecond` | Read bytes per second is the recent number of bytes read per second on this range. | no |
-| `CPUTimePerSecond` | CPU time per second is the recent cpu usage in nanoseconds of this range. | no |
-| `Databases` | Databases for the range. | no |
-| `Tables` | Tables for the range | no |
-| `Indexes` | Indexes for the range | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
 
 ### `runtime_stats`
 
@@ -1386,30 +1294,6 @@ An event of type `create_index` is recorded when an index is created.
 | `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
 | `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
 
-### `create_policy`
-
-An event of type `create_policy` is recorded when a policy is created.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `TableName` | Name of the policy's table. | no |
-| `PolicyName` | Name of the created policy. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-| `Statement` | A normalized copy of the SQL statement that triggered the event. The statement string contains a mix of sensitive and non-sensitive details (it is redactable). | partially |
-| `Tag` | The statement tag. This is separate from the statement string, since the statement string can contain sensitive information. The tag is guaranteed not to. | no |
-| `User` | The user account that triggered the event. The special usernames `root` and `node` are not considered sensitive. | depends |
-| `DescriptorID` | The primary object descriptor affected by the operation. Set to zero for operations that don't affect descriptors. | no |
-| `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
-| `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
-
 ### `create_schema`
 
 An event of type `create_schema` is recorded when a schema is created.
@@ -1640,30 +1524,6 @@ An event of type `drop_index` is recorded when an index is dropped.
 | `IndexName` | The name of the affected index. | no |
 | `MutationID` | The mutation ID for the asynchronous job that is processing the index update. | no |
 | `CascadeDroppedViews` | The names of the views dropped as a result of a cascade operation. | no |
-
-
-#### Common fields
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
-| `EventType` | The type of the event. | no |
-| `Statement` | A normalized copy of the SQL statement that triggered the event. The statement string contains a mix of sensitive and non-sensitive details (it is redactable). | partially |
-| `Tag` | The statement tag. This is separate from the statement string, since the statement string can contain sensitive information. The tag is guaranteed not to. | no |
-| `User` | The user account that triggered the event. The special usernames `root` and `node` are not considered sensitive. | depends |
-| `DescriptorID` | The primary object descriptor affected by the operation. Set to zero for operations that don't affect descriptors. | no |
-| `ApplicationName` | The application name for the session where the event was emitted. This is included in the event to ease filtering of logging output by application. | no |
-| `PlaceholderValues` | The mapping of SQL placeholders to their values, for prepared statements. | yes |
-
-### `drop_policy`
-
-An event of type `drop_policy` is recorded when a policy is dropped.
-
-
-| Field | Description | Sensitive |
-|--|--|--|
-| `TableName` | Name of the policy's table. | no |
-| `PolicyName` | Name of the dropped policy. | no |
 
 
 #### Common fields
@@ -3165,6 +3025,34 @@ An event of type `captured_index_usage_stats`
 | `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
 | `EventType` | The type of the event. | no |
 
+### `hot_ranges_stats`
+
+An event of type `hot_ranges_stats`
+
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `RangeID` |  | no |
+| `Qps` |  | no |
+| `SchemaName` | SchemaName is the name of the schema in which the index was created. | yes |
+| `LeaseholderNodeID` | LeaseholderNodeID indicates the Node ID that is the current leaseholder for the given range. | no |
+| `WritesPerSecond` | Writes per second is the recent number of keys written per second on this range. | no |
+| `ReadsPerSecond` | Reads per second is the recent number of keys read per second on this range. | no |
+| `WriteBytesPerSecond` | Write bytes per second is the recent number of bytes written per second on this range. | no |
+| `ReadBytesPerSecond` | Read bytes per second is the recent number of bytes read per second on this range. | no |
+| `CPUTimePerSecond` | CPU time per second is the recent cpu usage in nanoseconds of this range. | no |
+| `Databases` | Databases for the range. | yes |
+| `Tables` | Tables for the range | yes |
+| `Indexes` | Indexes for the range | yes |
+
+
+#### Common fields
+
+| Field | Description | Sensitive |
+|--|--|--|
+| `Timestamp` | The timestamp of the event. Expressed as nanoseconds since the Unix epoch. | no |
+| `EventType` | The type of the event. | no |
+
 ### `m_v_c_c_iterator_stats`
 
 Internal storage iteration statistics for a single execution.
@@ -3244,10 +3132,10 @@ Fields in this struct should be updated in sync with apps_stats.proto.
 
 | Field | Description | Sensitive |
 |--|--|--|
-| `NetworkBytes` | NetworkBytes collects the number of bytes sent over the network by DistSQL components. | no |
+| `NetworkBytes` | NetworkBytes collects the number of bytes sent over the network. | no |
 | `MaxMemUsage` | MaxMemUsage collects the maximum memory usage that occurred on a node. | no |
 | `ContentionTime` | ContentionTime collects the time in seconds statements in the transaction spent contending. | no |
-| `NetworkMessages` | NetworkMessages collects the number of messages that were sent over the network by DistSQL components. | no |
+| `NetworkMessages` | NetworkMessages collects the number of messages that were sent over the network. | no |
 | `MaxDiskUsage` | MaxDiskUsage collects the maximum temporary disk usage that occurred. This is set in cases where a query had to spill to disk, e.g. when performing a large sort where not all of the tuples fit in memory. | no |
 | `CPUSQLNanos` | CPUSQLNanos collects the CPU time spent executing SQL operations in nanoseconds. Currently, it is only collected for statements without mutations that have a vectorized plan. | no |
 | `MVCCIteratorStats` | Internal storage iteration statistics. | yes |
@@ -3295,13 +3183,13 @@ contains common SQL event/execution details.
 | `ZigZagJoinCount` | The number of zig zag joins in the query plan. | no |
 | `ContentionNanos` | The duration of time in nanoseconds that the query experienced contention. | no |
 | `Regions` | The regions of the nodes where SQL processors ran. | no |
-| `NetworkBytesSent` | The number of network bytes by DistSQL components. | no |
+| `NetworkBytesSent` | The number of network bytes sent by nodes for this query. | no |
 | `MaxMemUsage` | The maximum amount of memory usage by nodes for this query. | no |
 | `MaxDiskUsage` | The maximum amount of disk usage by nodes for this query. | no |
 | `KVBytesRead` | The number of bytes read at the KV layer for this query. | no |
 | `KVPairsRead` | The number of key-value pairs read at the KV layer for this query. | no |
 | `KVRowsRead` | The number of rows read at the KV layer for this query. | no |
-| `NetworkMessages` | The number of network messages sent by nodes for this query by DistSQL components. | no |
+| `NetworkMessages` | The number of network messages sent by nodes for this query. | no |
 | `IndexRecommendations` | Generated index recommendations for this query. | no |
 | `ScanCount` | The number of scans in the query plan. | no |
 | `ScanWithStatsCount` | The number of scans using statistics (including forecasted statistics) in the query plan. | no |
@@ -3543,7 +3431,6 @@ authentication failure.
 | 7 | CREDENTIALS_EXPIRED | occur when the credentials provided by the client are expired. |
 | 8 | NO_REPLICATION_ROLEOPTION | occurs when the connection requires a replication role option, but the user does not have it. |
 | 9 | AUTHORIZATION_ERROR | is used for errors during the authorization phase. For example, this would include issues with mapping LDAP groups to SQL roles and granting those roles to the user. |
-| 10 | PROVISIONING_ERROR | is used for errors during the user provisioning phase. This would include errors when the transaction to provision the authenticating user failed to execute. |
 
 
 

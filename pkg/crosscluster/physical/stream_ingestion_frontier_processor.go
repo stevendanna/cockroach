@@ -321,9 +321,10 @@ func (sf *streamIngestionFrontier) maybeUpdateProgress() error {
 	jobID := jobspb.JobID(sf.spec.JobID)
 
 	frontierResolvedSpans := make([]jobspb.ResolvedSpan, 0)
-	for sp, ts := range f.Entries() {
+	f.Entries(func(sp roachpb.Span, ts hlc.Timestamp) (done span.OpResult) {
 		frontierResolvedSpans = append(frontierResolvedSpans, jobspb.ResolvedSpan{Span: sp, Timestamp: ts})
-	}
+		return span.ContinueMatch
+	})
 
 	replicatedTime := f.Frontier()
 	sf.lastPartitionUpdate = timeutil.Now()
@@ -422,9 +423,10 @@ func (sf *streamIngestionFrontier) maybePersistFrontierEntries() error {
 	jobID := jobspb.JobID(sf.spec.JobID)
 
 	frontierEntries := &execinfrapb.FrontierEntries{ResolvedSpans: make([]jobspb.ResolvedSpan, 0)}
-	for sp, ts := range f.Entries() {
+	f.Entries(func(sp roachpb.Span, ts hlc.Timestamp) (done span.OpResult) {
 		frontierEntries.ResolvedSpans = append(frontierEntries.ResolvedSpans, jobspb.ResolvedSpan{Span: sp, Timestamp: ts})
-	}
+		return span.ContinueMatch
+	})
 
 	frontierBytes, err := protoutil.Marshal(frontierEntries)
 	if err != nil {

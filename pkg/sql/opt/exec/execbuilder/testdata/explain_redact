@@ -388,7 +388,6 @@ vectorized: true
                     │ table: bc@bc_pkey
                     │ equality: (?column?) = (b)
                     │ equality cols are key
-                    │ parallel
                     │
                     └── • distinct
                         │ columns: (c_comp, "?column?")
@@ -679,7 +678,7 @@ upsert bc
 query T
 EXPLAIN (OPT, MEMO, REDACT) INSERT INTO bc SELECT a::float + 1 FROM a ON CONFLICT (b) DO UPDATE SET b = bc.b + 100
 ----
-memo (optimized, ~36KB, required=[presentation: info:25] [distribution: test])
+memo (optimized, ~37KB, required=[presentation: info:25] [distribution: test])
  ├── G1: (explain G2 [distribution: test])
  │    └── [presentation: info:25] [distribution: test]
  │         ├── best: (explain G2="[distribution: test]" [distribution: test])
@@ -1058,7 +1057,7 @@ update ab
  └── project
       ├── columns: b_on_update:14 a_new:13 a:7 b:8
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 388.04
       ├── key: (7)
       ├── fd: ()-->(14), (7)-->(8,13)
@@ -1068,7 +1067,7 @@ update ab
       │    ├── columns: a:7 b:8
       │    ├── constraint: /7: ‹×›
       │    ├── flags: avoid-full-scan
-      │    ├── stats: [rows=333.333, distinct(7)=333.333, null(7)=0]
+      │    ├── stats: [rows=333.3333, distinct(7)=333.333, null(7)=0]
       │    ├── cost: 378.02
       │    ├── key: (7)
       │    ├── fd: (7)-->(8)
@@ -1094,7 +1093,7 @@ update ab
  └── project
       ├── columns: b_on_update:14(bool!null) a_new:13(string!null) a:7(string!null) b:8(bool)
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 388.04
       ├── key: (7)
       ├── fd: ()-->(14), (7)-->(8,13)
@@ -1104,7 +1103,7 @@ update ab
       │    ├── columns: a:7(string!null) b:8(bool)
       │    ├── constraint: /7: ‹×›
       │    ├── flags: avoid-full-scan
-      │    ├── stats: [rows=333.333, distinct(7)=333.333, null(7)=0]
+      │    ├── stats: [rows=333.3333, distinct(7)=333.333, null(7)=0]
       │    ├── cost: 378.02
       │    ├── key: (7)
       │    ├── fd: (7)-->(8)
@@ -1118,7 +1117,7 @@ update ab
 query T
 EXPLAIN (OPT, MEMO, REDACT) UPDATE ab SET a = a || 'ab' WHERE a > 'a'
 ----
-memo (optimized, ~14KB, required=[presentation: info:15] [distribution: test])
+memo (optimized, ~15KB, required=[presentation: info:15] [distribution: test])
  ├── G1: (explain G2 [distribution: test])
  │    └── [presentation: info:15] [distribution: test]
  │         ├── best: (explain G2="[distribution: test]" [distribution: test])
@@ -1259,7 +1258,7 @@ update e
  └── project
       ├── columns: crdb_internal_idx_expr_comp:16 e_new:15 crdb_internal_idx_expr:9 e:8 rowid:10
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 1132.20333
       ├── cost-flags: full-scan-penalty
       ├── key: (10)
@@ -1268,7 +1267,7 @@ update e
       ├── prune: (8-10,15,16)
       ├── select
       │    ├── columns: e:8 rowid:10
-      │    ├── stats: [rows=333.333, distinct(8)=33.3333, null(8)=0]
+      │    ├── stats: [rows=333.3333, distinct(8)=33.3333, null(8)=0]
       │    ├── cost: 1118.85
       │    ├── cost-flags: full-scan-penalty
       │    ├── key: (10)
@@ -1312,7 +1311,7 @@ update e
  └── project
       ├── columns: crdb_internal_idx_expr_comp:16(string!null) e_new:15(string!null) crdb_internal_idx_expr:9(string!null) e:8(string!null) rowid:10(int!null)
       ├── immutable
-      ├── stats: [rows=333.333]
+      ├── stats: [rows=333.3333]
       ├── cost: 1132.20333
       ├── cost-flags: full-scan-penalty
       ├── key: (10)
@@ -1321,7 +1320,7 @@ update e
       ├── prune: (8-10,15,16)
       ├── select
       │    ├── columns: e:8(string!null) rowid:10(int!null)
-      │    ├── stats: [rows=333.333, distinct(8)=33.3333, null(8)=0]
+      │    ├── stats: [rows=333.3333, distinct(8)=33.3333, null(8)=0]
       │    ├── cost: 1118.85
       │    ├── cost-flags: full-scan-penalty
       │    ├── key: (10)
@@ -1356,7 +1355,7 @@ update e
 query T
 EXPLAIN (OPT, MEMO, REDACT) UPDATE e SET e = 'eee' WHERE e > 'a'
 ----
-memo (optimized, ~17KB, required=[presentation: info:17] [distribution: test])
+memo (optimized, ~18KB, required=[presentation: info:17] [distribution: test])
  ├── G1: (explain G2 [distribution: test])
  │    └── [presentation: info:17] [distribution: test]
  │         ├── best: (explain G2="[distribution: test]" [distribution: test])
@@ -1644,7 +1643,7 @@ EXPLAIN (OPT, VERBOSE, REDACT) SELECT * FROM bc WHERE b >= 1.0 AND b < 2.0
 project
  ├── columns: b:1 c:2
  ├── immutable
- ├── stats: [rows=111.111]
+ ├── stats: [rows=111.1111]
  ├── cost: 135.817778
  ├── key: (1)
  ├── fd: (1)-->(2)
@@ -1653,7 +1652,7 @@ project
  ├── scan bc
  │    ├── columns: b:1
  │    ├── constraint: /1: ‹×›
- │    ├── stats: [rows=111.111, distinct(1)=111.111, null(1)=0]
+ │    ├── stats: [rows=111.1111, distinct(1)=111.111, null(1)=0]
  │    ├── cost: 133.575556
  │    ├── key: (1)
  │    └── distribution: test
@@ -1666,7 +1665,7 @@ EXPLAIN (OPT, TYPES, REDACT) SELECT * FROM bc WHERE b >= 1.0 AND b < 2.0
 project
  ├── columns: b:1(float!null) c:2(float!null)
  ├── immutable
- ├── stats: [rows=111.111]
+ ├── stats: [rows=111.1111]
  ├── cost: 135.817778
  ├── key: (1)
  ├── fd: (1)-->(2)
@@ -1675,7 +1674,7 @@ project
  ├── scan bc
  │    ├── columns: b:1(float!null)
  │    ├── constraint: /1: ‹×›
- │    ├── stats: [rows=111.111, distinct(1)=111.111, null(1)=0]
+ │    ├── stats: [rows=111.1111, distinct(1)=111.111, null(1)=0]
  │    ├── cost: 133.575556
  │    ├── key: (1)
  │    └── distribution: test
@@ -1687,7 +1686,7 @@ project
 query T
 EXPLAIN (OPT, MEMO, REDACT) SELECT * FROM bc WHERE b >= 1.0 AND b < 2.0
 ----
-memo (optimized, ~12KB, required=[presentation: info:7] [distribution: test])
+memo (optimized, ~13KB, required=[presentation: info:7] [distribution: test])
  ├── G1: (explain G2 [presentation: b:1,c:2] [distribution: test])
  │    └── [presentation: info:7] [distribution: test]
  │         ├── best: (explain G2="[presentation: b:1,c:2] [distribution: test]" [presentation: b:1,c:2] [distribution: test])
@@ -1763,7 +1762,6 @@ vectorized: true
     │ estimated row count: 111 (missing stats)
     │ table: g@g_pkey
     │ key columns: rowid
-    │ parallel
     │
     └── • scan
           columns: (rowid)
@@ -1788,19 +1786,19 @@ EXPLAIN (OPT, VERBOSE, REDACT) SELECT * FROM g WHERE (g || 'abc') LIKE '%ggg%'
 select
  ├── columns: g:1
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 811.403333
  ├── distribution: test
  ├── index-join g
  │    ├── columns: g:1
- │    ├── stats: [rows=111.111]
+ │    ├── stats: [rows=111.1111]
  │    ├── cost: 810.262222
  │    ├── distribution: test
  │    └── scan g@g_expr_idx,inverted
  │         ├── columns: rowid:3
  │         ├── inverted constraint: /8/3
  │         │    └── spans: ‹×›
- │         ├── stats: [rows=111.111, distinct(8)=100, null(8)=0]
+ │         ├── stats: [rows=111.1111, distinct(8)=100, null(8)=0]
  │         ├── cost: 135.797778
  │         ├── key: (3)
  │         └── distribution: test
@@ -1813,19 +1811,19 @@ EXPLAIN (OPT, TYPES, REDACT) SELECT * FROM g WHERE (g || 'abc') LIKE '%ggg%'
 select
  ├── columns: g:1(string)
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 811.403333
  ├── distribution: test
  ├── index-join g
  │    ├── columns: g:1(string)
- │    ├── stats: [rows=111.111]
+ │    ├── stats: [rows=111.1111]
  │    ├── cost: 810.262222
  │    ├── distribution: test
  │    └── scan g@g_expr_idx,inverted
  │         ├── columns: rowid:3(int!null)
  │         ├── inverted constraint: /8/3
  │         │    └── spans: ‹×›
- │         ├── stats: [rows=111.111, distinct(8)=100, null(8)=0]
+ │         ├── stats: [rows=111.1111, distinct(8)=100, null(8)=0]
  │         ├── cost: 135.797778
  │         ├── key: (3)
  │         └── distribution: test
@@ -1933,7 +1931,7 @@ EXPLAIN (OPT, VERBOSE, REDACT) SELECT a FROM a WHERE a % 8 > 2
 select
  ├── columns: a:1
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 1098.65
  ├── distribution: test
  ├── scan a
@@ -1951,7 +1949,7 @@ EXPLAIN (OPT, TYPES, REDACT) SELECT a FROM a WHERE a % 8 > 2
 select
  ├── columns: a:1(int)
  ├── immutable
- ├── stats: [rows=333.333]
+ ├── stats: [rows=333.3333]
  ├── cost: 1098.65
  ├── distribution: test
  ├── scan a
@@ -2437,7 +2435,7 @@ project
 query T
 EXPLAIN (OPT, MEMO, REDACT) SELECT * FROM bc JOIN f ON b = f + 1
 ----
-memo (optimized, ~28KB, required=[presentation: info:14] [distribution: test])
+memo (optimized, ~29KB, required=[presentation: info:14] [distribution: test])
  ├── G1: (explain G2 [presentation: b:1,c:2,f:7] [distribution: test])
  │    └── [presentation: info:14] [distribution: test]
  │         ├── best: (explain G2="[presentation: b:1,c:2,f:7] [distribution: test]" [presentation: b:1,c:2,f:7] [distribution: test])
@@ -2641,7 +2639,7 @@ project
  │    ├── left-join-apply
  │    │    ├── columns: f:1 rowid:2 column13:13
  │    │    ├── immutable
- │    │    ├── stats: [rows=333333, distinct(2)=1000, null(2)=0]
+ │    │    ├── stats: [rows=333333.3, distinct(2)=1000, null(2)=0]
  │    │    ├── cost: 5555.70139
  │    │    ├── key: (2,13)
  │    │    ├── fd: (2)-->(1)
@@ -2666,7 +2664,7 @@ project
  │    │    │    ├── grouping columns: column13:13
  │    │    │    ├── outer: (1)
  │    │    │    ├── immutable
- │    │    │    ├── stats: [rows=333.333, distinct(13)=333.333, null(13)=0]
+ │    │    │    ├── stats: [rows=333.3333, distinct(13)=333.333, null(13)=0]
  │    │    │    ├── cost: 1095.18069
  │    │    │    ├── key: (13)
  │    │    │    ├── distribution: test
@@ -2674,7 +2672,7 @@ project
  │    │    │         ├── columns: column13:13
  │    │    │         ├── outer: (1)
  │    │    │         ├── immutable
- │    │    │         ├── stats: [rows=333.333, distinct(13)=333.333, null(13)=0]
+ │    │    │         ├── stats: [rows=333.3333, distinct(13)=333.333, null(13)=0]
  │    │    │         ├── cost: 1085.13667
  │    │    │         ├── distribution: test
  │    │    │         ├── prune: (13)
@@ -2682,7 +2680,7 @@ project
  │    │    │         │    ├── columns: b:7
  │    │    │         │    ├── outer: (1)
  │    │    │         │    ├── immutable
- │    │    │         │    ├── stats: [rows=333.333, distinct(7)=333.333, null(7)=0]
+ │    │    │         │    ├── stats: [rows=333.3333, distinct(7)=333.333, null(7)=0]
  │    │    │         │    ├── cost: 1078.45
  │    │    │         │    ├── key: (7)
  │    │    │         │    ├── distribution: test
@@ -2733,7 +2731,7 @@ project
  │    ├── left-join-apply
  │    │    ├── columns: f:1(float) rowid:2(int!null) column13:13(float)
  │    │    ├── immutable
- │    │    ├── stats: [rows=333333, distinct(2)=1000, null(2)=0]
+ │    │    ├── stats: [rows=333333.3, distinct(2)=1000, null(2)=0]
  │    │    ├── cost: 5555.70139
  │    │    ├── key: (2,13)
  │    │    ├── fd: (2)-->(1)
@@ -2760,7 +2758,7 @@ project
  │    │    │    ├── grouping columns: column13:13(float)
  │    │    │    ├── outer: (1)
  │    │    │    ├── immutable
- │    │    │    ├── stats: [rows=333.333, distinct(13)=333.333, null(13)=0]
+ │    │    │    ├── stats: [rows=333.3333, distinct(13)=333.333, null(13)=0]
  │    │    │    ├── cost: 1095.18069
  │    │    │    ├── key: (13)
  │    │    │    ├── distribution: test
@@ -2768,7 +2766,7 @@ project
  │    │    │         ├── columns: column13:13(float)
  │    │    │         ├── outer: (1)
  │    │    │         ├── immutable
- │    │    │         ├── stats: [rows=333.333, distinct(13)=333.333, null(13)=0]
+ │    │    │         ├── stats: [rows=333.3333, distinct(13)=333.333, null(13)=0]
  │    │    │         ├── cost: 1085.13667
  │    │    │         ├── distribution: test
  │    │    │         ├── prune: (13)
@@ -2776,7 +2774,7 @@ project
  │    │    │         │    ├── columns: b:7(float!null)
  │    │    │         │    ├── outer: (1)
  │    │    │         │    ├── immutable
- │    │    │         │    ├── stats: [rows=333.333, distinct(7)=333.333, null(7)=0]
+ │    │    │         │    ├── stats: [rows=333.3333, distinct(7)=333.333, null(7)=0]
  │    │    │         │    ├── cost: 1078.45
  │    │    │         │    ├── key: (7)
  │    │    │         │    ├── distribution: test
@@ -2992,7 +2990,7 @@ EXPLAIN (OPT, VERBOSE, REDACT) SELECT * FROM a WHERE a > ALL (SELECT c::int + 2 
 anti-join-apply
  ├── columns: a:1
  ├── immutable
- ├── stats: [rows=666.667]
+ ├── stats: [rows=666.6667]
  ├── cost: 5525.46736
  ├── distribution: test
  ├── scan a
@@ -3005,7 +3003,7 @@ anti-join-apply
  │    ├── columns: "?column?":13
  │    ├── outer: (1)
  │    ├── immutable
- │    ├── stats: [rows=333.333]
+ │    ├── stats: [rows=333.3333]
  │    ├── cost: 1085.13667
  │    ├── distribution: test
  │    ├── prune: (13)
@@ -3013,7 +3011,7 @@ anti-join-apply
  │    │    ├── columns: b:7
  │    │    ├── outer: (1)
  │    │    ├── immutable
- │    │    ├── stats: [rows=333.333, distinct(7)=333.333, null(7)=0]
+ │    │    ├── stats: [rows=333.3333, distinct(7)=333.333, null(7)=0]
  │    │    ├── cost: 1078.45
  │    │    ├── key: (7)
  │    │    ├── distribution: test
@@ -3040,7 +3038,7 @@ EXPLAIN (OPT, TYPES, REDACT) SELECT * FROM a WHERE a > ALL (SELECT c::int + 2 FR
 anti-join-apply
  ├── columns: a:1(int)
  ├── immutable
- ├── stats: [rows=666.667]
+ ├── stats: [rows=666.6667]
  ├── cost: 5525.46736
  ├── distribution: test
  ├── scan a
@@ -3053,7 +3051,7 @@ anti-join-apply
  │    ├── columns: "?column?":13(int!null)
  │    ├── outer: (1)
  │    ├── immutable
- │    ├── stats: [rows=333.333]
+ │    ├── stats: [rows=333.3333]
  │    ├── cost: 1085.13667
  │    ├── distribution: test
  │    ├── prune: (13)
@@ -3061,7 +3059,7 @@ anti-join-apply
  │    │    ├── columns: b:7(float!null)
  │    │    ├── outer: (1)
  │    │    ├── immutable
- │    │    ├── stats: [rows=333.333, distinct(7)=333.333, null(7)=0]
+ │    │    ├── stats: [rows=333.3333, distinct(7)=333.333, null(7)=0]
  │    │    ├── cost: 1078.45
  │    │    ├── key: (7)
  │    │    ├── distribution: test

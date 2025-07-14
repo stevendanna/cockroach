@@ -230,9 +230,10 @@ func (f *RangeFeed) start(
 
 	// Frontier merges and de-dups passed in spans.  So, use frontier to initialize
 	// sorted list of spans.
-	for sp := range frontier.Entries() {
+	frontier.Entries(func(sp roachpb.Span, _ hlc.Timestamp) (done span.OpResult) {
 		f.spans = append(f.spans, sp)
-	}
+		return span.ContinueMatch
+	})
 
 	runWithFrontier := func(ctx context.Context) {
 		if ownsFrontier {
@@ -258,16 +259,17 @@ func (f *RangeFeed) start(
 		f.spansDebugStr = frontier.PeekFrontierSpan().String()
 	} else {
 		var buf strings.Builder
-		for sp := range frontier.Entries() {
+		frontier.Entries(func(sp roachpb.Span, _ hlc.Timestamp) span.OpResult {
 			if buf.Len() > 0 {
 				buf.WriteString(", ")
 			}
 			buf.WriteString(sp.String())
 			if buf.Len() >= 400 {
 				fmt.Fprintf(&buf, "… [%d spans]", l)
-				break
+				return span.StopMatch
 			}
-		}
+			return span.ContinueMatch
+		})
 		f.spansDebugStr = buf.String()
 	}
 

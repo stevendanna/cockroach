@@ -17,7 +17,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	_ "github.com/cockroachdb/cockroach/pkg/cloud/impl"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationtestutils"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/streamclient"
@@ -28,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
@@ -38,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -55,53 +52,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPCRPrivs(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	args := replicationtestutils.DefaultTenantStreamingClustersArgs
-	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
-	defer cleanup()
-
-	c.DestSysSQL.Exec(t, fmt.Sprintf("CREATE USER %s", username.TestUser))
-	c.SrcSysSQL.Exec(t, fmt.Sprintf("CREATE USER %s", username.TestUser+"2"))
-	testuser := sqlutils.MakeSQLRunner(c.DestSysServer.SQLConn(t, serverutils.User(username.TestUser)))
-	srcURL, cleanupSinkCert := pgurlutils.PGUrl(t, c.SrcSysServer.AdvSQLAddr(), t.Name(), url.User(username.TestUser+"2"))
-	defer cleanupSinkCert()
-
-	streamReplStmt := fmt.Sprintf("CREATE TENANT %s FROM REPLICATION OF %s ON '%s'",
-		c.Args.DestTenantName,
-		c.Args.SrcTenantName,
-		srcURL.String())
-
-	// Dest user requires both the MANAGEVIRTUALCLUSTER and REPLICATIONDEST system privileges.
-	testuser.ExpectErr(t, "user testuser does not have MANAGEVIRTUALCLUSTER system privilege", streamReplStmt)
-
-	c.DestSysSQL.Exec(t, fmt.Sprintf("GRANT SYSTEM MANAGEVIRTUALCLUSTER TO %s", username.TestUser))
-	testuser.ExpectErr(t, "user testuser does not have REPLICATIONDEST system privilege", streamReplStmt)
-
-	c.DestSysSQL.Exec(t, fmt.Sprintf("GRANT SYSTEM REPLICATIONDEST TO %s", username.TestUser))
-
-	// Ensure the source user has the REPLICATION privilege.
-	testuser.ExpectErr(t, "user testuser2 does not have REPLICATIONSOURCE system privilege", streamReplStmt)
-	sourcePriv := "REPLICATIONSOURCE"
-	if c.Rng.Intn(3) == 0 {
-		// Test deprecated privilege name.
-		sourcePriv = "REPLICATION"
-	}
-	c.SrcSysSQL.Exec(t, fmt.Sprintf("GRANT SYSTEM %s TO %s", sourcePriv, username.TestUser+"2"))
-	c.DestSysSQL.Exec(t, streamReplStmt)
-
-	// Ensure job based auth allows the replication to proceed.
-	var ingestionJobID jobspb.JobID
-	c.DestSysSQL.QueryRow(t, "SELECT id FROM system.jobs WHERE job_type = 'REPLICATION STREAM INGESTION'").Scan(&ingestionJobID)
-	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, ingestionJobID)
-
-	srcTime := c.SrcSysServer.Clock().Now()
-	c.WaitUntilReplicatedTime(srcTime, ingestionJobID)
-
-}
 func TestTenantStreamingProducerJobTimedOut(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -115,24 +65,24 @@ func TestTenantStreamingProducerJobTimedOut(t *testing.T) {
 
 	jobutils.WaitForJobToRun(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
 	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
-	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION SOURCE EXPIRATION WINDOW ='1m'`, c.Args.SrcTenantName))
+	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='1m'`, c.Args.SrcTenantName))
 
 	srcTime := c.SrcCluster.Server(0).Clock().Now()
 	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
 
-	stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
+	stats := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
 
 	require.NotNil(t, stats.ReplicationLagInfo)
 	require.True(t, srcTime.LessEq(stats.ReplicationLagInfo.MinIngestedTimestamp))
 
 	// Make producer job easily times out
-	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION SOURCE EXPIRATION WINDOW ='100ms'`, c.Args.SrcTenantName))
+	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='100ms'`, c.Args.SrcTenantName))
 
 	jobutils.WaitForJobToFail(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
 	// The ingestion job will stop retrying as this is a permanent job error.
 	jobutils.WaitForJobToPause(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
 	require.Regexp(t, "ingestion job failed .* but is being paused",
-		replicationtestutils.GetStatusMesssage(t, c.DestSysSQL, ingestionJobID))
+		replicationtestutils.RunningStatus(t, c.DestSysSQL, ingestionJobID))
 
 	ts := c.DestCluster.Server(0).Clock().Now()
 	afterPauseFingerprint := replicationtestutils.FingerprintTenantAtTimestampNoHistory(t, c.DestSysSQL, c.Args.DestTenantName, ts.AsOfSystemTime())
@@ -174,10 +124,9 @@ func TestFailbackFailsWithExpiredPTS(t *testing.T) {
 	c.Cutover(ctx, producerJobID, ingestionJobID, srcTime.GoTime(), false)
 
 	// Make producer job pts job easily time out
-	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION SOURCE EXPIRATION WINDOW ='10ms'`, c.Args.SrcTenantName))
+	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='10ms'`, c.Args.SrcTenantName))
 	jobutils.WaitForJobToSucceed(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
-
-	destPgURL, cleanupSinkCert := pgurlutils.PGUrl(t, c.DestSysServer.AdvSQLAddr(), t.Name(), url.User(username.RootUser))
+	destPgURL, cleanupSinkCert := sqlutils.PGUrl(t, c.DestSysServer.AdvSQLAddr(), t.Name(), url.User(username.RootUser))
 	defer cleanupSinkCert()
 
 	c.SrcSysSQL.Exec(t, fmt.Sprintf("ALTER VIRTUAL CLUSTER '%s' STOP SERVICE", c.Args.SrcTenantName))
@@ -271,7 +220,7 @@ func TestTenantStreamingPauseResumeIngestion(t *testing.T) {
 	// Pause ingestion.
 	c.DestSysSQL.Exec(t, fmt.Sprintf("PAUSE JOB %d", ingestionJobID))
 	jobutils.WaitForJobToPause(t, c.DestSysSQL, jobspb.JobID(ingestionJobID))
-	pausedCheckpoint := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID).
+	pausedCheckpoint := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID).
 		ReplicationLagInfo.MinIngestedTimestamp
 	// Check we paused at a timestamp greater than the previously reached high watermark
 	require.True(t, srcTime.LessEq(pausedCheckpoint))
@@ -282,7 +231,7 @@ func TestTenantStreamingPauseResumeIngestion(t *testing.T) {
 	// to src cluster checkpoints events, the job high watermark may change.
 	<-time.NewTimer(3 * time.Second).C
 	require.Equal(t, pausedCheckpoint,
-		replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL,
+		replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL,
 			ingestionJobID).ReplicationLagInfo.MinIngestedTimestamp)
 
 	// Resume ingestion.
@@ -330,7 +279,7 @@ func TestTenantStreamingPauseOnPermanentJobError(t *testing.T) {
 	require.Equal(t, 2, ingestionStarts)
 
 	// Check we didn't make any progress.
-	require.Nil(t, replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL,
+	require.Nil(t, replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL,
 		ingestionJobID).ReplicationLagInfo)
 
 	// Resume ingestion.
@@ -731,7 +680,7 @@ func TestTenantStreamingDeleteRange(t *testing.T) {
 				storageutils.RangeKV(string(tableSpan.Key), string(tableSpan.EndKey), int(batchHLCTime.WallTime), ""),
 			})
 			_, _, _, err := c.SrcSysServer.DB().AddSSTableAtBatchTimestamp(ctx, start, end, data, false,
-				hlc.Timestamp{}, nil, false, batchHLCTime)
+				false, hlc.Timestamp{}, nil, false, batchHLCTime)
 			require.NoError(t, err)
 		} else {
 			// Use DelRange directly.
@@ -1083,7 +1032,7 @@ func TestProtectedTimestampManagement(t *testing.T) {
 				jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(replicationJobID))
 				var emptyCutoverTime time.Time
 				c.Cutover(ctx, producerJobID, replicationJobID, emptyCutoverTime, false)
-				c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION SOURCE EXPIRATION WINDOW ='100ms'`, c.Args.SrcTenantName))
+				c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='100ms'`, c.Args.SrcTenantName))
 			}
 
 			// Set GC TTL low, so that the GC job completes quickly in the test.
@@ -1091,7 +1040,7 @@ func TestProtectedTimestampManagement(t *testing.T) {
 			c.DestSysSQL.Exec(t, fmt.Sprintf("DROP TENANT %s", c.Args.DestTenantName))
 
 			if !completeReplication {
-				c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION SOURCE EXPIRATION WINDOW ='1ms'`, c.Args.SrcTenantName))
+				c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='1ms'`, c.Args.SrcTenantName))
 				jobutils.WaitForJobToCancel(c.T, c.DestSysSQL, jobspb.JobID(replicationJobID))
 				jobutils.WaitForJobToFail(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
 			}
@@ -1556,7 +1505,7 @@ func TestReplicationJobWithReaderTenant(t *testing.T) {
 	srcTime := c.SrcCluster.Server(0).Clock().Now()
 	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
 
-	stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
+	stats := replicationutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
 	require.NotNil(t, stats.IngestionDetails.ReadTenantID)
 
 	var (
@@ -1574,79 +1523,4 @@ FROM [SHOW VIRTUAL CLUSTER '%s' WITH REPLICATION STATUS]
 
 	require.Equal(t, expectedReaderTenantName, name)
 	require.Equal(t, "ready", status)
-}
-
-// TestReaderTenantUpgrade ensures the reader tenant cannot upgrade itself or
-// via the system tenant, rather the user needs to upgrade the host cluster, and
-// then recreate the reader tenant.
-func TestReaderTenantUpgrade(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	skip.UnderDeadlock(t, "too slow")
-	skip.UnderRace(t, "too slow")
-
-	ctx := context.Background()
-	args := replicationtestutils.DefaultTenantStreamingClustersArgs
-	args.EnableReaderTenant = true
-	args.ServerKnobs = &server.TestingKnobs{
-		ClusterVersionOverride:         clusterversion.PreviousRelease.Version(),
-		DisableAutomaticVersionUpgrade: make(chan struct{}),
-	}
-	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
-	defer cleanup()
-
-	producerJobID, ingestionJobID := c.StartStreamReplication(ctx)
-
-	jobutils.WaitForJobToRun(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
-	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
-
-	srcTime := c.SrcCluster.Server(0).Clock().Now()
-	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
-
-	stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
-	readerTenantID := stats.IngestionDetails.ReadTenantID
-
-	readerTenantName := fmt.Sprintf("%s-readonly", args.DestTenantName)
-	c.ConnectToReaderTenant(ctx, readerTenantID, readerTenantName)
-
-	latestVersion := clusterversion.Latest.Version().String()
-
-	// Ensure the reader tenant is on the old version
-	c.ReaderTenantSQL.CheckQueryResults(t, "SHOW CLUSTER SETTING version",
-		[][]string{{clusterversion.PreviousRelease.Version().String()}})
-
-	// Upgrade the host cluster and source app tenant to latest version.
-	c.DestSysSQL.Exec(t, fmt.Sprintf("SET CLUSTER SETTING version = '%s'", latestVersion))
-	c.SrcSysSQL.Exec(t, fmt.Sprintf("SET CLUSTER SETTING version = '%s'", latestVersion))
-	c.SrcTenantSQL.Exec(t, fmt.Sprintf("SET CLUSTER SETTING version = '%s'", latestVersion))
-
-	// Wait for replicating tenant to implicitly upgrade via replication.
-	c.WaitUntilReplicatedTime(c.SrcSysServer.Clock().Now(), jobspb.JobID(ingestionJobID))
-
-	c.ReaderTenantSQL.ExpectErr(t, "cannot execute SET CLUSTER SETTING in a read-only transaction", fmt.Sprintf("SET CLUSTER SETTING version = '%s'", latestVersion))
-
-	// Ensure the reader tenant cannot upgrade itself even if we allow it to write.
-	c.ReaderTenantSQL.Exec(t, "SET SESSION bypass_pcr_reader_catalog_aost ='true'")
-	c.ReaderTenantSQL.ExpectErr(t, "reader virtual clusters cannot be upgraded", fmt.Sprintf("SET CLUSTER SETTING version = '%s'", latestVersion))
-
-	c.DestSysSQL.ExpectErr(t, "cannot set 'version' for tenants", fmt.Sprintf("ALTER TENANT '%s' SET CLUSTER SETTING version = '%s'", readerTenantName, latestVersion))
-
-	// Ensure we can restart the tenant and connect to it.
-	c.DestSysSQL.Exec(t, fmt.Sprintf("ALTER VIRTUAL CLUSTER '%s' STOP SERVICE", readerTenantName))
-	c.DestSysSQL.Exec(t, fmt.Sprintf("DROP VIRTUAL CLUSTER '%s'", readerTenantName))
-	c.DestSysSQL.Exec(t, fmt.Sprintf("ALTER VIRTUAL CLUSTER %s SET REPLICATION READ VIRTUAL CLUSTER", args.DestTenantName))
-	c.DestSysSQL.CheckQueryResults(t, "SELECT name, data_state FROM [SHOW TENANTS] ORDER BY name",
-		[][]string{{"destination", "replicating"}, {"destination-readonly", "ready"}, {"system", "ready"}})
-
-	newStats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
-	newReaderTenantID := newStats.IngestionDetails.ReadTenantID
-	require.NotEqual(t, readerTenantID, newReaderTenantID)
-
-	c.ConnectToReaderTenant(ctx, newReaderTenantID, readerTenantName)
-	waitForPollerJobToStart(t, c.ReaderTenantSQL)
-
-	// Ensure the reader tenant is on the new version
-	c.ReaderTenantSQL.CheckQueryResults(t, "SHOW CLUSTER SETTING version",
-		[][]string{{latestVersion}})
 }

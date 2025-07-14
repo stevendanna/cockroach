@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -151,7 +150,7 @@ func (c *conn) handleAuthentication(
 
 	// Check that the requested user exists and retrieve the hashed
 	// password in case password authentication is needed.
-	exists, canLoginSQL, _, canUseReplicationMode, isSuperuser, defaultSettings, roleSubject, _, pwRetrievalFn, err :=
+	exists, canLoginSQL, _, canUseReplicationMode, isSuperuser, defaultSettings, roleSubject, pwRetrievalFn, err :=
 		sql.GetUserSessionInitInfo(
 			ctx,
 			execCfg,
@@ -163,31 +162,6 @@ func (c *conn) handleAuthentication(
 		ac.LogAuthFailed(ctx, eventpb.AuthFailReason_USER_RETRIEVAL_ERROR, err)
 		return connClose, c.sendError(ctx, pgerror.WithCandidateCode(err, pgcode.InvalidAuthorizationSpecification))
 	}
-
-	if !exists {
-		if execCfg.Settings.Version.IsActive(ctx, clusterversion.V25_3) &&
-			behaviors.IsProvisioningEnabled(execCfg.Settings, hbaEntry.Method.String()) {
-			err := behaviors.MaybeProvisionUser(ctx, execCfg.Settings, hbaEntry.Method.String())
-			if err != nil {
-				log.Warningf(ctx, "user provisioning failed for user=%q: %+v", dbUser, err)
-				ac.LogAuthFailed(ctx, eventpb.AuthFailReason_PROVISIONING_ERROR, err)
-				return connClose, c.sendError(ctx, pgerror.WithCandidateCode(err, pgcode.InvalidAuthorizationSpecification))
-			}
-			exists, canLoginSQL, _, canUseReplicationMode, isSuperuser, defaultSettings, roleSubject, _, pwRetrievalFn, err =
-				sql.GetUserSessionInitInfo(
-					ctx,
-					execCfg,
-					dbUser,
-					c.sessionArgs.SessionDefaults["database"],
-				)
-			if err != nil {
-				log.Warningf(ctx, "user retrieval failed for user=%q: %+v", dbUser, err)
-				ac.LogAuthFailed(ctx, eventpb.AuthFailReason_USER_RETRIEVAL_ERROR, err)
-				return connClose, c.sendError(ctx, pgerror.WithCandidateCode(err, pgcode.InvalidAuthorizationSpecification))
-			}
-		}
-	}
-
 	c.sessionArgs.IsSuperuser = isSuperuser
 
 	if !exists {

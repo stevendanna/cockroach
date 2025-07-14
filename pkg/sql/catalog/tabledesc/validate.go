@@ -9,7 +9,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -131,18 +130,6 @@ func (desc *wrapper) GetReferencedDescIDs(
 			ids.Add(id)
 		}
 	}
-	// Add policy dependencies.
-	for _, p := range desc.Policies {
-		for _, id := range p.DependsOnTypes {
-			ids.Add(id)
-		}
-		for _, id := range p.DependsOnRelations {
-			ids.Add(id)
-		}
-		for _, id := range p.DependsOnFunctions {
-			ids.Add(id)
-		}
-	}
 	return ids, nil
 }
 
@@ -257,41 +244,12 @@ func (desc *wrapper) ValidateForwardReferences(
 			vea.Report(catalog.ValidateOutboundFunctionRef(id, vdg))
 		}
 	}
-
-	for i := range desc.Policies {
-		policy := &desc.Policies[i]
-		for _, id := range policy.DependsOnTypes {
-			vea.Report(catalog.ValidateOutboundTypeRef(id, vdg))
-		}
-		for _, id := range policy.DependsOnRelations {
-			vea.Report(catalog.ValidateOutboundTableRef(id, vdg))
-		}
-		for _, id := range policy.DependsOnFunctions {
-			vea.Report(catalog.ValidateOutboundFunctionRef(id, vdg))
-		}
-	}
 }
 
 // ValidateBackReferences implements the catalog.Descriptor interface.
 func (desc *wrapper) ValidateBackReferences(
 	vea catalog.ValidationErrorAccumulator, vdg catalog.ValidationDescGetter,
 ) {
-	// Check that all expression strings can be parsed.
-	// NOTE: This could be performed in ValidateSelf, but we want to avoid that
-	// since parsing all the expressions is a relatively expensive thing to do.
-	_ = ForEachExprStringInTableDesc(desc, func(expr *string, typ catalog.DescExprType) (err error) {
-		switch typ {
-		case catalog.SQLExpr:
-			_, err = parser.ParseExpr(*expr)
-		case catalog.SQLStmt:
-			_, err = parser.Parse(*expr)
-		case catalog.PLpgSQLStmt:
-			_, err = plpgsqlparser.Parse(*expr)
-		}
-		vea.Report(err)
-		return nil
-	})
-
 	// Check that outbound foreign keys have matching back-references.
 	for i := range desc.OutboundFKs {
 		vea.Report(desc.validateOutboundFKBackReference(&desc.OutboundFKs[i], vdg))
@@ -370,33 +328,6 @@ func (desc *wrapper) ValidateBackReferences(
 		default:
 			vea.Report(errors.AssertionFailedf("table is depended on by unexpected %s %s (%d)",
 				depDesc.DescriptorType(), depDesc.GetName(), depDesc.GetID()))
-		}
-	}
-
-	// Check back-references in policies
-	for _, p := range desc.Policies {
-		for _, fnID := range p.DependsOnFunctions {
-			fn, err := vdg.GetFunctionDescriptor(fnID)
-			if err != nil {
-				vea.Report(err)
-				continue
-			}
-			vea.Report(desc.validateOutboundFuncRefBackReference(fn))
-		}
-		for _, id := range p.DependsOnTypes {
-			typ, err := vdg.GetTypeDescriptor(id)
-			if err != nil {
-				vea.Report(err)
-				continue
-			}
-			vea.Report(desc.validateOutboundTypeRefBackReference(typ))
-		}
-		for _, id := range p.DependsOnRelations {
-			ref, _ := vdg.GetTableDescriptor(id)
-			if ref == nil {
-				continue
-			}
-			vea.Report(catalog.ValidateOutboundTableRefBackReference(desc.GetID(), ref))
 		}
 	}
 }
@@ -1063,6 +994,20 @@ func (desc *wrapper) ValidateSelf(vea catalog.ValidationErrorAccumulator) {
 			"invalid concurrent declarative schema change job %d and legacy schema change jobs %v",
 			dscs.JobID, desc.MutationJobs))
 	}
+
+	// Check that all expression strings can be parsed.
+	_ = ForEachExprStringInTableDesc(desc, func(expr *string, typ catalog.DescExprType) (err error) {
+		switch typ {
+		case catalog.SQLExpr:
+			_, err = parser.ParseExpr(*expr)
+		case catalog.SQLStmt:
+			_, err = parser.Parse(*expr)
+		case catalog.PLpgSQLStmt:
+			_, err = plpgsqlparser.Parse(*expr)
+		}
+		vea.Report(err)
+		return nil
+	})
 
 	vea.Report(ValidateRowLevelTTL(desc.GetRowLevelTTL()))
 	// The remaining validation is called separately from ValidateRowLevelTTL
@@ -1791,10 +1736,13 @@ func (desc *wrapper) validateTableIndexes(
 			}
 
 			// When newPKColIDs is not empty, it means there is an in-progress `ALTER
-			// PRIMARY KEY`. Certain schema changes will make the new virtual columns
-			// public earlier than the new primary key, which should be acceptable.
+			// PRIMARY KEY`. We don't allow queueing schema changes when there's a
+			// primary key mutation, so it's safe to make the assumption that `Adding`
+			// indexes are associated with the new primary key because they are
+			// rewritten and `Non-adding` indexes should only contain virtual column
+			// from old primary key.
 			isOldPKCol := !idx.Adding() && curPKColIDs.Contains(colID)
-			isNewPKCol := newPKColIDs.Contains(colID)
+			isNewPKCol := idx.Adding() && newPKColIDs.Contains(colID)
 			if newPKColIDs.Len() > 0 && (isOldPKCol || isNewPKCol) {
 				continue
 			}
@@ -2113,11 +2061,18 @@ func (desc *wrapper) validatePolicies() error {
 	names := make(map[string]descpb.PolicyID, len(policies))
 	idToName := make(map[descpb.PolicyID]string, len(policies))
 	for _, p := range policies {
-		if err := desc.validatePolicy(&p); err != nil {
-			return err
+		if p.ID == 0 {
+			return errors.AssertionFailedf(
+				"policy ID was missing for policy %q",
+				p.Name)
+		} else if p.ID >= desc.NextPolicyID {
+			return errors.AssertionFailedf(
+				"policy %q has ID %d, which is not less than the NextPolicyID value %d for the table",
+				p.Name, p.ID, desc.NextPolicyID)
 		}
-
-		// Perform validation across all policies defined for the table.
+		if p.Name == "" {
+			return pgerror.Newf(pgcode.Syntax, "empty policy name")
+		}
 		if otherID, found := names[p.Name]; found && p.ID != otherID {
 			return pgerror.Newf(pgcode.DuplicateObject,
 				"duplicate policy name: %q", p.Name)
@@ -2129,99 +2084,13 @@ func (desc *wrapper) validatePolicies() error {
 				p.ID, p.Name, other)
 		}
 		idToName[p.ID] = p.Name
-	}
-	return nil
-}
-
-// validatePolicy will validate a single policy in isolation from other policies in the table.
-func (desc *wrapper) validatePolicy(p *descpb.PolicyDescriptor) error {
-	if p.ID == 0 {
-		return errors.AssertionFailedf(
-			"policy ID was missing for policy %q",
-			p.Name)
-	} else if p.ID >= desc.NextPolicyID {
-		return errors.AssertionFailedf(
-			"policy %q has ID %d, which is not less than the NextPolicyID value %d for the table",
-			p.Name, p.ID, desc.NextPolicyID)
-	}
-	if p.Name == "" {
-		return pgerror.Newf(pgcode.Syntax, "empty policy name")
-	}
-	if _, ok := catpb.PolicyType_name[int32(p.Type)]; !ok || p.Type == catpb.PolicyType_POLICYTYPE_UNUSED {
-		return errors.AssertionFailedf(
-			"policy %q has an unknown policy type %v", p.Name, p.Type)
-	}
-	if _, ok := catpb.PolicyCommand_name[int32(p.Command)]; !ok || p.Command == catpb.PolicyCommand_POLICYCOMMAND_UNUSED {
-		return errors.AssertionFailedf(
-			"policy %q has an unknown policy command %v", p.Name, p.Command)
-	}
-	if err := desc.validatePolicyRoles(p); err != nil {
-		return err
-	}
-	if err := desc.validatePolicyExprs(p); err != nil {
-		return err
-	}
-	return nil
-}
-
-// validatePolicyRoles will validate the roles that are in one policy.
-func (desc *wrapper) validatePolicyRoles(p *descpb.PolicyDescriptor) error {
-	if len(p.RoleNames) == 0 {
-		return errors.AssertionFailedf(
-			"policy %q has no roles defined", p.Name)
-	}
-	rolesInUse := make(map[string]struct{}, len(p.RoleNames))
-	for i, roleName := range p.RoleNames {
-		if _, found := rolesInUse[roleName]; found {
+		if _, ok := catpb.PolicyType_name[int32(p.Type)]; !ok || p.Type == catpb.PolicyType_POLICYTYPE_UNUSED {
 			return errors.AssertionFailedf(
-				"policy %q contains duplicate role name %q", p.Name, roleName)
+				"policy %q has an unknown policy type %v", p.Name, p.Type)
 		}
-		rolesInUse[roleName] = struct{}{}
-		// The public role, if included, must always be the first entry in the
-		// role names slice.
-		if roleName == username.PublicRole && i > 0 {
+		if _, ok := catpb.PolicyCommand_name[int32(p.Command)]; !ok || p.Command == catpb.PolicyCommand_POLICYCOMMAND_UNUSED {
 			return errors.AssertionFailedf(
-				"the public role must be the first role defined in policy %q", p.Name)
-		}
-	}
-	return nil
-}
-
-// validatePolicyExprs will validate the expressions within the policy.
-func (desc *wrapper) validatePolicyExprs(p *descpb.PolicyDescriptor) error {
-	if p.WithCheckExpr != "" {
-		_, err := parser.ParseExpr(p.WithCheckExpr)
-		if err != nil {
-			return errors.Wrapf(err, "WITH CHECK expression %q is invalid", p.WithCheckExpr)
-		}
-	}
-	if p.UsingExpr != "" {
-		_, err := parser.ParseExpr(p.UsingExpr)
-		if err != nil {
-			return errors.Wrapf(err, "USING expression %q is invalid", p.UsingExpr)
-		}
-	}
-
-	// Ensure the validity of policy back-references. The existence and status of
-	// referenced objects are verified during the execution of
-	// ValidateForwardReferences and ValidateBackwardReferences for the table.
-	var seenIDs catalog.DescriptorIDSet
-	for _, id := range []struct {
-		idName string
-		ids    []descpb.ID
-	}{
-		{"type", p.DependsOnTypes},
-		{"functions", p.DependsOnFunctions},
-		{"relations", p.DependsOnRelations},
-	} {
-		for idx, depID := range id.ids {
-			if depID == descpb.InvalidID {
-				return errors.Newf("invalid %s id %d in depends-on references #%d", id.idName, id, idx)
-			}
-			if seenIDs.Contains(depID) {
-				return errors.Newf("%s id %d in depends-on references #%d is duplicated", id.idName, depID, idx)
-			}
-			seenIDs.Add(depID)
+				"policy %q has an unknown policy command %v", p.Name, p.Command)
 		}
 	}
 	return nil
@@ -2235,7 +2104,6 @@ func (desc *wrapper) validateAutoStatsSettings(vea catalog.ValidationErrorAccumu
 	}
 	desc.validateAutoStatsEnabled(vea, catpb.AutoStatsEnabledTableSettingName, desc.AutoStatsSettings.Enabled)
 	desc.validateAutoStatsEnabled(vea, catpb.AutoPartialStatsEnabledTableSettingName, desc.AutoStatsSettings.PartialEnabled)
-	desc.validateAutoStatsEnabled(vea, catpb.AutoFullStatsEnabledTableSettingName, desc.AutoStatsSettings.FullEnabled)
 
 	desc.validateMinStaleRows(vea, catpb.AutoStatsMinStaleTableSettingName, desc.AutoStatsSettings.MinStaleRows)
 	desc.validateMinStaleRows(vea, catpb.AutoPartialStatsMinStaleTableSettingName, desc.AutoStatsSettings.PartialMinStaleRows)

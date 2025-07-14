@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -224,13 +223,9 @@ func (ubr *unbufferedRegistration) IsDisconnected() bool {
 //
 // nolint:deferunlockcheck
 func (ubr *unbufferedRegistration) runOutputLoop(ctx context.Context, forStacks roachpb.RangeID) {
-	start := crtime.NowMono()
 	ubr.mu.Lock()
-	defer func() {
-		// Noop if publishCatchUpBuffer below returns no error.
-		ubr.drainAllocations(ctx)
-		ubr.metrics.RangefeedOutputLoopNanosForUnbufferedReg.Inc(start.Elapsed().Nanoseconds())
-	}()
+	// Noop if publishCatchUpBuffer below returns no error.
+	defer ubr.drainAllocations(ctx)
 
 	if ubr.mu.disconnected {
 		ubr.mu.Unlock()

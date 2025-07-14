@@ -16,8 +16,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -30,7 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/rowexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/spanutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/ttl/ttlbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
@@ -40,17 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-)
-
-// ttlMaxKVAutoRetry is the maximum number of times a TTL operation will
-// automatically retry in the KV layer before reducing the batch size to handle
-// contention.
-var ttlMaxKVAutoRetry = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"sql.ttl.max_kv_auto_retries",
-	"the number of times a TTL operation will automatically retry in the KV layer before reducing the batch size",
-	10,
-	settings.PositiveInt,
 )
 
 // ttlProcessor manages the work managed by a single node for a job run by
@@ -98,7 +87,7 @@ func getTableInfo(
 			pkColNames = append(pkColNames, buf.String())
 			buf.Reset()
 		}
-		pkColTypes, err = spanutils.GetPKColumnTypes(desc, primaryIndexDesc)
+		pkColTypes, err = GetPKColumnTypes(desc, primaryIndexDesc)
 		if err != nil {
 			return err
 		}
@@ -233,7 +222,7 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 	}
 
 	err = func() error {
-		boundsChan := make(chan spanutils.QueryBounds, processorConcurrency)
+		boundsChan := make(chan QueryBounds, processorConcurrency)
 		defer close(boundsChan)
 		for i := int64(0); i < processorConcurrency; i++ {
 			group.GoCtx(func(ctx context.Context) error {
@@ -292,7 +281,7 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 		kvDB := db.KV()
 		var alloc tree.DatumAlloc
 		for i, span := range ttlSpec.Spans {
-			if bounds, hasRows, err := spanutils.SpanToQueryBounds(
+			if bounds, hasRows, err := SpanToQueryBounds(
 				ctx,
 				kvDB,
 				codec,
@@ -434,11 +423,6 @@ func (t *ttlProcessor) runTTLOnQueryBounds(
 					var batchRowCount int64
 					do := func(ctx context.Context, txn descs.Txn) error {
 						txn.KV().SetDebugName("ttljob-delete-batch")
-						// We explicitly specify a low retry limit because this operation is
-						// wrapped with its own retry function that will also take care of
-						// adjusting the batch size on each retry.
-						maxAutoRetries := ttlMaxKVAutoRetry.Get(&flowCtx.Cfg.Settings.SV)
-						txn.KV().SetMaxAutoRetries(int(maxAutoRetries))
 						if ttlSpec.DisableChangefeedReplication {
 							txn.KV().SetOmitInRangefeeds()
 						}
@@ -520,6 +504,65 @@ func newTTLProcessor(
 		return nil, err
 	}
 	return ttlProcessor, nil
+}
+
+// SpanToQueryBounds converts the span output of the DistSQL planner to
+// QueryBounds to generate SELECT statements.
+func SpanToQueryBounds(
+	ctx context.Context,
+	kvDB *kv.DB,
+	codec keys.SQLCodec,
+	pkColIDs catalog.TableColMap,
+	pkColTypes []*types.T,
+	pkColDirs []catenumpb.IndexColumn_Direction,
+	numFamilies int,
+	span roachpb.Span,
+	alloc *tree.DatumAlloc,
+) (bounds QueryBounds, hasRows bool, _ error) {
+	partialStartKey := span.Key
+	partialEndKey := span.EndKey
+	startKeyValues, err := kvDB.Scan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
+	if err != nil {
+		return bounds, false, errors.Wrapf(err, "scan error startKey=%x endKey=%x", []byte(partialStartKey), []byte(partialEndKey))
+	}
+	// If span has 0 rows then return early - it will not be processed.
+	if len(startKeyValues) == 0 {
+		return bounds, false, nil
+	}
+	endKeyValues, err := kvDB.ReverseScan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
+	if err != nil {
+		return bounds, false, errors.Wrapf(err, "reverse scan error startKey=%x endKey=%x", []byte(partialStartKey), []byte(partialEndKey))
+	}
+	// If span has 0 rows then return early - it will not be processed. This is
+	// checked again here because the calls to Scan and ReverseScan are
+	// non-transactional so the row could have been deleted between the calls.
+	if len(endKeyValues) == 0 {
+		return bounds, false, nil
+	}
+	bounds.Start, err = rowenc.DecodeIndexKeyToDatums(codec, pkColIDs, pkColTypes, pkColDirs, startKeyValues, alloc)
+	if err != nil {
+		return bounds, false, errors.Wrapf(err, "decode startKeyValues error on %+v", startKeyValues)
+	}
+	bounds.End, err = rowenc.DecodeIndexKeyToDatums(codec, pkColIDs, pkColTypes, pkColDirs, endKeyValues, alloc)
+	if err != nil {
+		return bounds, false, errors.Wrapf(err, "decode endKeyValues error on %+v", endKeyValues)
+	}
+	return bounds, true, nil
+}
+
+// GetPKColumnTypes returns tableDesc's primary key column types.
+func GetPKColumnTypes(
+	tableDesc catalog.TableDescriptor, indexDesc *descpb.IndexDescriptor,
+) ([]*types.T, error) {
+	pkColTypes := make([]*types.T, 0, len(indexDesc.KeyColumnIDs))
+	for i, id := range indexDesc.KeyColumnIDs {
+		col, err := catalog.MustFindColumnByID(tableDesc, id)
+		if err != nil {
+			return nil, errors.Wrapf(err, "column index=%d", i)
+		}
+		pkColTypes = append(pkColTypes, col.GetType())
+	}
+	return pkColTypes, nil
 }
 
 func init() {

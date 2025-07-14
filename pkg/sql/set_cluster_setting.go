@@ -281,7 +281,7 @@ func (p *planner) getAndValidateTypedClusterSetting(
 				requiredType = types.Float
 			case settings.AnyEnumSetting:
 				// EnumSettings can be set with either strings or integers.
-				requiredType = types.AnyElement
+				requiredType = types.Any
 			case *settings.DurationSetting:
 				requiredType = types.Interval
 			case *settings.DurationSettingWithExplicitUnit:

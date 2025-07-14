@@ -127,11 +127,9 @@ type (
 		// this probability for specific mutator implementations as
 		// needed.
 		Probability() float64
-		// Generate takes a test plan, the testPlanner, and an RNG and returns the list of
-		// mutations that should be applied to the plan. The test plan is the intended output
-		// after applying the mutations. The testPlanner is used to access specific attributes
-		// of the test plan, such as the current context or the services.
-		Generate(*rand.Rand, *TestPlan, *testPlanner) []mutation
+		// Generate takes a test plan and a RNG and returns the list of
+		// mutations that should be applied to the plan.
+		Generate(*rand.Rand, *TestPlan) []mutation
 	}
 
 	// mutationOp encodes the type of mutation and controls how the
@@ -213,13 +211,11 @@ const (
 	spanConfigTenantLimit = 50000
 )
 
-var failureInjectionMutators = []mutator{
-	panicNodeMutator{},
-}
-
-// clusterSettingMutators includes a list of all
-// cluster setting mutator implementations.
-var clusterSettingMutators = []mutator{
+// planMutators includes a list of all known `mutator`
+// implementations. A subset of these mutations might be enabled in
+// any mixedversion test plan.
+var planMutators = []mutator{
+	preserveDowngradeOptionRandomizerMutator{},
 	newClusterSettingMutator(
 		"kv.expiration_leases_only.enabled",
 		[]bool{true, false},
@@ -231,39 +227,16 @@ var clusterSettingMutators = []mutator{
 		clusterSettingMinimumVersion("v23.2.0"),
 	),
 	newClusterSettingMutator(
+		"kv.snapshot_receiver.excise.enabled",
+		[]bool{true, false},
+		clusterSettingMinimumVersion("v23.2.0"),
+	),
+	newClusterSettingMutator(
 		"storage.sstable.compression_algorithm",
 		[]string{"snappy", "zstd"},
 		clusterSettingMinimumVersion("v24.1.0-alpha.0"),
 	),
-	// These two settings are newly introduced, so their probabilities
-	// are temporarily raised to increase testing on them specifically.
-	// The 50% matches the metamorphic probability of these settings
-	// being enabled in non mixed version tests.
-	newClusterSettingMutator(
-		"kv.transaction.write_buffering.enabled",
-		[]bool{true, false},
-		clusterSettingMinimumVersion("v25.2.0"),
-		clusterSettingProbability(0.5),
-	),
-	newClusterSettingMutator(
-		"kv.rangefeed.buffered_sender.enabled",
-		[]bool{true, false},
-		clusterSettingMinimumVersion("v25.2.0"),
-		clusterSettingProbability(0.5),
-	),
 }
-
-// planMutators includes a list of all known `mutator`
-// implementations. A subset of these mutations might be enabled in
-// any mixedversion test plan.
-var planMutators = append(
-	append([]mutator{
-		preserveDowngradeOptionRandomizerMutator{},
-	},
-		failureInjectionMutators...,
-	),
-	clusterSettingMutators...,
-)
 
 // Plan returns the TestPlan used to upgrade the cluster from the
 // first to the final version in the `versions` field. The test plan
@@ -427,22 +400,11 @@ func (p *testPlanner) Plan() *TestPlan {
 		isLocal:        p.isLocal,
 	}
 
-	failureInjections := make(map[string]struct{})
-	for _, m := range failureInjectionMutators {
-		failureInjections[m.Name()] = struct{}{}
-	}
-
-	// Probabilistically enable some of the mutators on the base test
-	// plan generated above. We disable any failure injections that
-	// would occur on clusters with less than three nodes as this
-	// can lead to uninteresting failures (e.g. a single node
-	// panic failure).
+	// Probabilistically enable some of of the mutators on the base test
+	// plan generated above.
 	for _, mut := range planMutators {
 		if p.mutatorEnabled(mut) {
-			if _, found := failureInjections[mut.Name()]; found && len(p.currentContext.System.Descriptor.Nodes) < 3 {
-				continue
-			}
-			mutations := mut.Generate(p.prng, testPlan, p)
+			mutations := mut.Generate(p.prng, testPlan)
 			testPlan.applyMutations(p.prng, mutations)
 			testPlan.enabledMutators = append(testPlan.enabledMutators, mut)
 		}
@@ -595,11 +557,6 @@ func (p *testPlanner) systemSetupSteps() []testStep {
 	}
 
 	setupContext := p.nonUpgradeContext(initialVersion, SystemSetupStage)
-
-	clusterStartHooks := p.hooks.BeforeClusterStartSteps(setupContext, p.prng)
-	if len(clusterStartHooks) > 0 {
-		steps = append(steps, p.concurrently(beforeClusterStartLabel, clusterStartHooks)...)
-	}
 	return append(steps,
 		p.newSingleStepWithContext(setupContext, startStep{
 			version:            initialVersion,
@@ -622,7 +579,6 @@ func (p *testPlanner) systemSetupSteps() []testStep {
 // passed is the version in which the tenant is created.
 func (p *testPlanner) tenantSetupSteps(v *clusterupgrade.Version) []testStep {
 	setupContext := p.nonUpgradeContext(v, TenantSetupStage)
-	var steps []testStep
 	shouldGrantCapabilities := p.deploymentMode == SeparateProcessDeployment ||
 		(p.deploymentMode == SharedProcessDeployment && !v.AtLeast(TenantsAndSystemAlignedSettingsVersion))
 
@@ -642,15 +598,11 @@ func (p *testPlanner) tenantSetupSteps(v *clusterupgrade.Version) []testStep {
 		}
 	}
 
-	clusterStartHooks := p.hooks.BeforeClusterStartSteps(setupContext, p.prng)
-	if len(clusterStartHooks) > 0 {
-		steps = append(steps, p.concurrently(beforeClusterStartLabel, clusterStartHooks)...)
-	}
 	// We are creating a virtual cluster: we first create it, then wait
 	// for the cluster version to match the expected version, then set
 	// it as the default cluster, and finally give it all capabilities
 	// if necessary.
-	steps = append(steps,
+	steps := []testStep{
 		p.newSingleStepWithContext(setupContext, startStep),
 		p.newSingleStepWithContext(setupContext, waitForStableClusterVersionStep{
 			nodes:              p.currentContext.Tenant.Descriptor.Nodes,
@@ -658,7 +610,7 @@ func (p *testPlanner) tenantSetupSteps(v *clusterupgrade.Version) []testStep {
 			desiredVersion:     versionToClusterVersion(v),
 			virtualClusterName: p.tenantName(),
 		}),
-	)
+	}
 
 	// We only use the 'default tenant' cluster setting in
 	// shared-process deployments. For separate-process deployments, we
@@ -1416,16 +1368,12 @@ func (ss stepSelector) InsertSequential(rng *rand.Rand, impl singleStepProtocol)
 	})
 }
 
-// InsertBefore inserts the step before the selected step. This is not guaranteed to be a non-concurrent insert, if the
-// selected step is part of a `concurrentRunStep`, the new step will be concurrent with the selected step.
 func (ss stepSelector) InsertBefore(impl singleStepProtocol) []mutation {
 	return ss.insert(impl, func() mutationOp {
 		return mutationInsertBefore
 	})
 }
 
-// InsertAfter inserts the step after the selected step. This is not guaranteed to be a non-concurrent insert, if the
-// selected step is part of a `concurrentRunStep`, the new step will be concurrent with the selected step.
 func (ss stepSelector) InsertAfter(impl singleStepProtocol) []mutation {
 	return ss.insert(impl, func() mutationOp {
 		return mutationInsertAfter

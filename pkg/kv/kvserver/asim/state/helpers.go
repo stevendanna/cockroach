@@ -59,14 +59,12 @@ func testingResetLoad(s State, rangeID RangeID) {
 // NewStorePool returns a store pool with no gossip instance and default values
 // for configuration.
 func NewStorePool(
-	nodeCountFn storepool.NodeCountFunc,
-	nodeLivenessFn storepool.NodeLivenessFunc,
-	hlc *hlc.Clock,
-	st *cluster.Settings,
+	nodeCountFn storepool.NodeCountFunc, nodeLivenessFn storepool.NodeLivenessFunc, hlc *hlc.Clock,
 ) (*storepool.StorePool, *cluster.Settings) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(context.Background())
 
+	st := cluster.MakeTestingClusterSettings()
 	ambientCtx := log.MakeTestingAmbientContext(stopper.Tracer())
 
 	// Never gossip, pass in nil values.

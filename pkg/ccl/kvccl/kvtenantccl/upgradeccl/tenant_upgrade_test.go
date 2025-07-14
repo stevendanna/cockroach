@@ -355,7 +355,7 @@ func TestTenantUpgradeFailure(t *testing.T) {
 			break
 		}
 	}
-	if v1 == (roachpb.Version{}) {
+	if v1 == (roachpb.Version{}) || v1 == v2 {
 		// There is no in-between version supported; skip this test.
 		skip.IgnoreLint(t, "test can only run when we support two previous releases")
 	}
@@ -504,11 +504,11 @@ func TestTenantUpgradeFailure(t *testing.T) {
 		db = sqlutils.MakeSQLRunner(conn)
 
 		t.Log("ensure that the tenant still works and the target version wasn't reached")
-		db.CheckQueryResults(t, "SELECT * FROM t", [][]string{{"1"}, {"2"}})
-		res := db.QueryStr(t, "SELECT split_part(version, '-', 1) FROM [SHOW CLUSTER SETTING version]")
-		if res[0][0] == v2.String() {
-			t.Fatalf("current version should not equal target version %s", v2.String())
-		}
+		db.CheckQueryResults(t,
+			"SELECT * FROM t", [][]string{{"1"}, {"2"}})
+		db.CheckQueryResults(t,
+			"SELECT split_part(version, '-', 1) FROM [SHOW CLUSTER SETTING version]",
+			[][]string{{v1.String()}})
 
 		t.Log("restart the tenant")
 		tenant.AppStopper().Stop(ctx)

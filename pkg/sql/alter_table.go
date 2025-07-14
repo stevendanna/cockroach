@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
@@ -34,11 +33,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
@@ -103,7 +100,7 @@ func (p *planner) AlterTable(ctx context.Context, n *tree.AlterTable) (planNode,
 
 	// Disallow schema changes if this table's schema is locked, unless it is to
 	// set/reset the "schema_locked" storage parameter.
-	if err = p.checkSchemaChangeIsAllowed(ctx, tableDesc, n); err != nil {
+	if err = checkSchemaChangeIsAllowed(tableDesc, n); err != nil {
 		return nil, err
 	}
 
@@ -277,7 +274,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 					n.tableDesc,
 					tableName,
 					columns,
-					idxtype.FORWARD,
+					false, /* isInverted */
 					false, /* isNewTable */
 					params.p.SemaCtx(),
 					params.ExecCfg().Settings.Version.ActiveVersion(params.ctx),
@@ -462,7 +459,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 				for _, updated := range affected {
 					// Disallow schema change if the FK references a table whose schema is
 					// locked.
-					if err := params.p.checkSchemaChangeIsAllowed(params.ctx, updated, n.n); err != nil {
+					if err := checkSchemaChangeIsAllowed(updated, n.n); err != nil {
 						return err
 					}
 					if err := params.p.writeSchemaChange(
@@ -731,7 +728,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 			}
 
 		case *tree.AlterTableSetStorageParams:
-			setter := tablestorageparam.NewSetter(n.tableDesc, false /* isNewObject */)
+			setter := tablestorageparam.NewSetter(n.tableDesc)
 			if err := storageparam.Set(
 				params.ctx,
 				params.p.SemaCtx(),
@@ -761,7 +758,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 			}
 
 		case *tree.AlterTableResetStorageParams:
-			setter := tablestorageparam.NewSetter(n.tableDesc, false /* isNewObject */)
+			setter := tablestorageparam.NewSetter(n.tableDesc)
 			if err := storageparam.Reset(
 				params.ctx,
 				params.EvalContext(),
@@ -839,7 +836,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 
 			depViewRenameError := func(objType string, refTableID descpb.ID) error {
 				return params.p.dependentError(params.ctx,
-					objType, tree.ErrString(&t.NewName), n.tableDesc.ParentID, refTableID, n.tableDesc.ID, "rename",
+					objType, tree.ErrString(&t.NewName), n.tableDesc.ParentID, refTableID, "rename",
 				)
 			}
 
@@ -851,8 +848,9 @@ func (n *alterTableNode) startExec(params runParams) error {
 			}
 			descriptorChanged = true
 		case *tree.AlterTableSetRLSMode:
-			return pgerror.New(pgcode.FeatureNotSupported,
-				"ALTER TABLE ... ROW LEVEL SECURITY is only implemented in the declarative schema changer")
+			return unimplemented.NewWithIssuef(
+				136700,
+				"row-level security mode alteration is not supported")
 		default:
 			return errors.AssertionFailedf("unsupported alter command: %T", cmd)
 		}
@@ -1252,11 +1250,8 @@ func applyColumnMutation(
 
 		opts := seqDesc.GetSequenceOpts()
 		optsNode := tree.SequenceOptions{}
-		if opts.SessionCacheSize > 1 {
-			optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptCacheSession, IntVal: &opts.SessionCacheSize})
-		}
-		if opts.NodeCacheSize > 1 {
-			optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptCacheNode, IntVal: &opts.NodeCacheSize})
+		if opts.CacheSize > 1 {
+			optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptCache, IntVal: &opts.CacheSize})
 		}
 		optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptMinValue, IntVal: &opts.MinValue})
 		optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptMaxValue, IntVal: &opts.MaxValue})
@@ -1943,8 +1938,7 @@ func dropColumnImpl(
 			continue
 		}
 		err := params.p.canRemoveDependent(
-			params.ctx, "column", string(t.Column), tableDesc.ID, tableDesc.ParentID, ref, t.DropBehavior,
-			true, /* blockOnTriggerDependency */
+			params.ctx, "column", string(t.Column), tableDesc.ParentID, ref, t.DropBehavior,
 		)
 		if err != nil {
 			return nil, err
@@ -1959,15 +1953,12 @@ func dropColumnImpl(
 		return nil, err
 	}
 
-	// We cannot remove this column if there are computed columns, TTL expiration
-	// expression, or policy expressions that use it.
+	// We cannot remove this column if there are computed columns or a TTL
+	// expiration expression that use it.
 	if err := schemaexpr.ValidateColumnHasNoDependents(tableDesc, colToDrop); err != nil {
 		return nil, err
 	}
 	if err := schemaexpr.ValidateTTLExpression(tableDesc, rowLevelTTL, colToDrop, tn, "drop"); err != nil {
-		return nil, err
-	}
-	if err := schemaexpr.ValidatePolicyExpressionsDoNotDependOnColumn(tableDesc, colToDrop, "column", "drop"); err != nil {
 		return nil, err
 	}
 
@@ -2359,54 +2350,14 @@ func (p *planner) tryRemoveFKBackReferences(
 // checkSchemaChangeIsAllowed checks if a schema change is allowed on
 // this table. A schema change is disallowed if one of the following is true:
 //   - The schema_locked table storage parameter is true, and this statement is
-//     cannot set schema_locked automatically via a whitelist.
+//     not modifying the value of schema_locked.
 //   - The table is referenced by logical data replication jobs, and the statement
 //     is not in the allow list of LDR schema changes.
-func (p *planner) checkSchemaChangeIsAllowed(
-	ctx context.Context, desc catalog.TableDescriptor, n tree.Statement,
-) (ret error) {
-	// Adding descriptors can be skipped.
-	if desc == nil || desc.Adding() || p.descCollection.IsNewUncommitedDescriptor(desc.GetID()) {
+func checkSchemaChangeIsAllowed(desc catalog.TableDescriptor, n tree.Statement) (ret error) {
+	if desc == nil {
 		return nil
 	}
-	// Check if this schema change is on the allowed list, which will only
-	// be simple non-back filling schema changes. All commands except set/reset
-	// schema_locked are unsupported before 25.2
-	preventedBySchemaLocked := !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V25_3) &&
-		!tree.IsSetOrResetSchemaLocked(n)
-	// These schema changes are allowed because the events generated will always
-	// be ignored by the schema_locked. The tableEventFilter (in CDC schemafeed)
-	// only cares about a limited number of events:
-	// - ADD / DROP COLUMN (visible column)
-	// - TRUNCATE
-	// - ALTER PRIMARY KEY
-	// - ALTER LOCALITY
-	switch stmt := n.(type) {
-	case *tree.AlterTable:
-		for _, cmd := range stmt.Cmds {
-			switch t := cmd.(type) {
-			case *tree.AlterTableSetStorageParams:
-				// TTL expire after expressions can end up adding a column implicitly,
-				// so if this parameter is being mutated, we will block any modifications
-				// on a schema_locked table.
-				if t.StorageParams.GetVal("ttl_expire_after") != nil {
-					preventedBySchemaLocked = true
-				}
-			case *tree.AlterTableRenameColumn, *tree.AlterTableRenameConstraint,
-				*tree.AlterTableResetStorageParams, *tree.AlterTablePartitionByTable,
-				*tree.AlterTableSetOnUpdate, *tree.AlterTableDropNotNull,
-				*tree.AlterTableSetVisible, *tree.AlterTableDropStored,
-				*tree.AlterTableValidateConstraint, *tree.AlterTableInjectStats:
-			default:
-				preventedBySchemaLocked = true
-			}
-		}
-	case *tree.AlterIndex, *tree.AlterIndexVisible, *tree.DropTable, *tree.RenameColumn,
-		*tree.RenameIndex, *tree.RenameTable, *tree.AlterTableSetSchema, *tree.SetZoneConfig:
-	default:
-		preventedBySchemaLocked = true
-	}
-	if desc.IsSchemaLocked() && preventedBySchemaLocked {
+	if desc.IsSchemaLocked() && !tree.IsSetOrResetSchemaLocked(n) {
 		return sqlerrors.NewSchemaChangeOnLockedTableErr(desc.GetName())
 	}
 	if len(desc.TableDesc().LDRJobIDs) > 0 {
@@ -2416,9 +2367,9 @@ func (p *planner) checkSchemaChangeIsAllowed(
 				virtualColNames = append(virtualColNames, col.GetName())
 			}
 		}
-		kvWriterEnabled := sqlclustersettings.LDRWriterType(sqlclustersettings.LDRImmediateModeWriter.Get(&p.execCfg.Settings.SV))
-		if !tree.IsAllowedLDRSchemaChange(n, virtualColNames, kvWriterEnabled == sqlclustersettings.LDRWriterTypeLegacyKV) {
+		if !tree.IsAllowedLDRSchemaChange(n, virtualColNames) {
 			return sqlerrors.NewDisallowedSchemaChangeOnLDRTableErr(desc.GetName(), desc.TableDesc().LDRJobIDs)
+
 		}
 	}
 	return nil

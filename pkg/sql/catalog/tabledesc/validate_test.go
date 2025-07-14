@@ -139,14 +139,12 @@ var validationMap = []struct {
 			"External": {status: todoIAmKnowinglyAddingTechDebt,
 				reason: "TODO(features): add validation that TableID is sane within the same tenant"},
 			// LDRJobIDs is checked in StripDanglingBackreferences.
-			"LDRJobIDs":               {status: iSolemnlySwearThisFieldIsValidated},
-			"ReplicatedPCRVersion":    {status: thisFieldReferencesNoObjects},
-			"Triggers":                {status: iSolemnlySwearThisFieldIsValidated},
-			"NextTriggerID":           {status: thisFieldReferencesNoObjects},
-			"Policies":                {status: iSolemnlySwearThisFieldIsValidated},
-			"NextPolicyID":            {status: iSolemnlySwearThisFieldIsValidated},
-			"RowLevelSecurityEnabled": {status: thisFieldReferencesNoObjects},
-			"RowLevelSecurityForced":  {status: thisFieldReferencesNoObjects},
+			"LDRJobIDs":            {status: iSolemnlySwearThisFieldIsValidated},
+			"ReplicatedPCRVersion": {status: thisFieldReferencesNoObjects},
+			"Triggers":             {status: iSolemnlySwearThisFieldIsValidated},
+			"NextTriggerID":        {status: thisFieldReferencesNoObjects},
+			"Policies":             {status: iSolemnlySwearThisFieldIsValidated},
+			"NextPolicyID":         {status: iSolemnlySwearThisFieldIsValidated},
 		},
 	},
 	{
@@ -186,7 +184,6 @@ var validationMap = []struct {
 			"UseDeletePreservingEncoding": {status: thisFieldReferencesNoObjects},
 			"ConstraintID":                {status: iSolemnlySwearThisFieldIsValidated},
 			"CreatedAtNanos":              {status: thisFieldReferencesNoObjects},
-			"VecConfig":                   {status: thisFieldReferencesNoObjects},
 		},
 	},
 	{
@@ -313,7 +310,6 @@ var validationMap = []struct {
 			"MinStaleRows":             {status: iSolemnlySwearThisFieldIsValidated},
 			"FractionStaleRows":        {status: iSolemnlySwearThisFieldIsValidated},
 			"PartialEnabled":           {status: iSolemnlySwearThisFieldIsValidated},
-			"FullEnabled":              {status: iSolemnlySwearThisFieldIsValidated},
 			"PartialMinStaleRows":      {status: iSolemnlySwearThisFieldIsValidated},
 			"PartialFractionStaleRows": {status: iSolemnlySwearThisFieldIsValidated},
 		},
@@ -1949,7 +1945,7 @@ func TestValidateTableDesc(t *testing.T) {
 				NextConstraintID: 3,
 				Privileges:       catpb.NewBasePrivilegeDescriptor(username.AdminRoleName()),
 			}},
-		{err: ``,
+		{err: `index "sec" cannot store virtual column "c3"`,
 			desc: descpb.TableDescriptor{
 				ID:            2,
 				ParentID:      1,
@@ -2567,18 +2563,6 @@ func TestValidateTableDesc(t *testing.T) {
 				NextColumnID:      2,
 				AutoStatsSettings: &catpb.AutoStatsSettings{PartialEnabled: &boolTrue},
 			}},
-		{err: `Setting sql_stats_automatic_full_collection_enabled may not be set on virtual table`,
-			desc: descpb.TableDescriptor{
-				ID:            catconstants.MinVirtualID,
-				ParentID:      1,
-				Name:          "foo",
-				FormatVersion: descpb.InterleavedFormatVersion,
-				Columns: []descpb.ColumnDescriptor{
-					{ID: 1, Name: "bar"},
-				},
-				NextColumnID:      2,
-				AutoStatsSettings: &catpb.AutoStatsSettings{FullEnabled: &boolTrue},
-			}},
 		{err: `Setting sql_stats_automatic_collection_enabled may not be set on a view or sequence`,
 			desc: descpb.TableDescriptor{
 				Name:                    "bar",
@@ -3123,18 +3107,16 @@ func TestValidateTableDesc(t *testing.T) {
 				desc.NextPolicyID = 3
 				desc.Policies = []descpb.PolicyDescriptor{
 					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_ALL,
-						RoleNames: []string{"u1"},
+						ID:      1,
+						Name:    "pol",
+						Type:    catpb.PolicyType_PERMISSIVE,
+						Command: catpb.PolicyCommand_ALL,
 					},
 					{
-						ID:        2,
-						Name:      "pol",
-						Type:      catpb.PolicyType_RESTRICTIVE,
-						Command:   catpb.PolicyCommand_INSERT,
-						RoleNames: []string{"u1"},
+						ID:      2,
+						Name:    "pol",
+						Type:    catpb.PolicyType_RESTRICTIVE,
+						Command: catpb.PolicyCommand_INSERT,
 					},
 				}
 			}),
@@ -3144,18 +3126,16 @@ func TestValidateTableDesc(t *testing.T) {
 				desc.NextPolicyID = 11
 				desc.Policies = []descpb.PolicyDescriptor{
 					{
-						ID:        10,
-						Name:      "pol_old",
-						Type:      catpb.PolicyType_RESTRICTIVE,
-						Command:   catpb.PolicyCommand_UPDATE,
-						RoleNames: []string{"u1"},
+						ID:      10,
+						Name:    "pol_old",
+						Type:    catpb.PolicyType_RESTRICTIVE,
+						Command: catpb.PolicyCommand_UPDATE,
 					},
 					{
-						ID:        10,
-						Name:      "pol_new",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_DELETE,
-						RoleNames: []string{"u1"},
+						ID:      10,
+						Name:    "pol_new",
+						Type:    catpb.PolicyType_PERMISSIVE,
+						Command: catpb.PolicyCommand_DELETE,
 					},
 				}
 			}),
@@ -3195,48 +3175,6 @@ func TestValidateTableDesc(t *testing.T) {
 						Name:    "pol",
 						Type:    catpb.PolicyType_PERMISSIVE,
 						Command: 0,
-					},
-				}
-			}),
-		},
-		{err: `policy "pol" has no roles defined`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_DELETE,
-						RoleNames: nil,
-					},
-				}
-			}),
-		},
-		{err: `policy "pol" contains duplicate role name "u1"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_RESTRICTIVE,
-						Command:   catpb.PolicyCommand_ALL,
-						RoleNames: []string{"u1", "u2", "u11", "u1"},
-					},
-				}
-			}),
-		},
-		{err: `the public role must be the first role defined in policy "pol"`,
-			desc: ModifyDescriptor(func(desc *descpb.TableDescriptor) {
-				desc.NextPolicyID = 2
-				desc.Policies = []descpb.PolicyDescriptor{
-					{
-						ID:        1,
-						Name:      "pol",
-						Type:      catpb.PolicyType_PERMISSIVE,
-						Command:   catpb.PolicyCommand_INSERT,
-						RoleNames: []string{"u1", "public"},
 					},
 				}
 			}),

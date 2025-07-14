@@ -37,9 +37,6 @@ type BuildOptions struct {
 
 	// Channel represents the telemetry channel
 	Channel string
-
-	// TelemetryDisabled is a flag to disable telemetry.
-	TelemetryDisabled bool
 }
 
 // ChannelFromPlatform retrurns the telemetry channel used for a particular platform.
@@ -162,27 +159,24 @@ func MakeRelease(platform Platform, opts BuildOptions, pkgDir string) error {
 		buildArgs = append(buildArgs, "//c-deps:libgeos")
 	}
 	targetTriple := TargetTripleFromPlatform(platform)
+	var stampCommand string
 	if platform == PlatformWindows {
 		buildArgs = append(buildArgs, "--enable_runfiles")
 	}
-	var stampCommand string
 	if opts.Release {
 		if opts.BuildTag == "" {
-			stampCommand = fmt.Sprintf("--workspace_status_command=./build/bazelutil/stamp.sh -t %s -c %s -b release", targetTriple, opts.Channel)
+			stampCommand = fmt.Sprintf("--workspace_status_command=./build/bazelutil/stamp.sh %s %s release", targetTriple, opts.Channel)
 		} else {
-			stampCommand = fmt.Sprintf("--workspace_status_command=./build/bazelutil/stamp.sh -t %s -c %s -b release -g %s", targetTriple, opts.Channel, opts.BuildTag)
+			stampCommand = fmt.Sprintf("--workspace_status_command=./build/bazelutil/stamp.sh %s %s release %s", targetTriple, opts.Channel, opts.BuildTag)
 		}
 	} else {
 		if opts.BuildTag != "" {
 			return errors.Newf("BuildTag cannot be set for non-Release builds")
 		}
-		stampCommand = fmt.Sprintf("--workspace_status_command=./build/bazelutil/stamp.sh -t %s -c %s", targetTriple, opts.Channel)
-	}
-	if opts.TelemetryDisabled {
-		stampCommand = fmt.Sprintf("%s -d true", stampCommand)
+		stampCommand = fmt.Sprintf("--workspace_status_command=./build/bazelutil/stamp.sh %s %s", targetTriple, opts.Channel)
 	}
 	buildArgs = append(buildArgs, stampCommand)
-	configs := []string{"-c", "opt", "--config=force_build_cdeps", "--config=pgo", fmt.Sprintf("--config=%s", CrossConfigFromPlatform(platform))}
+	configs := []string{"-c", "opt", "--config=force_build_cdeps", fmt.Sprintf("--config=%s", CrossConfigFromPlatform(platform))}
 	buildArgs = append(buildArgs, configs...)
 	buildArgs = append(buildArgs, "--norun_validations")
 	cmd := exec.Command("bazel", buildArgs...)
@@ -367,8 +361,18 @@ func stageBinary(
 	}
 	dstBase = dstBase + suffix
 	dst := filepath.Join(dir, dstBase)
-
-	return copyFile(src, dst, 0755)
+	srcF, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer closeFileOrPanic(srcF)
+	dstF, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE, 0755)
+	if err != nil {
+		return err
+	}
+	defer closeFileOrPanic(dstF)
+	_, err = io.Copy(dstF, srcF)
+	return err
 }
 
 func stageLibraries(platform Platform, bazelBin string, dir string) error {
@@ -381,26 +385,28 @@ func stageLibraries(platform Platform, bazelBin string, dir string) error {
 	ext := SharedLibraryExtensionFromPlatform(platform)
 	for _, lib := range CRDBSharedLibraries {
 		src := filepath.Join(bazelBin, "c-deps", "libgeos_foreign", "lib", lib+ext)
+		srcF, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer closeFileOrPanic(srcF)
 		dst := filepath.Join(dir, filepath.Base(src))
-		if err := copyFile(src, dst, 0644); err != nil {
+		dstF, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			return err
+		}
+		defer closeFileOrPanic(dstF)
+		_, err = io.Copy(dstF, srcF)
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func copyFile(srcPath, dstPath string, perm os.FileMode) error {
-	srcF, err := os.Open(srcPath)
+func closeFileOrPanic(f io.Closer) {
+	err := f.Close()
 	if err != nil {
-		return err
+		panic(errors.Wrapf(err, "could not close file"))
 	}
-	dstF, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE, perm)
-	if err != nil {
-		_ = srcF.Close()
-		return err
-	}
-	_, err = io.Copy(dstF, srcF)
-	err = errors.CombineErrors(err, dstF.Close())
-	err = errors.CombineErrors(err, srcF.Close())
-	return err
 }

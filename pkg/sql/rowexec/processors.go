@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/backfill"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/export"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -279,9 +278,9 @@ func NewProcessor(
 		}
 
 		if core.Exporter.Format.Format == roachpb.IOFileFormat_Parquet {
-			return export.NewParquetWriterProcessor(ctx, flowCtx, processorID, *core.Exporter, post, inputs[0])
+			return NewParquetWriterProcessor(ctx, flowCtx, processorID, *core.Exporter, post, inputs[0])
 		}
-		return export.NewCSVWriterProcessor(ctx, flowCtx, processorID, *core.Exporter, post, inputs[0])
+		return NewCSVWriterProcessor(ctx, flowCtx, processorID, *core.Exporter, post, inputs[0])
 	}
 
 	if core.BulkRowWriter != nil {
@@ -301,20 +300,6 @@ func NewProcessor(
 			return nil, err
 		}
 		return newWindower(ctx, flowCtx, processorID, core.Windower, inputs[0], post)
-	}
-	if core.VectorSearch != nil {
-		if err := checkNumIn(inputs, 0); err != nil {
-			return nil, err
-		}
-		return newVectorSearchProcessor(ctx, flowCtx, processorID, core.VectorSearch, post)
-	}
-	if core.VectorMutationSearch != nil {
-		if err := checkNumIn(inputs, 1); err != nil {
-			return nil, err
-		}
-		return newVectorMutationSearchProcessor(
-			ctx, flowCtx, processorID, core.VectorMutationSearch, inputs[0], post,
-		)
 	}
 	if core.LocalPlanNode != nil {
 		numInputs := int(core.LocalPlanNode.NumInputs)
@@ -406,15 +391,6 @@ func NewProcessor(
 		}
 		return NewGenerativeSplitAndScatterProcessor(ctx, flowCtx, processorID, *core.GenerativeSplitAndScatter, post)
 	}
-	if core.CompactBackups != nil {
-		if err := checkNumIn(inputs, 0); err != nil {
-			return nil, err
-		}
-		if NewCompactBackupsProcessor == nil {
-			return nil, errors.New("CompactBackups processor unimplemented")
-		}
-		return NewCompactBackupsProcessor(ctx, flowCtx, processorID, *core.CompactBackups, post)
-	}
 	return nil, errors.Errorf("unsupported processor core %q", core)
 }
 
@@ -436,6 +412,12 @@ var NewRestoreDataProcessor func(context.Context, *execinfra.FlowCtx, int32, exe
 // NewStreamIngestionDataProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewStreamIngestionDataProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.StreamIngestionDataSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
 
+// NewCSVWriterProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
+var NewCSVWriterProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.ExportSpec, *execinfrapb.PostProcessSpec, execinfra.RowSource) (execinfra.Processor, error)
+
+// NewParquetWriterProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
+var NewParquetWriterProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.ExportSpec, *execinfrapb.PostProcessSpec, execinfra.RowSource) (execinfra.Processor, error)
+
 // NewChangeAggregatorProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewChangeAggregatorProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.ChangeAggregatorSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
 
@@ -454,5 +436,3 @@ var NewGenerativeSplitAndScatterProcessor func(context.Context, *execinfra.FlowC
 var NewLogicalReplicationWriterProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.LogicalReplicationWriterSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
 
 var NewLogicalReplicationOfflineScanProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.LogicalReplicationOfflineScanSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
-
-var NewCompactBackupsProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.CompactBackupsSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)

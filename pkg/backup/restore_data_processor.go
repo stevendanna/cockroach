@@ -76,7 +76,7 @@ type restoreDataProcessor struct {
 
 	// Aggregator that aggregates StructuredEvents emitted in the
 	// restoreDataProcessors' trace recording.
-	agg      *tracing.TracingAggregator
+	agg      *bulkutil.TracingAggregator
 	aggTimer timeutil.Timer
 
 	// qp is a MemoryBackedQuotaPool that restricts the amount of memory that
@@ -180,7 +180,7 @@ func newRestoreDataProcessor(
 // Start is part of the RowSource interface.
 func (rd *restoreDataProcessor) Start(ctx context.Context) {
 	ctx = logtags.AddTag(ctx, "job", rd.spec.JobID)
-	rd.agg = tracing.TracingAggregatorForContext(ctx)
+	rd.agg = bulkutil.TracingAggregatorForContext(ctx)
 	// If the aggregator is nil, we do not want the timer to fire.
 	if rd.agg != nil {
 		rd.aggTimer.Reset(15 * time.Second)
@@ -191,14 +191,6 @@ func (rd *restoreDataProcessor) Start(ctx context.Context) {
 
 	ctx, cancel := context.WithCancel(ctx)
 	rd.cancelWorkersAndWait = func() {
-		defer func() {
-			// A panic here will not have a useful stack trace. If the panic is an
-			// error that contains a stack trace, we want those full details.
-			// TODO(jeffswenson): improve panic recovery more generally.
-			if p := recover(); p != nil {
-				panic(fmt.Sprintf("restore worker hit panic: %+v", p))
-			}
-		}()
 		cancel()
 		_ = rd.phaseGroup.Wait()
 	}
@@ -297,7 +289,7 @@ func inputReader(
 
 type mergedSST struct {
 	entry        execinfrapb.RestoreSpanEntry
-	iter         storage.SimpleMVCCIterator
+	iter         *storage.ReadAsOfIterator
 	cleanup      func()
 	completeUpTo hlc.Timestamp
 }
@@ -328,7 +320,7 @@ func (rd *restoreDataProcessor) openSSTs(
 
 	// getIter returns a multiplexed iterator covering the currently accumulated
 	// files over the channel.
-	getIter := func(iter storage.SimpleMVCCIterator, dirsToSend []cloud.ExternalStorage, completeUpTo hlc.Timestamp) mergedSST {
+	getIter := func(iter storage.SimpleMVCCIterator, dirsToSend []cloud.ExternalStorage, completeUpTo hlc.Timestamp) (mergedSST, error) {
 		readAsOfIter := storage.NewReadAsOfIterator(iter, rd.spec.RestoreTime)
 
 		cleanup := func() {
@@ -350,7 +342,7 @@ func (rd *restoreDataProcessor) openSSTs(
 		}
 
 		dirs = make([]cloud.ExternalStorage, 0)
-		return mSST
+		return mSST, nil
 	}
 
 	log.VEventf(ctx, 1, "ingesting %d files in span %d [%s-%s)", len(entry.Files), entry.ProgressIdx, entry.Span.Key, entry.Span.EndKey)
@@ -385,12 +377,12 @@ func (rd *restoreDataProcessor) openSSTs(
 		return mergedSST{}, nil, err
 	}
 
-	mSST := getIter(iter, dirs, rd.spec.RestoreTime)
+	mSST, err := getIter(iter, dirs, rd.spec.RestoreTime)
 	res := &resumeEntry{
 		idx:  idx,
 		done: true,
 	}
-	return mSST, res, nil
+	return mSST, res, err
 }
 
 func (rd *restoreDataProcessor) runRestoreWorkers(
@@ -514,7 +506,6 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 			// tests to fail.
 			rd.FlowCtx.Cfg.BackupMonitor.MakeConcurrentBoundAccount(),
 			rd.FlowCtx.Cfg.BulkSenderLimiter,
-			nil,
 		)
 		if err != nil {
 			return summary, err
@@ -665,6 +656,7 @@ func (rd *restoreDataProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Produce
 		rd.progressMade = true
 		return nil, &execinfrapb.ProducerMetadata{BulkProcessorProgress: &prog}
 	case <-rd.aggTimer.C:
+		rd.aggTimer.Read = true
 		rd.aggTimer.Reset(15 * time.Second)
 		return nil, bulkutil.ConstructTracingAggregatorProducerMeta(rd.Ctx(),
 			rd.FlowCtx.NodeID.SQLInstanceID(), rd.FlowCtx.ID, rd.agg)
@@ -718,6 +710,7 @@ func reserveRestoreWorkerMemory(
 // implement a mock SSTBatcher used purely for job progress tracking.
 type SSTBatcherExecutor interface {
 	AddMVCCKey(ctx context.Context, key storage.MVCCKey, value []byte) error
+	Reset(ctx context.Context)
 	Flush(ctx context.Context) error
 	Close(ctx context.Context)
 	GetSummary() kvpb.BulkOpSummary
@@ -734,6 +727,9 @@ var _ SSTBatcherExecutor = &sstBatcherNoop{}
 func (b *sstBatcherNoop) AddMVCCKey(ctx context.Context, key storage.MVCCKey, value []byte) error {
 	return b.totalRows.Count(key.Key)
 }
+
+// Reset resets the counter
+func (b *sstBatcherNoop) Reset(ctx context.Context) {}
 
 // Flush noops.
 func (b *sstBatcherNoop) Flush(ctx context.Context) error {

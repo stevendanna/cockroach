@@ -11,7 +11,6 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
@@ -45,7 +44,6 @@ func initIndexBackfillerSpec(
 	writeAtBatchTimestamp bool,
 	chunkSize int64,
 	indexesToBackfill []descpb.IndexID,
-	sourceIndexID descpb.IndexID,
 ) (execinfrapb.BackfillerSpec, error) {
 	return execinfrapb.BackfillerSpec{
 		Table:                 desc,
@@ -54,7 +52,6 @@ func initIndexBackfillerSpec(
 		Type:                  execinfrapb.BackfillerSpec_Index,
 		ChunkSize:             chunkSize,
 		IndexesToBackfill:     indexesToBackfill,
-		SourceIndexID:         sourceIndexID,
 	}, nil
 }
 
@@ -72,14 +69,6 @@ func initIndexBackfillMergerSpec(
 	}, nil
 }
 
-var initialSplitsPerProcessor = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"bulkio.index_backfill.initial_splits_per_processor",
-	"number of initial splits each index backfill processor with enough data will create",
-	3,
-	settings.NonNegativeInt,
-)
-
 // createBackfiller generates a plan consisting of index/column backfiller
 // processors, one for each node that has spans that we are reading. The plan is
 // finalized.
@@ -92,20 +81,11 @@ func (dsp *DistSQLPlanner) createBackfillerPhysicalPlan(
 	}
 
 	p := planCtx.NewPhysicalPlan()
-	var containsRemoteProcessor bool
-	for _, sp := range spanPartitions {
-		if sp.SQLInstanceID != p.GatewaySQLInstanceID {
-			containsRemoteProcessor = true
-			break
-		}
-	}
-	stageID := p.NewStage(containsRemoteProcessor, false /* allowPartialDistribution */)
 	p.ResultRouters = make([]physicalplan.ProcessorIdx, len(spanPartitions))
-	initialSplits := initialSplitsPerProcessor.Get(&planCtx.ExtendedEvalCtx.Settings.SV)
 	for i, sp := range spanPartitions {
 		ib := &execinfrapb.BackfillerSpec{}
 		*ib = spec
-		ib.InitialSplits = int32(initialSplits)
+		ib.InitialSplits = int32(len(spanPartitions))
 		ib.Spans = sp.Spans
 
 		proc := physicalplan.Processor{
@@ -113,7 +93,6 @@ func (dsp *DistSQLPlanner) createBackfillerPhysicalPlan(
 			Spec: execinfrapb.ProcessorSpec{
 				Core:        execinfrapb.ProcessorCoreUnion{Backfiller: ib},
 				Output:      []execinfrapb.OutputRouterSpec{{Type: execinfrapb.OutputRouterSpec_PASS_THROUGH}},
-				StageID:     stageID,
 				ResultTypes: []*types.T{},
 			},
 		}
@@ -171,14 +150,6 @@ func (dsp *DistSQLPlanner) createIndexBackfillerMergePhysicalPlan(
 	}
 
 	p := planCtx.NewPhysicalPlan()
-	var containsRemoteProcessor bool
-	for _, sp := range spanPartitions {
-		if sp.SQLInstanceID != p.GatewaySQLInstanceID {
-			containsRemoteProcessor = true
-			break
-		}
-	}
-	stageID := p.NewStage(containsRemoteProcessor, false /* allowPartialDistribution */)
 	p.ResultRouters = make([]physicalplan.ProcessorIdx, len(spanPartitions))
 	for i, sp := range spanPartitions {
 		ibm := &execinfrapb.IndexBackfillMergerSpec{}
@@ -194,7 +165,6 @@ func (dsp *DistSQLPlanner) createIndexBackfillerMergePhysicalPlan(
 			Spec: execinfrapb.ProcessorSpec{
 				Core:        execinfrapb.ProcessorCoreUnion{IndexBackfillMerger: ibm},
 				Output:      []execinfrapb.OutputRouterSpec{{Type: execinfrapb.OutputRouterSpec_PASS_THROUGH}},
-				StageID:     stageID,
 				ResultTypes: []*types.T{},
 			},
 		}

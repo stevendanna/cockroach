@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
@@ -82,6 +81,13 @@ var automaticJobCheckBeforeCreatingJob = settings.RegisterBoolSetting(
 	"set to true to perform the autostats job check before creating the job, instead of in the same "+
 		"transaction as creating the job",
 	true)
+
+var errorOnConcurrentCreateStats = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.stats.error_on_concurrent_create_stats.enabled",
+	"set to true to error on concurrent CREATE STATISTICS jobs, instead of skipping them",
+	true,
+	settings.WithPublic)
 
 const nonIndexColHistogramBuckets = 2
 
@@ -166,6 +172,10 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 				ctx, nil /* job */, n.p, n.Name == jobspb.AutoPartialStatsName, n.p.ExecCfg().JobRegistry,
 				details.Table.ID,
 			); err != nil {
+				if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) && errors.Is(err, stats.ConcurrentCreateStatsError) {
+					log.Infof(ctx, "concurrent create stats job found, skipping")
+					return nil
+				}
 				return err
 			}
 		}
@@ -179,23 +189,18 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 		if (n.Name == jobspb.AutoStatsName || n.Name == jobspb.AutoPartialStatsName) && !jobCheckBefore {
 			// Don't start the job if there is already a CREATE STATISTICS job running.
 			if err := checkRunningJobsInTxn(
-				ctx, n.p.EvalContext().Settings, jobspb.InvalidJobID, txn,
+				ctx, nil /* job */, n.p, n.Name == jobspb.AutoPartialStatsName, txn, n.p.ExecCfg().JobRegistry,
+				details.Table.ID,
 			); err != nil {
 				return err
-			}
-			// Don't start auto partial stats jobs if there is another auto partial
-			// stats job running on the same table.
-			if n.Name == jobspb.AutoPartialStatsName {
-				if err := checkRunningAutoPartialJobsInTxn(
-					ctx, n.p.EvalContext().Settings, jobspb.InvalidJobID, txn,
-					n.p.ExecCfg().JobRegistry, details.Table.ID,
-				); err != nil {
-					return err
-				}
 			}
 		}
 		return n.p.ExecCfg().JobRegistry.CreateStartableJobWithTxn(ctx, &job, jobID, txn, *record)
 	}); err != nil {
+		if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) && errors.Is(err, stats.ConcurrentCreateStatsError) {
+			log.Infof(ctx, "concurrent create stats job found, skipping")
+			return nil
+		}
 		if job != nil {
 			if cleanupErr := job.CleanupOnRollback(ctx); cleanupErr != nil {
 				log.Warningf(ctx, "failed to cleanup StartableJob: %v", cleanupErr)
@@ -211,6 +216,9 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 			// Delete the job so users don't see it and get confused by the error.
 			if delErr := n.p.ExecCfg().JobRegistry.DeleteTerminalJobByID(ctx, job.ID()); delErr != nil {
 				log.Warningf(ctx, "failed to delete job: %v", delErr)
+			}
+			if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) {
+				return nil
 			}
 		}
 	}
@@ -371,9 +379,6 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 	if n.Name == jobspb.AutoStatsName {
 		// Use a user-friendly description for automatic statistics.
 		description = fmt.Sprintf("Table statistics refresh for %s", fqTableName)
-	} else if n.Name == jobspb.AutoPartialStatsName {
-		// Use a similar user-friendly description for partial statistics.
-		description = fmt.Sprintf("Partial statistics update for %s", fqTableName)
 	} else {
 		// This must be a user query, so use the statement (for consistency with
 		// other jobs triggered by statements).
@@ -536,7 +541,7 @@ func createStatsDefaultColumns(
 	// implicitly partitioned indexes.
 	if partialStats {
 		for _, idx := range desc.ActiveIndexes() {
-			if idx.GetType() != idxtype.FORWARD ||
+			if idx.GetType() != descpb.IndexDescriptor_FORWARD ||
 				idx.IsPartial() ||
 				idx.IsSharded() ||
 				idx.ImplicitPartitioningColumnCount() > 0 {
@@ -604,13 +609,9 @@ func createStatsDefaultColumns(
 
 	// Add column stats for each secondary index.
 	for _, idx := range desc.PublicNonPrimaryIndexes() {
-		if idx.GetType() == idxtype.VECTOR {
-			// Skip vector indexes for now.
-			continue
-		}
 		for j, n := 0, idx.NumKeyColumns(); j < n; j++ {
 			colID := idx.GetKeyColumnID(j)
-			isInverted := idx.GetType() == idxtype.INVERTED && colID == idx.InvertedColumnID()
+			isInverted := idx.GetType() == descpb.IndexDescriptor_INVERTED && colID == idx.InvertedColumnID()
 
 			// Generate stats for each indexed column.
 			if err := addIndexColumnStatsIfNotExists(colID, isInverted); err != nil {
@@ -901,31 +902,49 @@ func checkRunningJobs(
 	jobRegistry *jobs.Registry,
 	tableID descpb.ID,
 ) error {
-	jobID := jobspb.InvalidJobID
-	if job != nil {
-		jobID = job.ID()
-	}
 	return p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
 		if err = checkRunningJobsInTxn(
-			ctx, p.ExtendedEvalContext().Settings, jobID, txn,
+			ctx, job, p, autoPartial, txn, jobRegistry, tableID,
 		); err != nil {
 			return err
-		}
-		if autoPartial {
-			return checkRunningAutoPartialJobsInTxn(
-				ctx, p.ExtendedEvalContext().Settings, jobID, txn, jobRegistry, tableID,
-			)
 		}
 		return nil
 	})
 }
 
-// checkRunningJobsInTxn checks whether there are any other CreateStats jobs
-// (excluding auto partial stats jobs) in the pending, running, or paused status
-// that started earlier than this one. If there are, checkRunningJobsInTxn
-// returns an error. If jobID is jobspb.InvalidJobID, checkRunningJobsInTxn just
-// checks if there are any pending, running, or paused CreateStats jobs.
 func checkRunningJobsInTxn(
+	ctx context.Context,
+	job *jobs.Job,
+	p JobExecContext,
+	autoPartial bool,
+	txn isql.Txn,
+	jobRegistry *jobs.Registry,
+	tableID descpb.ID,
+) error {
+	jobID := jobspb.InvalidJobID
+	if job != nil {
+		jobID = job.ID()
+	}
+
+	if err := checkRunningJobsInTxnImpl(
+		ctx, p.ExtendedEvalContext().Settings, jobID, txn,
+	); err != nil {
+		return err
+	}
+	if autoPartial {
+		return checkRunningAutoPartialJobsInTxn(
+			ctx, p.ExtendedEvalContext().Settings, jobID, txn, jobRegistry, tableID,
+		)
+	}
+	return nil
+}
+
+// checkRunningJobsInTxnImpl checks whether there are any other CreateStats jobs
+// (excluding auto partial stats jobs) in the pending, running, or paused status
+// that started earlier than this one. If there are, checkRunningJobsInTxnImpl
+// returns an error. If jobID is jobspb.InvalidJobID, checkRunningJobsInTxnImpl just
+// checks if there are any pending, running, or paused CreateStats jobs.
+func checkRunningJobsInTxnImpl(
 	ctx context.Context, cs *cluster.Settings, jobID jobspb.JobID, txn isql.Txn,
 ) error {
 	exists, err := jobs.RunningJobExists(

@@ -4,7 +4,19 @@
 # constraint conjunction currently satisfied by the decommissioning replica
 # being replaced, it was possible that a valid replacement target would never
 # be selected.
-gen_cluster nodes=4 region=(a,b,c) nodes_per_region=(1,1,2)
+gen_cluster nodes=4
+----
+
+set_locality node=1 locality=region=a
+----
+
+set_locality node=2 locality=region=b
+----
+
+set_locality node=3 locality=region=c
+----
+
+set_locality node=4 locality=region=c
 ----
 
 # Generate 5 ranges, where initially there will be two replicas in region c and
@@ -33,13 +45,10 @@ OK
 topology
 ----
 a
-  a_1
-  │ └── [1]
+  └── [1]
 b
-  b_1
-  │ └── [2]
+  └── [2]
 c
-  c_1
-    └── [3 4]
+  └── [3 4]
 
 # vim:ft=sh

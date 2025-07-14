@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -188,7 +187,7 @@ func (wb *writeBatch) ClearMVCCRangeKey(rangeKey MVCCRangeKey) error {
 			rangeKey.StartKey, rangeKey.EndKey, rangeKey.EncodedTimestampSuffix)
 	}
 	return wb.ClearEngineRangeKey(
-		rangeKey.StartKey, rangeKey.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rangeKey.Timestamp))
+		rangeKey.StartKey, rangeKey.EndKey, EncodeMVCCTimestampSuffix(rangeKey.Timestamp))
 }
 
 // BufferedSize implements the Writer interface.
@@ -218,7 +217,7 @@ func (wb *writeBatch) PutRawMVCCRangeKey(rangeKey MVCCRangeKey, value []byte) er
 	// it's present, because we explicitly do NOT want to write range keys with
 	// the synthetic bit set.
 	return wb.PutEngineRangeKey(
-		rangeKey.StartKey, rangeKey.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rangeKey.Timestamp), value)
+		rangeKey.StartKey, rangeKey.EndKey, EncodeMVCCTimestampSuffix(rangeKey.Timestamp), value)
 }
 
 // PutEngineRangeKey implements the Writer interface.
@@ -308,9 +307,9 @@ func (wb *writeBatch) putMVCC(key MVCCKey, value MVCCValue) error {
 	// - call Finish on the deferred operation (which will index the key if
 	//   wb.batch is indexed)
 	valueLen, isExtended := mvccValueSize(value)
-	keyLen := mvccencoding.EncodedMVCCKeyLength(key.Key, key.Timestamp)
+	keyLen := encodedMVCCKeyLength(key)
 	o := wb.batch.SetDeferred(keyLen, valueLen)
-	mvccencoding.EncodeMVCCKeyToBufSized(o.Key, key.Key, key.Timestamp, keyLen)
+	encodeMVCCKeyToBuf(o.Key, key, keyLen)
 	if !isExtended {
 		// Fast path; we don't need to use the extended encoding and can copy
 		// RawBytes in verbatim.
@@ -329,9 +328,9 @@ func (wb *writeBatch) put(key MVCCKey, value []byte) error {
 	if len(key.Key) == 0 {
 		return emptyKeyError()
 	}
-	keyLen := mvccencoding.EncodedMVCCKeyLength(key.Key, key.Timestamp)
+	keyLen := encodedMVCCKeyLength(key)
 	o := wb.batch.SetDeferred(keyLen, len(value))
-	mvccencoding.EncodeMVCCKeyToBufSized(o.Key, key.Key, key.Timestamp, keyLen)
+	encodeMVCCKeyToBuf(o.Key, key, keyLen)
 	copy(o.Value, value)
 	return o.Finish()
 }
