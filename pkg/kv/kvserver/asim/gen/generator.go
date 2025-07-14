@@ -8,7 +8,6 @@ package gen
 import (
 	"fmt"
 	"math/rand"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim"
@@ -94,28 +93,6 @@ func (ss StaticSettings) Generate(seed int64) config.SimulationSettings {
 	return ret
 }
 
-type MultiLoad []BasicLoad
-
-// MultiLoad implements the LoadGen interface. It is a collection of
-// BasicLoad.
-var _ LoadGen = MultiLoad{}
-
-func (ml MultiLoad) String() string {
-	var str string
-	for _, load := range ml {
-		str += fmt.Sprintf("%s\n", load.String())
-	}
-	return str
-}
-
-func (ml MultiLoad) Generate(seed int64, settings *config.SimulationSettings) []workload.Generator {
-	var generators []workload.Generator
-	for _, load := range ml {
-		generators = append(generators, load.Generate(seed, settings)...)
-	}
-	return generators
-}
-
 // BasicLoad implements the LoadGen interface.
 type BasicLoad struct {
 	RWRatio        float64
@@ -125,8 +102,6 @@ type BasicLoad struct {
 	MaxBlockSize   int
 	MinKey, MaxKey int64
 }
-
-var _ LoadGen = BasicLoad{}
 
 func (bl BasicLoad) String() string {
 	return fmt.Sprintf(
@@ -188,21 +163,12 @@ func (lc LoadedCluster) Regions() []state.Region {
 
 // BasicCluster implements the ClusterGen interace.
 type BasicCluster struct {
-	Nodes             int
-	StoresPerNode     int
-	StoreByteCapacity int64
-	Region            []string
-	NodesPerRegion    []int
+	Nodes         int
+	StoresPerNode int
 }
 
 func (bc BasicCluster) String() string {
-	var b strings.Builder
-	_, _ = fmt.Fprintf(&b, "basic cluster with nodes=%d, stores_per_node=%d, store_byte_capacity=%d",
-		bc.Nodes, bc.StoresPerNode, bc.StoreByteCapacity)
-	if len(bc.Region) != 0 {
-		_, _ = fmt.Fprintf(&b, ", region=%v, nodes_per_region=%v", bc.Region, bc.NodesPerRegion)
-	}
-	return b.String()
+	return fmt.Sprintf("basic cluster with nodes=%d, stores_per_node=%d", bc.Nodes, bc.StoresPerNode)
 }
 
 // Generate returns a new simulator state, where the cluster is created with all
@@ -210,30 +176,13 @@ func (bc BasicCluster) String() string {
 // created. The cluster is created based on the stores and stores-per-node
 // values the basic cluster generator is created with.
 func (bc BasicCluster) Generate(seed int64, settings *config.SimulationSettings) state.State {
-	info := bc.info()
-	info.StoreDiskCapacityBytes = bc.StoreByteCapacity
+	info := state.ClusterInfoWithStoreCount(bc.Nodes, bc.StoresPerNode)
 	return state.LoadClusterInfo(info, settings)
 }
 
 func (bc BasicCluster) Regions() []state.Region {
-	return bc.info().Regions
-}
-
-func (bc BasicCluster) info() state.ClusterInfo {
-	if len(bc.Region) == 0 {
-		return state.ClusterInfoWithStoreCount(bc.Nodes, bc.StoresPerNode)
-	}
-
-	regionNodeWeights := make([]float64, len(bc.NodesPerRegion))
-	totalNodes := 0
-	for i, nodes := range bc.NodesPerRegion {
-		regionNodeWeights[i] = float64(nodes) / float64(bc.Nodes)
-		totalNodes += nodes
-	}
-	if totalNodes != bc.Nodes {
-		panic(fmt.Sprintf("total nodes %d does not match expected nodes %d", totalNodes, bc.Nodes))
-	}
-	return state.ClusterInfoWithDistribution(bc.Nodes, bc.StoresPerNode, bc.Region, regionNodeWeights)
+	info := state.ClusterInfoWithStoreCount(bc.Nodes, bc.StoresPerNode)
+	return info.Regions
 }
 
 // LoadedRanges implements the RangeGen interface.
@@ -263,7 +212,6 @@ const (
 	Skewed
 	Random
 	WeightedRandom
-	ReplicaPlacement
 )
 
 func (p PlacementType) String() string {
@@ -276,8 +224,6 @@ func (p PlacementType) String() string {
 		return "random"
 	case WeightedRandom:
 		return "weighted_rand"
-	case ReplicaPlacement:
-		return "replica_placement"
 	default:
 		panic("unknown placement type")
 	}
@@ -293,8 +239,6 @@ func GetRangePlacementType(s string) PlacementType {
 		return Random
 	case "weighted_rand":
 		return WeightedRandom
-	case "replica_placement":
-		return ReplicaPlacement
 	default:
 		panic(fmt.Sprintf("unknown placement type %s", s))
 	}
@@ -307,14 +251,13 @@ func GetRangePlacementType(s string) PlacementType {
 // WeightedRandomizedBasicRanges.
 type BaseRanges struct {
 	Ranges            int
-	MinKey, MaxKey    int64
+	KeySpace          int
 	ReplicationFactor int
 	Bytes             int64
-	ReplicaPlacement  state.ReplicaPlacement
 }
 
 func (b BaseRanges) String() string {
-	return fmt.Sprintf("ranges=%d, min_key=%d, max_key=%d, replication_factor=%d, bytes=%d", b.Ranges, b.MinKey, b.MaxKey, b.ReplicationFactor, b.Bytes)
+	return fmt.Sprintf("ranges=%d, key_space=%d, replication_factor=%d, bytes=%d", b.Ranges, b.KeySpace, b.ReplicationFactor, b.Bytes)
 }
 
 // GetRangesInfo generates and distributes ranges across stores based on
@@ -324,21 +267,13 @@ func (b BaseRanges) GetRangesInfo(
 ) state.RangesInfo {
 	switch pType {
 	case Even:
-		return state.RangesInfoEvenDistribution(numOfStores, b.Ranges, b.MinKey, b.MaxKey, b.ReplicationFactor, b.Bytes)
+		return state.RangesInfoEvenDistribution(numOfStores, b.Ranges, b.KeySpace, b.ReplicationFactor, b.Bytes)
 	case Skewed:
-		return state.RangesInfoSkewedDistribution(numOfStores, b.Ranges, b.MinKey, b.MaxKey, b.ReplicationFactor, b.Bytes)
+		return state.RangesInfoSkewedDistribution(numOfStores, b.Ranges, b.KeySpace, b.ReplicationFactor, b.Bytes)
 	case Random:
-		return state.RangesInfoRandDistribution(randSource, numOfStores, b.Ranges, b.MinKey, b.MaxKey, b.ReplicationFactor, b.Bytes)
+		return state.RangesInfoRandDistribution(randSource, numOfStores, b.Ranges, b.KeySpace, b.ReplicationFactor, b.Bytes)
 	case WeightedRandom:
-		return state.RangesInfoWeightedRandDistribution(
-			randSource, weightedRandom, b.Ranges, b.MinKey, b.MaxKey, b.ReplicationFactor, b.Bytes)
-	case ReplicaPlacement:
-		return state.RangesInfoWithReplicaPlacement(
-			b.ReplicaPlacement,
-			b.Ranges,
-			state.DefaultSpanConfigWithRF(b.ReplicationFactor),
-			b.MinKey, b.MaxKey, b.Bytes,
-		)
+		return state.RangesInfoWeightedRandDistribution(randSource, weightedRandom, b.Ranges, b.KeySpace, b.ReplicationFactor, b.Bytes)
 	default:
 		panic(fmt.Sprintf("unexpected range placement type %v", pType))
 	}
@@ -374,31 +309,5 @@ func (br BasicRanges) Generate(
 	}
 	rangesInfo := br.GetRangesInfo(br.PlacementType, len(s.Stores()), nil, []float64{})
 	br.LoadRangeInfo(s, rangesInfo)
-	return s
-}
-
-// MultiRanges implements the RangeGen interface, supporting multiple
-// BasicRanges generation.
-type MultiRanges []BasicRanges
-
-var _ RangeGen = MultiRanges{}
-
-func (mr MultiRanges) String() string {
-	var str string
-	for _, ranges := range mr {
-		str += fmt.Sprintf("%s\n", ranges.String())
-	}
-	return str
-}
-
-func (mr MultiRanges) Generate(
-	seed int64, settings *config.SimulationSettings, s state.State,
-) state.State {
-	var rangeInfos []state.RangeInfo
-	for _, ranges := range mr {
-		rangeInfos = append(rangeInfos,
-			ranges.GetRangesInfo(ranges.PlacementType, len(s.Stores()), nil, []float64{})...)
-	}
-	state.LoadRangeInfo(s, rangeInfos...)
 	return s
 }

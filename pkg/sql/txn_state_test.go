@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -61,7 +60,7 @@ func makeTestContext(stopper *stop.Stopper) testContext {
 		clock:  clock,
 		mockDB: kv.NewDB(ambient, factory, clock, stopper),
 		mon: mon.NewMonitor(mon.Options{
-			Name:     mon.MakeName("test root mon"),
+			Name:     "test root mon",
 			Settings: settings,
 		}),
 		tracer:   ambient.Tracer,
@@ -76,7 +75,7 @@ func (tc *testContext) createOpenState(typ txnType) (fsm.State, *txnState) {
 	ctx := tracing.ContextWithSpan(tc.ctx, sp)
 
 	txnStateMon := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test mon"),
+		Name:     "test mon",
 		Settings: cluster.MakeTestingClusterSettings(),
 	})
 	txnStateMon.StartNoReserved(tc.ctx, tc.mon)
@@ -118,7 +117,7 @@ func (tc *testContext) createCommitWaitState() (fsm.State, *txnState, error) {
 
 func (tc *testContext) createNoTxnState() (fsm.State, *txnState) {
 	txnStateMon := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test mon"),
+		Name:     "test mon",
 		Settings: cluster.MakeTestingClusterSettings(),
 	})
 	ts := txnState{mon: txnStateMon, connCtx: tc.ctx}
@@ -214,7 +213,6 @@ func TestTransitions(t *testing.T) {
 	ctx := context.Background()
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
-	rng, _ := randutil.NewTestRand()
 	dummyRewCap := rewindCapability{rewindPos: CmdPos(12)}
 	testCon := makeTestContext(stopper)
 	tranCtx := transitionCtx{
@@ -284,7 +282,7 @@ func TestTransitions(t *testing.T) {
 			ev: eventTxnStart{ImplicitTxn: fsm.True},
 			evPayload: makeEventTxnStartPayload(pri, tree.ReadWrite, timeutil.Now(),
 				nil /* historicalTimestamp */, tranCtx, sessiondatapb.Normal, isolation.Serializable,
-				false /* omitInRangefeeds */, false /* bufferedWritesEnabled */, rng,
+				false, /* omitInRangefeeds */
 			),
 			expState: stateOpen{ImplicitTxn: fsm.True, WasUpgraded: fsm.False},
 			expAdv: expAdvance{
@@ -311,7 +309,7 @@ func TestTransitions(t *testing.T) {
 			ev: eventTxnStart{ImplicitTxn: fsm.False},
 			evPayload: makeEventTxnStartPayload(pri, tree.ReadWrite, timeutil.Now(),
 				nil /* historicalTimestamp */, tranCtx, sessiondatapb.Normal, isolation.Serializable,
-				false /* omitInRangefeeds */, false /* bufferedWritesEnabled */, rng,
+				false, /* omitInRangefeeds */
 			),
 			expState: stateOpen{ImplicitTxn: fsm.False, WasUpgraded: fsm.False},
 			expAdv: expAdvance{
@@ -693,36 +691,6 @@ func TestTransitions(t *testing.T) {
 			// We would like to test that the transaction's epoch bumped if the txn
 			// performed any operations, but it's not easy to do the test.
 			expTxn: &expKVTxn{},
-		},
-		{
-			// PREPARE TRANSACTION.
-			name: "Open + prepare",
-			init: func() (fsm.State, *txnState, uuid.UUID, error) {
-				s, ts := testCon.createOpenState(explicitTxn)
-				return s, ts, ts.mu.txn.ID(), nil
-			},
-			ev:       eventTxnFinishPrepared{},
-			expState: stateNoTxn{},
-			expAdv: expAdvance{
-				expCode: advanceOne,
-				expEv:   txnPrepare,
-			},
-			expTxn: nil,
-		},
-		{
-			// PREPARE TRANSACTION on an upgraded txn.
-			name: "Open (upgraded) + prepare",
-			init: func() (fsm.State, *txnState, uuid.UUID, error) {
-				s, ts := testCon.createOpenState(upgradedExplicitTxn)
-				return s, ts, ts.mu.txn.ID(), nil
-			},
-			ev:       eventTxnFinishPrepared{},
-			expState: stateNoTxn{},
-			expAdv: expAdvance{
-				expCode: advanceOne,
-				expEv:   txnPrepare,
-			},
-			expTxn: nil,
 		},
 		//
 		// Tests starting from the Aborted state.

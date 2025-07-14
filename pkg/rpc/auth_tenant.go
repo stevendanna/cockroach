@@ -55,7 +55,7 @@ func (a tenantAuthorizer) authorize(
 	req interface{},
 ) error {
 	switch fullMethod {
-	case "/cockroach.roachpb.Internal/Batch", "/cockroach.roachpb.Internal/BatchStream":
+	case "/cockroach.roachpb.Internal/Batch":
 		return a.authBatch(ctx, sv, tenID, req.(*kvpb.BatchRequest))
 
 	case "/cockroach.roachpb.Internal/RangeLookup":
@@ -63,7 +63,6 @@ func (a tenantAuthorizer) authorize(
 
 	case "/cockroach.roachpb.Internal/RangeFeed", "/cockroach.roachpb.Internal/MuxRangeFeed":
 		return a.authRangeFeed(tenID, req.(*kvpb.RangeFeedRequest))
-
 	case "/cockroach.roachpb.Internal/GossipSubscription":
 		return a.authGossipSubscription(tenID, req.(*kvpb.GossipSubscriptionRequest))
 
@@ -117,12 +116,6 @@ func (a tenantAuthorizer) authorize(
 
 	case "/cockroach.server.serverpb.Status/Ranges":
 		return a.authRanges(tenID)
-
-	case "/cockroach.server.serverpb.Status/NetworkConnectivity":
-		return a.capabilitiesAuthorizer.HasProcessDebugCapability(ctx, tenID)
-
-	case "/cockroach.server.serverpb.Status/Gossip", "/cockroach.server.serverpb.Status/EngineStats":
-		return a.capabilitiesAuthorizer.HasNodeStatusCapability(ctx, tenID)
 
 	case "/cockroach.server.serverpb.Status/TransactionContentionEvents":
 		return a.authTenant(tenID)
@@ -300,8 +293,6 @@ var gossipSubscriptionPatternAllowlist = []string{
 	"cluster-id",
 	"node:.*",
 	"store:.*",
-	// This "system-db" exception can be removed once we fully remove
-	// gossip.KeyDeprecatedSystemConfig from the gossip network.
 	"system-db",
 }
 

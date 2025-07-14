@@ -142,8 +142,7 @@ func SetupOrAdvanceStandbyReaderCatalog(
 					return nil
 				}
 				// Do not upsert entries if one already exists.
-				entry := allExistingDescs.LookupNamespaceEntry(catalog.MakeNameInfo(e))
-				if entry != nil && e.GetID() == entry.GetID() {
+				if entry := allExistingDescs.LookupNamespaceEntry(e); entry != nil && e.GetID() == entry.GetID() {
 					return nil
 				}
 				return errors.Wrapf(txn.Descriptors().UpsertNamespaceEntryToBatch(ctx, true, e, b), "namespace entry %v", e)

@@ -198,7 +198,7 @@ func TestHistogram(t *testing.T) {
 	}{
 		{
 			constraint:   "/1: [/0 - /0]",
-			buckets:      nil,
+			buckets:      []cat.HistogramBucket{},
 			count:        0,
 			maxDistinct:  0,
 			distinct:     0,
@@ -206,7 +206,7 @@ func TestHistogram(t *testing.T) {
 		},
 		{
 			constraint:   "/1: [/50 - /100]",
-			buckets:      nil,
+			buckets:      []cat.HistogramBucket{},
 			count:        0,
 			maxDistinct:  0,
 			distinct:     0,
@@ -438,8 +438,8 @@ func TestFilterBucket(t *testing.T) {
 		// the second bucket.
 		iter.setIdx(1)
 		b := getFilteredBucket(&iter, &keyCtx, span, colOffset)
-		roundBucket(&b)
-		return &b, nil
+		roundBucket(b)
+		return b, nil
 	}
 
 	runTest := func(h *Histogram, testData []testCase, colOffset int, typs ...types.Family) {

@@ -204,7 +204,9 @@ func (d *dev) testlogic(cmd *cobra.Command, commandLine []string) error {
 	}
 	args = append(args, targets...)
 	args = append(args, "--test_env=GOTRACEBACK=all")
-	addCommonBazelArguments(&args)
+	if numCPUs != 0 {
+		args = append(args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
+	}
 	if ignoreCache {
 		args = append(args, "--nocache_test_results")
 	}

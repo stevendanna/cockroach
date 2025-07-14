@@ -272,19 +272,6 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
 		},
 	},
-	`"".crdb_internal.create_trigger_statements`: {
-		nonSensitiveCols: NonSensitiveColumns{
-			"database_id",
-			"database_name",
-			"schema_id",
-			"schema_name",
-			"table_id",
-			"table_name",
-			"trigger_id",
-			"trigger_name",
-			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
-		},
-	},
 	`"".crdb_internal.create_procedure_statements`: {
 		nonSensitiveCols: NonSensitiveColumns{
 			"database_id",
@@ -320,7 +307,7 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"is_virtual",
 			"is_temporary",
 			"crdb_internal.hide_sql_constants(create_statement) as create_statement",
-			"crdb_internal.hide_sql_constants(fk_statements) as fk_statements",
+			"crdb_internal.hide_sql_constants(alter_statements) as alter_statements",
 			"crdb_internal.hide_sql_constants(create_nofks) as create_nofks",
 			"crdb_internal.redact(create_redactable) as create_redactable",
 		},
@@ -338,13 +325,6 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 		},
 	},
 	`"".crdb_internal.cluster_replication_spans`: {
-		nonSensitiveCols: NonSensitiveColumns{
-			"job_id",
-			"resolved",
-			"resolved_age",
-		},
-	},
-	`"".crdb_internal.logical_replication_spans`: {
 		nonSensitiveCols: NonSensitiveColumns{
 			"job_id",
 			"resolved",
@@ -382,21 +362,28 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 	},
 	// `statement` column can contain customer URI params such as
 	// AWS_ACCESS_KEY_ID.
-	// `error` column contains error text that may contain sensitive data.
+	// `error`, `execution_errors`, and `execution_events` columns contain
+	// error text that may contain sensitive data.
 	"crdb_internal.jobs": {
 		nonSensitiveCols: NonSensitiveColumns{
 			"job_id",
 			"job_type",
 			"description",
 			"user_name",
+			"descriptor_ids",
 			"status",
 			"running_status",
 			"created",
+			"started",
 			"finished",
 			"modified",
 			"fraction_completed",
 			"high_water_timestamp",
 			"coordinator_id",
+			"trace_id",
+			"last_run",
+			"next_run",
+			"num_runs",
 		},
 	},
 	"crdb_internal.system_jobs": {
@@ -948,6 +935,9 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"index_recommendations",
 			"latency_seconds_min",
 			"latency_seconds_max",
+			"latency_seconds_p50",
+			"latency_seconds_p90",
+			"latency_seconds_p99",
 		},
 	},
 	"crdb_internal.node_transaction_statistics": {
@@ -1207,18 +1197,6 @@ var zipSystemTables = DebugZipTableRegistry{
 			'redacted' AS value
 			FROM system.job_info`,
 	},
-	"system.job_progress": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "fraction", "resolved"},
-	},
-	"system.job_progress_history": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "fraction", "resolved"},
-	},
-	"system.job_status": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "status"},
-	},
-	"system.job_message": {
-		nonSensitiveCols: NonSensitiveColumns{"job_id", "written", "kind", "message"},
-	},
 	"system.lease": {
 		nonSensitiveCols: NonSensitiveColumns{
 			"desc_id",
@@ -1465,7 +1443,6 @@ var zipSystemTables = DebugZipTableRegistry{
 			"plan_gist",
 			"anti_plan_gist",
 			"redacted",
-			"username",
 		},
 	},
 	// statement_statistics can have over 100k rows in just the last hour.

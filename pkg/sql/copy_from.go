@@ -360,7 +360,7 @@ func newCopyMachine(
 	// we still have all the encoder allocations to make.
 	//
 	// We also make the fraction depend on the number of indexes in the table
-	// since each secondary index will require a separate CPut command for
+	// since each secondary index will require a separate InitPut command for
 	// each input row. We want to pick the fraction to be in [0.1, 0.33] range
 	// so that 0.33 is used with no secondary indexes and 0.1 is used with 16 or
 	// more secondary indexes.
@@ -416,10 +416,6 @@ func (c *copyMachine) canSupportVectorized(table catalog.TableDescriptor) bool {
 		return false
 	}
 	if c.p.SessionData().VectorizeMode == sessiondatapb.VectorizeOff {
-		return false
-	}
-	// Columnar vector index encoding is not yet supported.
-	if len(table.VectorIndexes()) > 0 {
 		return false
 	}
 	// Vectorized COPY doesn't support foreign key checks, no reason it couldn't
@@ -522,7 +518,7 @@ func (c *copyMachine) initMonitoring(ctx context.Context, parentMon *mon.BytesMo
 	// Create a monitor for the COPY command so it can be tracked separate from transaction or session.
 	memMetrics := &MemoryMetrics{}
 	c.copyMon = mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("copy"),
+		Name:     "copy",
 		CurCount: memMetrics.CurBytesCount,
 		MaxHist:  memMetrics.MaxBytesHist,
 		Settings: c.p.ExecCfg().Settings,
@@ -1210,11 +1206,6 @@ func (c *copyMachine) insertRowsInternal(ctx context.Context, finalBatch bool) (
 	var vc tree.SelectStatement
 	if c.copyFastPath {
 		if c.vectorized {
-			if buildutil.CrdbTestBuild {
-				if c.txnOpt.txn.BufferedWritesEnabled() {
-					return errors.AssertionFailedf("buffered writes should have been disabled for COPY")
-				}
-			}
 			b := tree.VectorRows{Batch: c.batch}
 			vc = &tree.LiteralValuesClause{Rows: &b}
 		} else {

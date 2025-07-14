@@ -80,8 +80,8 @@ func (m *mockSelectBuilder) Run(
 }
 
 // BuildQuery is an implementation of the SelectBuilder interface.
-func (m *mockSelectBuilder) BuildQuery() (string, error) {
-	return "", nil
+func (m *mockSelectBuilder) BuildQuery() string {
+	return ""
 }
 
 func TestRetryDeleteBatch(t *testing.T) {

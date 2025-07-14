@@ -187,7 +187,7 @@ func MarshalLegacy(colType *types.T, val tree.Datum) (roachpb.Value, error) {
 		}
 	case types.TupleFamily:
 		if v, ok := val.(*tree.DTuple); ok {
-			b, _, err := encodeUntaggedTuple(v, nil /* appendTo */, nil /* scratch */)
+			b, err := encodeUntaggedTuple(v, nil /* appendTo */, 0 /* colID */, nil /* scratch */)
 			if err != nil {
 				return r, err
 			}
@@ -432,7 +432,7 @@ func UnmarshalLegacy(a *tree.DatumAlloc, typ *types.T, value roachpb.Value) (tre
 		if err != nil {
 			return nil, err
 		}
-		_, vec, err := vector.Decode(v)
+		vec, err := vector.Decode(v)
 		if err != nil {
 			return nil, err
 		}

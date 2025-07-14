@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -188,7 +187,7 @@ func (wb *writeBatch) ClearMVCCRangeKey(rangeKey MVCCRangeKey) error {
 			rangeKey.StartKey, rangeKey.EndKey, rangeKey.EncodedTimestampSuffix)
 	}
 	return wb.ClearEngineRangeKey(
-		rangeKey.StartKey, rangeKey.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rangeKey.Timestamp))
+		rangeKey.StartKey, rangeKey.EndKey, EncodeMVCCTimestampSuffix(rangeKey.Timestamp))
 }
 
 // BufferedSize implements the Writer interface.
@@ -218,7 +217,7 @@ func (wb *writeBatch) PutRawMVCCRangeKey(rangeKey MVCCRangeKey, value []byte) er
 	// it's present, because we explicitly do NOT want to write range keys with
 	// the synthetic bit set.
 	return wb.PutEngineRangeKey(
-		rangeKey.StartKey, rangeKey.EndKey, mvccencoding.EncodeMVCCTimestampSuffix(rangeKey.Timestamp), value)
+		rangeKey.StartKey, rangeKey.EndKey, EncodeMVCCTimestampSuffix(rangeKey.Timestamp), value)
 }
 
 // PutEngineRangeKey implements the Writer interface.
@@ -274,7 +273,11 @@ func (wb *writeBatch) PutMVCC(key MVCCKey, value MVCCValue) error {
 	if key.Timestamp.IsEmpty() {
 		panic("PutMVCC timestamp is empty")
 	}
-	return wb.putMVCC(key, value)
+	encValue, err := EncodeMVCCValue(value)
+	if err != nil {
+		return err
+	}
+	return wb.put(key, encValue)
 }
 
 // PutRawMVCC implements the Writer interface.
@@ -299,41 +302,13 @@ func (wb *writeBatch) PutEngineKey(key EngineKey, value []byte) error {
 	return wb.batch.Set(wb.buf, value, nil)
 }
 
-func (wb *writeBatch) putMVCC(key MVCCKey, value MVCCValue) error {
-	// For performance, this method uses the pebble Batch's deferred operation
-	// API to avoid an extra memcpy. We:
-	// - determine the length of the encoded MVCC key and MVCC value
-	// - reserve space in the pebble Batch using SetDeferred
-	// - encode the MVCC key and MVCC value directly into the Batch
-	// - call Finish on the deferred operation (which will index the key if
-	//   wb.batch is indexed)
-	valueLen, isExtended := mvccValueSize(value)
-	keyLen := mvccencoding.EncodedMVCCKeyLength(key.Key, key.Timestamp)
-	o := wb.batch.SetDeferred(keyLen, valueLen)
-	mvccencoding.EncodeMVCCKeyToBufSized(o.Key, key.Key, key.Timestamp, keyLen)
-	if !isExtended {
-		// Fast path; we don't need to use the extended encoding and can copy
-		// RawBytes in verbatim.
-		copy(o.Value, value.Value.RawBytes)
-	} else {
-		// Slow path; we need the MVCC value header.
-		err := encodeExtendedMVCCValueToSizedBuf(value, o.Value)
-		if err != nil {
-			return err
-		}
-	}
-	return o.Finish()
-}
-
 func (wb *writeBatch) put(key MVCCKey, value []byte) error {
 	if len(key.Key) == 0 {
 		return emptyKeyError()
 	}
-	keyLen := mvccencoding.EncodedMVCCKeyLength(key.Key, key.Timestamp)
-	o := wb.batch.SetDeferred(keyLen, len(value))
-	mvccencoding.EncodeMVCCKeyToBufSized(o.Key, key.Key, key.Timestamp, keyLen)
-	copy(o.Value, value)
-	return o.Finish()
+
+	wb.buf = EncodeMVCCKeyToBuf(wb.buf[:0], key)
+	return wb.batch.Set(wb.buf, value, nil)
 }
 
 // LogData implements the Writer interface.
@@ -708,7 +683,7 @@ func (p *pebbleBatch) PinEngineStateForIterators(readCategory fs.ReadCategory) e
 	var err error
 	if p.iter == nil {
 		var iter *pebble.Iterator
-		o := &pebble.IterOptions{Category: readCategory.PebbleCategory()}
+		o := &pebble.IterOptions{CategoryAndQoS: fs.GetCategoryAndQoS(readCategory)}
 		if p.batch.Indexed() {
 			iter, err = p.batch.NewIter(o)
 		} else {

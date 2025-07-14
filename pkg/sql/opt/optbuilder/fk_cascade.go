@@ -225,39 +225,6 @@ func (mb *mutationBuilder) tryNewOnDeleteFastCascadeBuilder(
 		return nil, false
 	}
 
-	// For a REGIONAL BY ROW child table, if the region column is part of the FK,
-	// check that it is constrained to a single value. If this is not the case,
-	// the fast path can be suboptimal, since joining against the parent buffer
-	// will constrain the region column to a single constant value.
-	if childTab.IsRegionalByRow() &&
-		mb.b.evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables {
-		// The regional column is the first in every index, including the primary.
-		regionalColOrd := childTab.Index(cat.PrimaryIndex).Column(0).Ordinal()
-		var regionalColID opt.ColumnID
-		for i, colID := range fkCols {
-			if fk.OriginColumnOrdinal(childTab, i) == regionalColOrd {
-				regionalColID = colID
-				break
-			}
-		}
-		if regionalColID != 0 {
-			regionalColIsConstrained := false
-			for i := range filters {
-				if eq, isEq := filters[i].Condition.(*memo.EqExpr); isEq {
-					if v, leftIsVar := eq.Left.(*memo.VariableExpr); leftIsVar && v.Col == regionalColID {
-						if opt.IsConstValueOp(eq.Right) {
-							regionalColIsConstrained = true
-							break
-						}
-					}
-				}
-			}
-			if !regionalColIsConstrained {
-				return nil, false
-			}
-		}
-	}
-
 	var visited intsets.Fast
 	parentTabID := parentTab.ID()
 	childTabID := childTab.ID()
@@ -341,13 +308,8 @@ func (cb *onDeleteFastCascadeBuilder) Build(
 			var mb mutationBuilder
 			mb.init(b, "delete", cb.childTable, tree.MakeUnqualifiedTableName(cb.childTable.Name()))
 
-			var indexFlags *tree.IndexFlags
-			if mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-				indexFlags = &tree.IndexFlags{AvoidFullScan: true}
-			}
-
 			// Build the input to the delete mutation, which is simply a Scan with a
-			// Select on top. The scan is exempt from RLS to maintain data integrity.
+			// Select on top.
 			mb.fetchScope = b.buildScan(
 				b.addTable(cb.childTable, &mb.alias),
 				tableOrdinals(cb.childTable, columnKinds{
@@ -355,11 +317,10 @@ func (cb *onDeleteFastCascadeBuilder) Build(
 					includeSystem:    false,
 					includeInverted:  false,
 				}),
-				indexFlags,
+				nil, /* indexFlags */
 				noRowLocking,
 				b.allocScope(),
 				true, /* disableNotVisibleIndex */
-				cat.PolicyScopeExempt,
 			)
 			mb.outScope = mb.fetchScope
 
@@ -548,7 +509,7 @@ func (cb *onDeleteSetBuilder) Build(
 					updateExprs[i].Expr = tree.DefaultVal{}
 				}
 			}
-			mb.addUpdateCols(updateExprs, nil /* colRefs */)
+			mb.addUpdateCols(updateExprs)
 
 			// Register the mutation with the statementTree
 			b.checkMultipleMutations(mb.tab, generalMutation)
@@ -560,8 +521,7 @@ func (cb *onDeleteSetBuilder) Build(
 			// against the parent we are cascading from. Need to investigate in which
 			// cases this is safe (e.g. other cascades could have messed with the parent
 			// table in the meantime).
-			// The exempt policy is used for RLS to maintain data integrity.
-			mb.buildUpdate(nil /* returning */, cat.PolicyScopeExempt, nil /* colRefs */)
+			mb.buildUpdate(nil /* returning */)
 			return mb.outScope.expr
 		})
 }
@@ -599,12 +559,6 @@ func (b *Builder) buildDeleteCascadeMutationInput(
 	bindingProps *props.Relational,
 	oldValues opt.ColList,
 ) (outScope *scope) {
-	var indexFlags *tree.IndexFlags
-	if b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		indexFlags = &tree.IndexFlags{AvoidFullScan: true}
-	}
-
-	// The scan is exempt from RLS to maintain data integrity.
 	outScope = b.buildScan(
 		b.addTable(childTable, childTableAlias),
 		tableOrdinals(childTable, columnKinds{
@@ -612,11 +566,10 @@ func (b *Builder) buildDeleteCascadeMutationInput(
 			includeSystem:    false,
 			includeInverted:  false,
 		}),
-		indexFlags,
+		nil, /* indexFlags */
 		noRowLocking,
 		b.allocScope(),
 		true, /* disableNotVisibleIndex */
-		cat.PolicyScopeExempt,
 	)
 
 	numFKCols := fk.ColumnCount()
@@ -809,7 +762,7 @@ func (cb *onUpdateCascadeBuilder) Build(
 					panic(errors.AssertionFailedf("unsupported action"))
 				}
 			}
-			mb.addUpdateCols(updateExprs, nil /* colRefs */)
+			mb.addUpdateCols(updateExprs)
 
 			// Register the mutation with the statementTree
 			b.checkMultipleMutations(mb.tab, generalMutation)
@@ -817,8 +770,7 @@ func (cb *onUpdateCascadeBuilder) Build(
 			// Cascades can fire triggers on the child table.
 			mb.buildRowLevelBeforeTriggers(tree.TriggerEventUpdate, true /* cascade */)
 
-			// The exempt policy is used for RLS to maintain data integrity.
-			mb.buildUpdate(nil /* returning */, cat.PolicyScopeExempt, nil /* colRefs */)
+			mb.buildUpdate(nil /* returning */)
 			return mb.outScope.expr
 		})
 }
@@ -875,12 +827,6 @@ func (b *Builder) buildUpdateCascadeMutationInput(
 	oldValues opt.ColList,
 	newValues opt.ColList,
 ) (outScope *scope) {
-	var indexFlags *tree.IndexFlags
-	if b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		indexFlags = &tree.IndexFlags{AvoidFullScan: true}
-	}
-
-	// The scan is exempt from RLS to maintain data integrity.
 	outScope = b.buildScan(
 		b.addTable(childTable, childTableAlias),
 		tableOrdinals(childTable, columnKinds{
@@ -888,11 +834,10 @@ func (b *Builder) buildUpdateCascadeMutationInput(
 			includeSystem:    false,
 			includeInverted:  false,
 		}),
-		indexFlags,
+		nil, /* indexFlags */
 		noRowLocking,
 		b.allocScope(),
 		true, /* disableNotVisibleIndex */
-		cat.PolicyScopeExempt,
 	)
 
 	numFKCols := fk.ColumnCount()

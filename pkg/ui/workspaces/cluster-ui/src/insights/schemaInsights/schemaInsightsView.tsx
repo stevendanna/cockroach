@@ -11,7 +11,7 @@ import { useHistory } from "react-router-dom";
 import { Anchor } from "src/anchor";
 import sortableTableStyles from "src/sortedtable/sortedtable.module.scss";
 import styles from "src/statementsPage/statementsPage.module.scss";
-import { insights, usePagination } from "src/util";
+import { insights } from "src/util";
 
 import { CockroachCloudContext } from "../../contexts";
 import {
@@ -31,7 +31,7 @@ import {
 } from "../../queryFilter";
 import { getSchemaInsightEventFiltersFromURL } from "../../queryFilter/utils";
 import { Search } from "../../search";
-import { SortSetting } from "../../sortedtable";
+import { ISortedTablePagination, SortSetting } from "../../sortedtable";
 import { getTableSortFromURL } from "../../sortedtable/getTableSortFromURL";
 import { TableStatistics } from "../../tableStatistics";
 import { queryByName, syncHistory } from "../../util";
@@ -85,7 +85,10 @@ export const SchemaInsightsView: React.FC<SchemaInsightsViewProps> = ({
   csIndexUnusedDuration,
 }: SchemaInsightsViewProps) => {
   const isCockroachCloud = useContext(CockroachCloudContext);
-  const [pagination, updatePagination, resetPagination] = usePagination(1, 10);
+  const [pagination, setPagination] = useState<ISortedTablePagination>({
+    current: 1,
+    pageSize: 10,
+  });
   const history = useHistory();
   const [search, setSearch] = useState<string>(
     queryByName(history.location, SCHEMA_INSIGHT_SEARCH_PARAM),
@@ -151,6 +154,20 @@ export const SchemaInsightsView: React.FC<SchemaInsightsViewProps> = ({
     sortSetting.columnTitle,
     search,
   ]);
+
+  const onChangePage = (current: number): void => {
+    setPagination({
+      current: current,
+      pageSize: 10,
+    });
+  };
+
+  const resetPagination = () => {
+    setPagination({
+      current: 1,
+      pageSize: 10,
+    });
+  };
 
   const onChangeSortSetting = (ss: SortSetting): void => {
     onSortChange(ss);
@@ -256,8 +273,7 @@ export const SchemaInsightsView: React.FC<SchemaInsightsViewProps> = ({
               pageSize={pagination.pageSize}
               current={pagination.current}
               total={filteredSchemaInsights?.length}
-              onChange={updatePagination}
-              onShowSizeChange={updatePagination}
+              onChange={onChangePage}
             />
             {maxSizeApiReached && (
               <InlineAlert

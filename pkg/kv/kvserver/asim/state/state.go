@@ -154,7 +154,7 @@ type State interface {
 	Clock() timeutil.TimeSource
 	// UpdateStorePool modifies the state of the StorePool for the Store with
 	// ID StoreID.
-	UpdateStorePool(StoreID, map[roachpb.StoreID]*storepool.StoreDetailMu)
+	UpdateStorePool(StoreID, map[roachpb.StoreID]*storepool.StoreDetail)
 	// NextReplicasFn returns a function, that when called will return the current
 	// replicas that exist on the store.
 	NextReplicasFn(StoreID) func() []Replica
@@ -197,8 +197,6 @@ type State interface {
 	// RegisterConfigChangeListener registers a listener which will be called
 	// when a cluster configuration change occurs such as a store being added.
 	RegisterConfigChangeListener(ConfigChangeListener)
-	// SetSimulationSettings sets the simulation settings for the state.
-	SetSimulationSettings(Key string, Value interface{})
 }
 
 // Node is a container for stores and is part of a cluster.
@@ -291,10 +289,6 @@ func (m *ManualSimClock) Set(tsNanos int64) {
 
 func (m *ManualSimClock) Since(t time.Time) time.Duration {
 	return m.Now().Sub(t)
-}
-
-func (m *ManualSimClock) Until(t time.Time) time.Duration {
-	return t.Sub(m.Now())
 }
 
 func (m *ManualSimClock) NewTimer() timeutil.TimerI {
