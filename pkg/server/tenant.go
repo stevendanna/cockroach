@@ -49,6 +49,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverctl"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
+	"github.com/cockroachdb/cockroach/pkg/server/structlogging"
 	"github.com/cockroachdb/cockroach/pkg/server/systemconfigwatcher"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
@@ -67,7 +68,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/eventlog"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logmetrics"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil"
@@ -104,7 +104,7 @@ type SQLServerWrapper struct {
 	db           *kv.DB
 
 	// Metric registries.
-	// See the explanatory comments in server.go and status/recorder.go
+	// See the explanatory comments in server.go and status/recorder.g o
 	// for details.
 	registry    *metric.Registry
 	sysRegistry *metric.Registry
@@ -730,10 +730,6 @@ func (s *SQLServerWrapper) PreStart(ctx context.Context) error {
 		})
 	})
 
-	// Registers an event log writer for the tenant. This will enable the ability
-	// to persist structured events to the tenants system.eventlog table.
-	eventlog.Register(ctx, s.cfg.TestingKnobs.EventLog, s.sqlServer.execCfg.InternalDB, s.stopper, s.cfg.AmbientCtx, s.ClusterSettings())
-
 	// Init a log metrics registry.
 	logRegistry := logmetrics.NewRegistry()
 	if logRegistry == nil {
@@ -996,6 +992,17 @@ func (s *SQLServerWrapper) AcceptClients(ctx context.Context) error {
 		); err != nil {
 			return err
 		}
+	}
+
+	ti, _ := s.sqlServer.tenantConnect.TenantInfo()
+	if err := structlogging.StartHotRangesLoggingScheduler(
+		ctx,
+		s.stopper,
+		s.sqlServer.tenantConnect,
+		s.ClusterSettings(),
+		&ti,
+	); err != nil {
+		return err
 	}
 
 	s.sqlServer.isReady.Store(true)

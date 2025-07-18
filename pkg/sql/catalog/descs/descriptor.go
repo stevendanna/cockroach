@@ -215,16 +215,14 @@ func getDescriptorsByID(
 	if err := tc.finalizeDescriptors(ctx, txn, flags, descs, vls); err != nil {
 		return err
 	}
-	// Apply any filters on descriptors before hydrating, since if a descriptor
-	// is offline / dropped, we are doing needless work.
+	// Hydration is skipped if "SkipHydration" flag is true.
+	if err := tc.hydrateDescriptors(ctx, txn, flags, descs); err != nil {
+		return err
+	}
 	for _, desc := range descs {
 		if err := filterDescriptor(desc, flags); err != nil {
 			return err
 		}
-	}
-	// Hydration is skipped if "SkipHydration" flag is true.
-	if err := tc.hydrateDescriptors(ctx, txn, flags, descs); err != nil {
-		return err
 	}
 	return nil
 }
