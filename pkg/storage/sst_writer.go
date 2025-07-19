@@ -82,9 +82,13 @@ func (*noopFinishAbort) Abort() {}
 // also used when constructing sstables for backups (because these sstables may
 // ultimately be ingested during online restore).
 func MakeIngestionWriterOptions(ctx context.Context, cs *cluster.Settings) sstable.WriterOptions {
-	// TODO(jackson): Tie the table format to the cluster version using
-	// FormatMajorVersion.MaxTableFormat.
-	format := sstable.TableFormatPebblev5
+	// All supported versions understand TableFormatPebblev4. If columnar blocks
+	// are enabled and the active cluster version is at least 24.3, use
+	// TableFormatPebblev5.
+	format := sstable.TableFormatPebblev4
+	if ColumnarBlocksEnabled.Get(&cs.SV) {
+		format = sstable.TableFormatPebblev5
+	}
 
 	opts := DefaultPebbleOptions().MakeWriterOptions(0, format)
 	// By default, compress with the algorithm used for L6 in a Pebble store.
@@ -119,9 +123,13 @@ func makeSSTRewriteOptions(
 // scanned and their keys inserted into new sstables (NB: constructed using
 // MakeIngestionSSTWriter) that ultimately are uploaded to object storage.
 func MakeTransportSSTWriter(ctx context.Context, cs *cluster.Settings, f io.Writer) SSTWriter {
-	// TODO(jackson): Tie the table format to the cluster version using
-	// FormatMajorVersion.MaxTableFormat.
-	format := sstable.TableFormatPebblev5
+	// By default, take a conservative approach and assume we don't have newer
+	// table features available. Upgrade to an appropriate version only if the
+	// cluster supports it.
+	format := sstable.TableFormatPebblev4
+	if ColumnarBlocksEnabled.Get(&cs.SV) {
+		format = sstable.TableFormatPebblev5
+	}
 
 	opts := DefaultPebbleOptions().MakeWriterOptions(0, format)
 

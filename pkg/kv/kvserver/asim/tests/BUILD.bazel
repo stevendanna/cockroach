@@ -38,7 +38,6 @@ go_test(
     data = glob(["testdata/**"]),
     embed = [":tests"],
     deps = [
-        "//pkg/kv/kvserver",
         "//pkg/kv/kvserver/allocator/allocatorimpl",
         "//pkg/kv/kvserver/asim/assertion",
         "//pkg/kv/kvserver/asim/config",
@@ -50,10 +49,6 @@ go_test(
         "//pkg/kv/kvserver/liveness/livenesspb",
         "//pkg/spanconfig/spanconfigtestutils",
         "//pkg/testutils/datapathutils",
-        "//pkg/testutils/skip",
-        "//pkg/util/envutil",
-        "//pkg/util/leaktest",
-        "//pkg/util/log",
         "@com_github_cockroachdb_datadriven//:datadriven",
         "@com_github_guptarohit_asciigraph//:asciigraph",
         "@com_github_stretchr_testify//require",

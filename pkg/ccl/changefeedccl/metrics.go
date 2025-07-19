@@ -731,7 +731,7 @@ var (
 	metaChangefeedCheckpointHistNanos = metric.Metadata{
 		Name:        "changefeed.checkpoint_hist_nanos",
 		Help:        "Time spent checkpointing changefeed progress",
-		Measurement: "Nanoseconds",
+		Measurement: "Changefeeds",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
 
