@@ -903,7 +903,7 @@ func TestAnalyzeSystemTables(t *testing.T) {
 		return descpb.ID(tableID)
 	}
 	for _, row := range rows {
-		tableName := string(*tree.UnwrapDOidWrapper(row[0]).(*tree.DString))
+		tableName := string(*row[0].(*tree.DOidWrapper).Wrapped.(*tree.DString))
 		if DisallowedOnSystemTable(getTableID(tableName)) {
 			continue
 		}

@@ -1014,9 +1014,10 @@ func applyColumnMutation(
 					fk.OnUpdate != semenumpb.ForeignKeyAction_RESTRICT {
 					return pgerror.Newf(
 						pgcode.InvalidColumnDefinition,
-						"column cannot specify both ON UPDATE expression and a foreign"+
-							" key ON UPDATE action for column %q",
+						"column %s(%d) cannot have both an ON UPDATE expression and a foreign"+
+							" key ON UPDATE action",
 						col.GetName(),
+						col.GetID(),
 					)
 				}
 			}

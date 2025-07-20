@@ -533,9 +533,7 @@ func (r *Refresher) SetDraining() {
 func (r *Refresher) Start(
 	ctx context.Context, stopper *stop.Stopper, refreshInterval time.Duration,
 ) error {
-	// The refresher has the same lifetime as the server, so the cancellation
-	// function can be ignored and it'll be called by the stopper.
-	stoppingCtx, _ := stopper.WithCancelOnQuiesce(context.Background()) // nolint:quiesce
+	stoppingCtx, _ := stopper.WithCancelOnQuiesce(context.Background())
 	bgCtx := r.AnnotateCtx(stoppingCtx)
 	r.startedTasksWG.Add(1)
 	if err := stopper.RunAsyncTask(bgCtx, "refresher", func(ctx context.Context) {

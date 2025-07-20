@@ -48,7 +48,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
@@ -93,7 +92,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/flowinfra"
 	_ "github.com/cockroachdb/cockroach/pkg/sql/gcjob"    // register jobs declared outside of pkg/sql
 	_ "github.com/cockroachdb/cockroach/pkg/sql/importer" // register jobs/planHooks declared outside of pkg/sql
-	_ "github.com/cockroachdb/cockroach/pkg/sql/inspect"  // register jobs declared outside of pkg/sql
 	"github.com/cockroachdb/cockroach/pkg/sql/optionalnodeliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire"
 	_ "github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scjob" // register jobs declared outside of pkg/sql
@@ -109,7 +107,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/eventlog"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logmetrics"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
@@ -128,7 +125,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
-	"github.com/getsentry/sentry-go"
+	sentry "github.com/getsentry/sentry-go"
 	"google.golang.org/grpc/codes"
 )
 
@@ -162,14 +159,13 @@ type topLevelServer struct {
 	appRegistry  *metric.Registry
 	sysRegistry  *metric.Registry
 
-	recorder             *status.MetricsRecorder
-	runtime              *status.RuntimeStatSampler
-	ruleRegistry         *metric.RuleRegistry
-	promRuleExporter     *metric.PrometheusRuleExporter
-	updates              *diagnostics.UpdateChecker
-	ctSender             *sidetransport.Sender
-	policyRefresher      *policyrefresher.PolicyRefresher
-	nodeCapacityProvider *load.NodeCapacityProvider
+	recorder         *status.MetricsRecorder
+	runtime          *status.RuntimeStatSampler
+	ruleRegistry     *metric.RuleRegistry
+	promRuleExporter *metric.PrometheusRuleExporter
+	updates          *diagnostics.UpdateChecker
+	ctSender         *sidetransport.Sender
+	policyRefresher  *policyrefresher.PolicyRefresher
 
 	http            *httpServer
 	adminAuthzCheck privchecker.CheckerForRPCHandlers
@@ -602,11 +598,11 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		storesForRACv2,
 		admissionKnobs,
 	)
-	db.SQLKVResponseAdmissionQ = gcoords.RegularCPU.GetWorkQueue(admission.SQLKVResponseWork)
-	db.AdmissionPacerFactory = gcoords.ElasticCPU
+	db.SQLKVResponseAdmissionQ = gcoords.Regular.GetWorkQueue(admission.SQLKVResponseWork)
+	db.AdmissionPacerFactory = gcoords.Elastic
 	goschedstats.RegisterSettings(st)
 	if goschedstats.Supported {
-		cbID := goschedstats.RegisterRunnableCountCallback(gcoords.RegularCPU.CPULoad)
+		cbID := goschedstats.RegisterRunnableCountCallback(gcoords.Regular.CPULoad)
 		stopper.AddCloser(stop.CloserFn(func() {
 			goschedstats.UnregisterRunnableCountCallback(cbID)
 		}))
@@ -620,12 +616,12 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		kvAdmissionController    kvadmission.Controller
 		racHandles               kvflowcontrol.ReplicationAdmissionHandles
 	}
-	admissionControl.schedulerLatencyListener = gcoords.ElasticCPU.SchedulerLatencyListener
+	admissionControl.schedulerLatencyListener = gcoords.Elastic.SchedulerLatencyListener
 	admissionControl.racHandles = kvserver.MakeRACHandles(stores)
 	admissionControl.kvAdmissionController = kvadmission.MakeController(
 		nodeIDContainer,
-		gcoords.RegularCPU.GetWorkQueue(admission.KVWork),
-		gcoords.ElasticCPU,
+		gcoords.Regular.GetWorkQueue(admission.KVWork),
+		gcoords.Elastic,
 		gcoords.Stores,
 		admissionControl.racHandles,
 		cfg.Settings,
@@ -690,19 +686,6 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		policyRefresher = policyrefresher.NewPolicyRefresher(stopper, st, ctSender.GetLeaseholders,
 			rpcContext.RemoteClocks.AllLatencies, knobs)
 	}
-
-	cpuUsageRefreshInterval := base.DefaultCPUUsageRefreshInterval
-	cpuCapacityRefreshInterval := base.DefaultCPUCapacityRefreshInterval
-	if ncpKnobs, _ := cfg.TestingKnobs.NodeCapacityProviderKnobs.(*load.NodeCapacityProviderTestingKnobs); ncpKnobs != nil {
-		cpuUsageRefreshInterval = ncpKnobs.CpuUsageRefreshInterval
-		cpuCapacityRefreshInterval = ncpKnobs.CpuCapacityRefreshInterval
-	}
-	nodeCapacityProviderConfig := load.NodeCapacityProviderConfig{
-		CPUUsageRefreshInterval:    cpuUsageRefreshInterval,
-		CPUCapacityRefreshInterval: cpuCapacityRefreshInterval,
-		CPUUsageMovingAverageAge:   base.DefaultCPUUsageMovingAverageAge,
-	}
-	nodeCapacityProvider := load.NewNodeCapacityProvider(stopper, stores, nodeCapacityProviderConfig)
 
 	// The Executor will be further initialized later, as we create more
 	// of the server's components. There's a circular dependency - many things
@@ -922,7 +905,6 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		ClosedTimestampSender:        ctSender,
 		ClosedTimestampReceiver:      ctReceiver,
 		PolicyRefresher:              policyRefresher,
-		NodeCapacityProvider:         nodeCapacityProvider,
 		ProtectedTimestampReader:     protectedTSReader,
 		EagerLeaseAcquisitionLimiter: eagerLeaseAcquisitionLimiter,
 		KVMemoryMonitor:              kvMemoryMonitor,
@@ -989,8 +971,8 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		txnMetrics,
 		stores,
 		cfg.ClusterIDContainer,
-		gcoords.RegularCPU.GetWorkQueue(admission.KVWork),
-		gcoords.ElasticCPU,
+		gcoords.Regular.GetWorkQueue(admission.KVWork),
+		gcoords.Elastic,
 		gcoords.Stores,
 		tenantUsage,
 		tenantSettingsWatcher,
@@ -1016,10 +998,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 	if err := kvpb.DRPCRegisterTenantSpanConfig(drpcServer, node); err != nil {
 		return nil, err
 	}
-	if err := kvpb.DRPCRegisterNode(drpcServer, node); err != nil {
-		return nil, err
-	}
-	if err := kvpb.DRPCRegisterQuorumRecovery(drpcServer, node); err != nil {
+	if err := kvpb.DRPCRegisterCluster(drpcServer, node); err != nil {
 		return nil, err
 	}
 	kvserver.RegisterPerReplicaServer(grpcServer.Server, node.perReplicaServer)
@@ -1181,7 +1160,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 			externalStorage:          externalStorage,
 			externalStorageFromURI:   externalStorageFromURI,
 			isMeta1Leaseholder:       node.stores.IsMeta1Leaseholder,
-			sqlSQLResponseAdmissionQ: gcoords.RegularCPU.GetWorkQueue(admission.SQLSQLResponseWork),
+			sqlSQLResponseAdmissionQ: gcoords.Regular.GetWorkQueue(admission.SQLSQLResponseWork),
 			spanConfigKVAccessor:     spanConfig.kvAccessorForTenantRecords,
 			kvStoresIterator:         kvserver.MakeStoresIterator(node.stores),
 			inspectzServer:           inspectzServer,
@@ -1218,7 +1197,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		tenantUsageServer:        tenantUsage,
 		monitorAndMetrics:        sqlMonitorAndMetrics,
 		settingsStorage:          settingsWriter,
-		admissionPacerFactory:    gcoords.ElasticCPU,
+		admissionPacerFactory:    gcoords.Elastic,
 		rangeDescIteratorFactory: rangedesc.NewIteratorFactory(db),
 		tenantCapabilitiesReader: sql.MakeSystemTenantOnly[tenantcapabilities.Reader](tenantCapabilitiesWatcher),
 	})
@@ -1356,7 +1335,6 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		updates:                   updates,
 		ctSender:                  ctSender,
 		policyRefresher:           policyRefresher,
-		nodeCapacityProvider:      nodeCapacityProvider,
 		runtime:                   runtimeSampler,
 		http:                      sHTTP,
 		adminAuthzCheck:           adminAuthzCheck,
@@ -1908,11 +1886,6 @@ func (s *topLevelServer) PreStart(ctx context.Context) error {
 
 	advHTTPAddrU := util.NewUnresolvedAddr("tcp", s.cfg.HTTPAdvertiseAddr)
 
-	// Registers an event log writer for the system tenant. This will enable the
-	// ability to persist structured events to the system tenant's
-	//system.eventlog table.
-	eventlog.Register(ctx, s.cfg.TestingKnobs.EventLog, s.node.execCfg.InternalDB, s.stopper, s.cfg.AmbientCtx, s.ClusterSettings())
-
 	if err := s.node.start(
 		ctx, workersCtx,
 		advAddrU,
@@ -2194,10 +2167,6 @@ func (s *topLevelServer) PreStart(ctx context.Context) error {
 	// closed timestamp policies for ranges periodically.
 	s.policyRefresher.Run(workersCtx)
 
-	// Start node capacity provider in the background. It refreshes node cpu usage
-	// and capacity for store descriptor.
-	s.nodeCapacityProvider.Run(workersCtx)
-
 	// Start dispatching extant flow tokens.
 	if err := s.raftTransport.Start(workersCtx); err != nil {
 		return err
@@ -2382,11 +2351,12 @@ func (s *topLevelServer) AcceptClients(ctx context.Context) error {
 		return err
 	}
 
-	if err := structlogging.StartSystemHotRangesLogger(
+	if err := structlogging.StartHotRangesLoggingScheduler(
 		ctx,
 		s.stopper,
 		s.status,
 		s.ClusterSettings(),
+		nil,
 	); err != nil {
 		return err
 	}

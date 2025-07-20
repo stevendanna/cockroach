@@ -193,7 +193,6 @@ type Processor interface {
 		withDiff bool,
 		withFiltering bool,
 		withOmitRemote bool,
-		withBulkDelivery bool,
 		stream Stream,
 	) (bool, Disconnector, *Filter)
 
