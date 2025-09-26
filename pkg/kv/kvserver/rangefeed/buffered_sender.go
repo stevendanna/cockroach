@@ -10,9 +10,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
-	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -48,38 +45,6 @@ import (
 //               BufferedPerRangeEventSink.Send    BufferedPerRangeEventSink.SendError
 //
 
-// RangefeedSingleBufferedSenderQueueMaxSize is the maximum number of events
-// that the buffered sender will buffer before it starts returning capacity
-// exceeded errors. Updates to this setting are only applied to need
-// MuxRangefeedCalls, existing streams will use the previous value until
-// restarted.
-//
-// # The main goal of this limit is to provide a backstop against the
-//
-// The default here has been somewhat arbitrarily chosen considering that:
-//
-//   - We want to avoid capacity exceeded errors that wouldn't have occurred
-//     when the buffered registrations were in use.
-//
-//   - We don't want to drastically increase the amount of queueing allowed for a
-//     single registration.
-//
-//   - One buffered sender is feeding a single gRPC client.
-//
-//   - Events emitted during catchup scans have their own per-registration buffer
-//     still.
-//
-// TODO(ssd): This is a bit of a stop-gap so that we have a knob to turn if we
-// need to. We probably want each buffered sender (or each consumerID) to be
-// able to hold up to some fraction of the total rangefeed budget. But we are
-// starting here for now.
-var RangefeedSingleBufferedSenderQueueMaxSize = settings.RegisterIntSetting(
-	settings.SystemOnly,
-	"kv.rangefeed.buffered_sender.queue_max_size",
-	"max size of a buffered senders event queue (0 for no max)",
-	kvserverbase.DefaultRangefeedEventCap*8,
-)
-
 // BufferedSender is embedded in every rangefeed.BufferedPerRangeEventSink,
 // serving as a helper which buffers events before forwarding events to the
 // underlying gRPC stream.
@@ -93,9 +58,6 @@ type BufferedSender struct {
 		syncutil.Mutex
 		stopped bool
 		buffer  *eventQueue
-		// capacity is the maximum number of events that can be buffered.
-		capacity   int64
-		overflowed bool
 	}
 
 	// notifyDataC is used to notify the BufferedSender.run goroutine that there
@@ -110,7 +72,7 @@ type BufferedSender struct {
 }
 
 func NewBufferedSender(
-	sender ServerStreamSender, settings *cluster.Settings, bsMetrics *BufferedSenderMetrics,
+	sender ServerStreamSender, bsMetrics *BufferedSenderMetrics,
 ) *BufferedSender {
 	bs := &BufferedSender{
 		sender:  sender,
@@ -118,8 +80,6 @@ func NewBufferedSender(
 	}
 	bs.queueMu.buffer = newEventQueue()
 	bs.notifyDataC = make(chan struct{}, 1)
-	bs.queueMu.buffer = newEventQueue()
-	bs.queueMu.capacity = RangefeedSingleBufferedSenderQueueMaxSize.Get(&settings.SV)
 	return bs
 }
 
@@ -134,13 +94,6 @@ func (bs *BufferedSender) sendBuffered(
 	defer bs.queueMu.Unlock()
 	if bs.queueMu.stopped {
 		return errors.New("stream sender is stopped")
-	}
-	if bs.queueMu.overflowed {
-		return newRetryErrBufferCapacityExceeded()
-	}
-	if bs.queueMu.capacity > 0 && bs.queueMu.buffer.len() >= bs.queueMu.capacity {
-		bs.queueMu.overflowed = true
-		return newRetryErrBufferCapacityExceeded()
 	}
 	// TODO(wenyihu6): pass an actual context here
 	alloc.Use(context.Background())
@@ -177,7 +130,7 @@ func (bs *BufferedSender) run(
 			return nil
 		case <-bs.notifyDataC:
 			for {
-				e, success, overflowed, remains := bs.popFront()
+				e, success := bs.popFront()
 				if !success {
 					break
 				}
@@ -190,9 +143,6 @@ func (bs *BufferedSender) run(
 				if err != nil {
 					return err
 				}
-				if overflowed && remains == int64(0) {
-					return newRetryErrBufferCapacityExceeded()
-				}
 			}
 		}
 	}
@@ -200,16 +150,11 @@ func (bs *BufferedSender) run(
 
 // popFront pops the front event from the buffer queue. It returns the event and
 // a boolean indicating if the event was successfully popped.
-func (bs *BufferedSender) popFront() (
-	e sharedMuxEvent,
-	success bool,
-	overflowed bool,
-	remains int64,
-) {
+func (bs *BufferedSender) popFront() (e sharedMuxEvent, success bool) {
 	bs.queueMu.Lock()
 	defer bs.queueMu.Unlock()
 	event, ok := bs.queueMu.buffer.popFront()
-	return event, ok, bs.queueMu.overflowed, bs.queueMu.buffer.len()
+	return event, ok
 }
 
 // cleanup is called when the sender is stopped. It is expected to free up
@@ -223,16 +168,11 @@ func (bs *BufferedSender) cleanup(ctx context.Context) {
 	bs.metrics.BufferedSenderQueueSize.Dec(remaining)
 }
 
+// Used for testing only.
 func (bs *BufferedSender) len() int {
 	bs.queueMu.Lock()
 	defer bs.queueMu.Unlock()
 	return int(bs.queueMu.buffer.len())
-}
-
-func (bs *BufferedSender) overflowed() bool {
-	bs.queueMu.Lock()
-	defer bs.queueMu.Unlock()
-	return bs.queueMu.overflowed
 }
 
 // Used for testing only.

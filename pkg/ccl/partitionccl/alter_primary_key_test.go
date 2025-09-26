@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/testutilsccl"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
@@ -17,9 +16,6 @@ import (
 func TestAlterPrimaryKeyCorrectZoneConfigBeforeBackfill(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderDeadlock(t)
-	skip.UnderRace(t)
 
 	testCases := []testutilsccl.AlterPrimaryKeyCorrectZoneConfigTestCase{
 		{
