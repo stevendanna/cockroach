@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -79,7 +80,7 @@ var RangefeedSingleBufferedSenderQueueMaxSize = settings.RegisterIntSetting(
 	settings.SystemOnly,
 	"kv.rangefeed.buffered_sender.queue_max_size",
 	"max size of a buffered senders event queue (0 for no max)",
-	kvserverbase.DefaultRangefeedEventCap*8,
+	kvserverbase.DefaultRangefeedEventCap*32,
 )
 
 // BufferedSender is embedded in every rangefeed.BufferedPerRangeEventSink,
@@ -98,6 +99,15 @@ type BufferedSender struct {
 		// capacity is the maximum number of events that can be buffered.
 		capacity   int64
 		overflowed bool
+	}
+
+	counterMu struct {
+		syncutil.Mutex
+
+		checkpointsIn int64
+		otherIn       int64
+		allOut        int64
+		rejected      int64
 	}
 
 	// notifyDataC is used to notify the BufferedSender.run goroutine that there
@@ -134,18 +144,47 @@ func (bs *BufferedSender) sendBuffered(
 ) error {
 	bs.queueMu.Lock()
 	defer bs.queueMu.Unlock()
+	// TODO(wenyihu6): pass an actual context here
+	ctx := context.Background()
 	if bs.queueMu.stopped {
+		log.KvDistribution.Warningf(ctx, "buffered sender stopped")
 		return errors.New("stream sender is stopped")
 	}
 	if bs.queueMu.overflowed {
+		bs.counterMu.Lock()
+		bs.counterMu.rejected++
+		bs.counterMu.Unlock()
 		return newRetryErrBufferCapacityExceeded()
 	}
 	if bs.queueMu.capacity > 0 && bs.queueMu.buffer.len() >= bs.queueMu.capacity {
+		log.KvDistribution.Warningf(ctx, "buffered sender overflowed")
 		bs.queueMu.overflowed = true
+		bs.counterMu.Lock()
+		bs.counterMu.rejected++
+		bs.counterMu.Unlock()
 		return newRetryErrBufferCapacityExceeded()
 	}
-	// TODO(wenyihu6): pass an actual context here
-	alloc.Use(context.Background())
+
+	func() {
+		bs.counterMu.Lock()
+		defer bs.counterMu.Unlock()
+		if ev.Checkpoint != nil {
+			bs.counterMu.checkpointsIn++
+		} else {
+			bs.counterMu.otherIn++
+		}
+		if bs.counterMu.checkpointsIn > 0 && bs.counterMu.checkpointsIn%10000 == 0 {
+			log.KvDistribution.Infof(ctx,
+				"checkpoints in: %d, other in: %d; all out: %d, rejected: %d",
+				bs.counterMu.checkpointsIn,
+				bs.counterMu.otherIn,
+				bs.counterMu.allOut,
+				bs.counterMu.rejected,
+			)
+		}
+	}()
+
+	alloc.Use(ctx)
 	bs.queueMu.buffer.pushBack(sharedMuxEvent{ev, alloc})
 	bs.metrics.BufferedSenderQueueSize.Inc(1)
 	select {
@@ -183,6 +222,9 @@ func (bs *BufferedSender) run(
 				if !success {
 					break
 				}
+				bs.counterMu.Lock()
+				bs.counterMu.allOut++
+				bs.counterMu.Unlock()
 				bs.metrics.BufferedSenderQueueSize.Dec(1)
 				err := bs.sender.Send(e.ev)
 				e.alloc.Release(ctx)
