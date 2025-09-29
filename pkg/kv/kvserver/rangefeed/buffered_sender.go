@@ -152,7 +152,20 @@ func (bs *BufferedSender) sendBuffered(
 	}
 	if bs.queueMu.overflowed {
 		bs.counterMu.Lock()
-		bs.counterMu.rejected++
+		func() {
+			bs.counterMu.Lock()
+			defer bs.counterMu.Unlock()
+			bs.counterMu.rejected++
+			if bs.counterMu.rejected > 0 && bs.counterMu.rejected%10000 == 0 {
+				log.KvDistribution.Infof(ctx,
+					"checkpoints in: %d, other in: %d; all out: %d, rejected: %d",
+					bs.counterMu.checkpointsIn,
+					bs.counterMu.otherIn,
+					bs.counterMu.allOut,
+					bs.counterMu.rejected,
+				)
+			}
+		}()
 		bs.counterMu.Unlock()
 		return newRetryErrBufferCapacityExceeded()
 	}
