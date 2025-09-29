@@ -296,11 +296,21 @@ func (ubr *unbufferedRegistration) drainAllocations(ctx context.Context) {
 // drainAllocations should never be called concurrently with this function.
 // Caller is responsible for draining it again if error is returned.
 func (ubr *unbufferedRegistration) publishCatchUpBuffer(ctx context.Context) error {
-	publish := func() error {
+	publish := func(underLock bool) error {
+		unbufferedSendCount := 0
 		for {
 			select {
 			case e := <-ubr.mu.catchUpBuf:
-				err := ubr.stream.SendBuffered(e.event, e.alloc)
+				// When not under lock, we use the unbuffered sender to make sure that
+				// any checkpoint events in our buffer are delivered to the client, even
+				// if the buffered sender is at capacity.
+				var err error
+				if underLock || unbufferedSendCount > cap(ubr.mu.catchUpBuf) {
+					err = ubr.stream.SendBuffered(e.event, e.alloc)
+				} else {
+					unbufferedSendCount++
+					err = ubr.stream.SendUnbuffered(e.event)
+				}
 				e.alloc.Release(ctx)
 				putPooledSharedEvent(e)
 				if err != nil {
@@ -316,7 +326,7 @@ func (ubr *unbufferedRegistration) publishCatchUpBuffer(ctx context.Context) err
 	}
 
 	// Drain without holding locks first to avoid unnecessary blocking on publish().
-	if err := publish(); err != nil {
+	if err := publish(false); err != nil {
 		return err
 	}
 
@@ -325,7 +335,7 @@ func (ubr *unbufferedRegistration) publishCatchUpBuffer(ctx context.Context) err
 
 	// Drain again with lock held to ensure that events added to the buffer while
 	// draining took place are also published.
-	if err := publish(); err != nil {
+	if err := publish(true); err != nil {
 		return err
 	}
 
