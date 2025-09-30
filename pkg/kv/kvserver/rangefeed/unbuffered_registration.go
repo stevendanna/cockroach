@@ -201,8 +201,6 @@ func (ubr *unbufferedRegistration) disconnectLocked(pErr *kvpb.Error) {
 	// SendError cleans up metrics and sends error back to client without
 	// blocking.
 	ubr.stream.SendError(pErr)
-	// Clean up unregisters registration from processor async.
-	ubr.removeRegFromProcessor(ubr)
 }
 
 // IsDisconnected returns true if the registration is disconnected.
@@ -210,6 +208,10 @@ func (ubr *unbufferedRegistration) IsDisconnected() bool {
 	ubr.mu.Lock()
 	defer ubr.mu.Unlock()
 	return ubr.mu.disconnected
+}
+
+func (ubr *unbufferedRegistration) Unregister() {
+	ubr.removeRegFromProcessor(ubr)
 }
 
 // runOutputLoop is run in a goroutine. It is short-lived and responsible for
