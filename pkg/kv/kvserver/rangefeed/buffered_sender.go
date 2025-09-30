@@ -125,7 +125,6 @@ type BufferedSender struct {
 type streamStatus struct {
 	queueItems int64
 	overflowed bool
-	errored    bool
 }
 
 func NewBufferedSender(
@@ -160,17 +159,8 @@ func (bs *BufferedSender) sendBuffered(
 	}
 
 	status := bs.queueMu.byStream[ev.StreamID]
-	if status.errored {
-		// Drop events if we already have an error in the queue.
-		return nil
-	}
-
 	if status.overflowed {
 		return newRetryErrBufferCapacityExceeded()
-	}
-
-	if ev.Error != nil {
-		status.errored = true
 	}
 
 	if bs.queueMu.overflowed {
@@ -209,23 +199,26 @@ func (bs *BufferedSender) sendBuffered(
 		}
 		if bs.counterMu.checkpointsIn > 0 && bs.counterMu.checkpointsIn%10000 == 0 {
 			log.KvDistribution.Infof(ctx,
-				"checkpoints in: %d, other in: %d; all out: %d, rejected: %d",
+				"checkpoints in: %d, other in: %d; all out: %d, rejected: %d; streams: %d",
 				bs.counterMu.checkpointsIn,
 				bs.counterMu.otherIn,
 				bs.counterMu.allOut,
 				bs.counterMu.rejected,
+				len(bs.queueMu.byStream),
 			)
 		}
 	}()
 
-	status.queueItems++
 	alloc.Use(ctx)
 	bs.queueMu.buffer.pushBack(sharedMuxEvent{ev, alloc})
+
 	bs.metrics.BufferedSenderQueueSize.Inc(1)
+	status.queueItems++
 	if status.queueItems > kvserverbase.DefaultRangefeedEventCap {
 		status.overflowed = true
 	}
 	bs.queueMu.byStream[ev.StreamID] = status
+
 	select {
 	case bs.notifyDataC <- struct{}{}:
 	default:
@@ -264,6 +257,7 @@ func (bs *BufferedSender) run(
 				bs.counterMu.Lock()
 				bs.counterMu.allOut++
 				bs.counterMu.Unlock()
+
 				bs.metrics.BufferedSenderQueueSize.Dec(1)
 				err := bs.sender.Send(e.ev)
 				e.alloc.Release(ctx)
@@ -292,6 +286,14 @@ func (bs *BufferedSender) popFront() (
 	bs.queueMu.Lock()
 	defer bs.queueMu.Unlock()
 	event, ok := bs.queueMu.buffer.popFront()
+	if ok {
+		state, streamFound := bs.queueMu.byStream[event.ev.StreamID]
+		if streamFound {
+			state.queueItems -= 1
+			bs.queueMu.byStream[event.ev.StreamID] = state
+		}
+	}
+
 	return event, ok, bs.queueMu.overflowed, bs.queueMu.buffer.len()
 }
 
