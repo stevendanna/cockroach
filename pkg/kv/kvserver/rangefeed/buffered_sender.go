@@ -151,7 +151,6 @@ func (bs *BufferedSender) sendBuffered(
 		return errors.New("stream sender is stopped")
 	}
 	if bs.queueMu.overflowed {
-		bs.counterMu.Lock()
 		func() {
 			bs.counterMu.Lock()
 			defer bs.counterMu.Unlock()
@@ -166,7 +165,6 @@ func (bs *BufferedSender) sendBuffered(
 				)
 			}
 		}()
-		bs.counterMu.Unlock()
 		return newRetryErrBufferCapacityExceeded()
 	}
 	if bs.queueMu.capacity > 0 && bs.queueMu.buffer.len() >= bs.queueMu.capacity {
