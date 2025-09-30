@@ -139,6 +139,7 @@ func NewBufferedSender(
 	bs.notifyDataC = make(chan struct{}, 1)
 	bs.queueMu.buffer = newEventQueue()
 	bs.queueMu.capacity = RangefeedSingleBufferedSenderQueueMaxSize.Get(&settings.SV)
+	bs.queueMu.byStream = make(map[int64]streamStatus)
 	return bs
 }
 
@@ -165,7 +166,6 @@ func (bs *BufferedSender) sendBuffered(
 	}
 
 	if status.overflowed {
-		status.errored = true
 		return newRetryErrBufferCapacityExceeded()
 	}
 
