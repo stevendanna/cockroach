@@ -99,6 +99,7 @@ type BufferedSender struct {
 		// capacity is the maximum number of events that can be buffered.
 		capacity   int64
 		overflowed bool
+		byStream   map[int64]streamStatus
 	}
 
 	counterMu struct {
@@ -119,6 +120,12 @@ type BufferedSender struct {
 	// given node. Note that there could be multiple buffered senders in a node,
 	// sharing the metrics.
 	metrics *BufferedSenderMetrics
+}
+
+type streamStatus struct {
+	queueItems int64
+	overflowed bool
+	errored    bool
 }
 
 func NewBufferedSender(
@@ -150,6 +157,22 @@ func (bs *BufferedSender) sendBuffered(
 		log.KvDistribution.Warningf(ctx, "buffered sender stopped")
 		return errors.New("stream sender is stopped")
 	}
+
+	status := bs.queueMu.byStream[ev.StreamID]
+	if status.errored {
+		// Drop events if we already have an error in the queue.
+		return nil
+	}
+
+	if status.overflowed {
+		status.errored = true
+		return newRetryErrBufferCapacityExceeded()
+	}
+
+	if ev.Error != nil {
+		status.errored = true
+	}
+
 	if bs.queueMu.overflowed {
 		func() {
 			bs.counterMu.Lock()
@@ -195,9 +218,14 @@ func (bs *BufferedSender) sendBuffered(
 		}
 	}()
 
+	status.queueItems++
 	alloc.Use(ctx)
 	bs.queueMu.buffer.pushBack(sharedMuxEvent{ev, alloc})
 	bs.metrics.BufferedSenderQueueSize.Inc(1)
+	if status.queueItems > kvserverbase.DefaultRangefeedEventCap {
+		status.overflowed = true
+	}
+	bs.queueMu.byStream[ev.StreamID] = status
 	select {
 	case bs.notifyDataC <- struct{}{}:
 	default:
