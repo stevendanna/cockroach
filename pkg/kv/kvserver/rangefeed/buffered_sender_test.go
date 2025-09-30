@@ -182,7 +182,7 @@ func TestBufferedSenderOnOverflow(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 
 	queueCap := int64(24)
-	RangefeedSingleBufferedSenderQueueMaxSize.Override(ctx, &st.SV, queueCap)
+	RangefeedSingleBufferedSenderQueueMaxPerReg.Override(ctx, &st.SV, queueCap)
 	bs := NewBufferedSender(testServerStream, st, NewBufferedSenderMetrics())
 	require.Equal(t, queueCap, bs.queueMu.capacity)
 
@@ -226,9 +226,9 @@ func TestBufferedSenderOnStreamShutdown(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 
 	queueCap := int64(24)
-	RangefeedSingleBufferedSenderQueueMaxSize.Override(ctx, &st.SV, queueCap)
+	RangefeedSingleBufferedSenderQueueMaxPerReg.Override(ctx, &st.SV, queueCap)
 	bs := NewBufferedSender(testServerStream, st, NewBufferedSenderMetrics())
-	require.Equal(t, queueCap, bs.queueMu.capacity)
+	require.Equal(t, queueCap, bs.queueMu.perStreamcapacity)
 
 	sm := NewStreamManager(bs, smMetrics)
 	require.NoError(t, sm.Start(ctx, stopper))
@@ -278,7 +278,6 @@ func TestBufferedSenderOnStreamShutdown(t *testing.T) {
 	capExceededErrStr := newRetryErrBufferCapacityExceeded().Error()
 	err := sm.sender.sendBuffered(muxEv, nil)
 	require.EqualError(t, err, capExceededErrStr)
-	require.True(t, bs.overflowed())
 
 	unblock()
 	waitForQueueLen(0)
