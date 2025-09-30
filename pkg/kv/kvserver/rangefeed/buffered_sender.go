@@ -80,7 +80,7 @@ var RangefeedSingleBufferedSenderQueueMaxSize = settings.RegisterIntSetting(
 	settings.SystemOnly,
 	"kv.rangefeed.buffered_sender.queue_max_size",
 	"max size of a buffered senders event queue (0 for no max)",
-	kvserverbase.DefaultRangefeedEventCap*32,
+	kvserverbase.DefaultRangefeedEventCap*0,
 )
 
 // BufferedSender is embedded in every rangefeed.BufferedPerRangeEventSink,
