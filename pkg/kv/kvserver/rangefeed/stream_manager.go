@@ -110,7 +110,8 @@ func (sm *StreamManager) NewStream(streamID int64, rangeID roachpb.RangeID) (sin
 func (sm *StreamManager) OnError(streamID int64) {
 	sm.streams.Lock()
 	defer sm.streams.Unlock()
-	if _, ok := sm.streams.m[streamID]; ok {
+	if d, ok := sm.streams.m[streamID]; ok {
+		d.Unregister()
 		delete(sm.streams.m, streamID)
 		sm.metrics.ActiveMuxRangeFeed.Dec(1)
 	}
@@ -197,6 +198,7 @@ func (sm *StreamManager) Stop(ctx context.Context) {
 		// sent to the client after shutdown, but the gRPC stream will still
 		// terminate.
 		disconnector.Disconnect(rangefeedClosedErr)
+		disconnector.Unregister()
 	}
 	sm.streams.m = nil
 }
