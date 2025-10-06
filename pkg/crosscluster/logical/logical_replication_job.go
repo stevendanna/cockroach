@@ -289,10 +289,8 @@ func (r *logicalReplicationResumer) ingest(
 			settings:              &execCfg.Settings.SV,
 			job:                   r.job,
 			frontierUpdates:       heartbeatSender.FrontierUpdates,
-			rangeStats: replicationutils.NewAggregateRangeStatsCollector(
-				planInfo.writeProcessorCount,
-			),
-			r: r,
+			rangeStats:            newRangeStatsCollector(planInfo.writeProcessorCount),
+			r:                     r,
 		}
 		rowResultWriter := sql.NewCallbackResultWriter(rh.handleRow)
 		distSQLReceiver := sql.MakeDistSQLReceiver(
@@ -326,13 +324,35 @@ func (r *logicalReplicationResumer) ingest(
 		return err
 	}
 
-	refreshConn := replicationutils.GetAlterConnectionChecker(
-		r.job.ID(),
-		uris[0].Serialize(),
-		geURIFromLoadedJobDetails,
-		execCfg,
-		confPoller,
-	)
+	refreshConn := func(ctx context.Context) error {
+		ingestionJob := r.job
+		details := ingestionJob.Details().(jobspb.LogicalReplicationDetails)
+		resolvedDest, err := resolveDest(ctx, jobExecCtx.ExecCfg(), details.SourceClusterConnUri)
+		if err != nil {
+			return err
+		}
+		pollingInterval := 2 * time.Minute
+		if knobs := jobExecCtx.ExecCfg().StreamingTestingKnobs; knobs != nil && knobs.ExternalConnectionPollingInterval != nil {
+			pollingInterval = *knobs.ExternalConnectionPollingInterval
+		}
+		t := time.NewTicker(pollingInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-confPoller:
+				return nil
+			case <-t.C:
+				newDest, err := reloadDest(ctx, ingestionJob.ID(), jobExecCtx.ExecCfg())
+				if err != nil {
+					log.Dev.Warningf(ctx, "failed to check for updated configuration: %v", err)
+				} else if newDest != resolvedDest {
+					return errors.Mark(errors.Newf("replan due to detail change: old=%s, new=%s", resolvedDest, newDest), sql.ErrPlanChanged)
+				}
+			}
+		}
+	}
 
 	defer func() {
 		if l := payload.MetricsLabel; l != "" {
@@ -765,7 +785,7 @@ type rowHandler struct {
 	job                   *jobs.Job
 	frontierUpdates       chan hlc.Timestamp
 
-	rangeStats replicationutils.AggregateRangeStatsCollector
+	rangeStats rangeStatsByProcessorID
 
 	lastPartitionUpdate time.Time
 
@@ -1067,8 +1087,29 @@ func getRetryPolicy(knobs *sql.StreamingTestingKnobs) retry.Options {
 	}
 }
 
-func geURIFromLoadedJobDetails(details jobspb.Details) string {
-	return details.(jobspb.LogicalReplicationDetails).SourceClusterConnUri
+func resolveDest(
+	ctx context.Context, execCfg *sql.ExecutorConfig, sourceURI string,
+) (string, error) {
+	configUri, err := streamclient.ParseConfigUri(sourceURI)
+	if err != nil {
+		return "", err
+	}
+
+	clusterUri, err := configUri.AsClusterUri(ctx, execCfg.InternalDB)
+	if err != nil {
+		return "", err
+	}
+
+	return clusterUri.Serialize(), nil
+}
+
+func reloadDest(ctx context.Context, id jobspb.JobID, execCfg *sql.ExecutorConfig) (string, error) {
+	reloadedJob, err := execCfg.JobRegistry.LoadJob(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	newDetails := reloadedJob.Details().(jobspb.LogicalReplicationDetails)
+	return resolveDest(ctx, execCfg, newDetails.SourceClusterConnUri)
 }
 
 func init() {

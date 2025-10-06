@@ -727,19 +727,19 @@ func startGCJob(
 }
 
 func (sc *SchemaChanger) execLogTags() *logtags.Buffer {
-	buf := logtags.BuildBuffer()
-	buf.Add("scExec", nil)
+	buf := &logtags.Buffer{}
+	buf = buf.Add("scExec", nil)
 
-	buf.Add("id", sc.descID)
+	buf = buf.Add("id", sc.descID)
 	if sc.mutationID != descpb.InvalidMutationID {
-		buf.Add("mutation", sc.mutationID)
+		buf = buf.Add("mutation", sc.mutationID)
 	}
 	if sc.droppedDatabaseID != descpb.InvalidID {
-		buf.Add("db", sc.droppedDatabaseID)
+		buf = buf.Add("db", sc.droppedDatabaseID)
 	} else if !sc.droppedSchemaIDs.Empty() {
-		buf.Add("schema", sc.droppedSchemaIDs)
+		buf = buf.Add("schema", sc.droppedSchemaIDs)
 	}
-	return buf.Finish()
+	return buf
 }
 
 // notFirstInLine checks if that this schema changer is at the front of the line
@@ -2256,7 +2256,7 @@ func maybeUpdateZoneConfigsForPKChange(
 
 	// Write the zone back. This call regenerates the index spans that apply
 	// to each partition in the index.
-	err = writeZoneConfig(
+	_, err = writeZoneConfig(
 		ctx, txn, table.ID, table,
 		zoneWithRaw.ZoneConfigProto(), zoneWithRaw.GetRawBytesInStorage(),
 		execCfg, false, kvTrace,
@@ -3573,4 +3573,21 @@ func (p *planner) CanCreateCrossDBSequenceRef() error {
 		)
 	}
 	return nil
+}
+
+// UpdateDescriptorCount updates our sql.schema_changer.object_count gauge with
+// a fresh count of objects in the system.descriptor table.
+func UpdateDescriptorCount(
+	ctx context.Context, execCfg *ExecutorConfig, metric *SchemaChangerMetrics,
+) error {
+	return DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+		row, err := txn.QueryRow(ctx, "sql-schema-changer-object-count", txn.KV(),
+			`SELECT count(*) FROM system.descriptor`)
+		if err != nil {
+			return err
+		}
+		count := *row[0].(*tree.DInt)
+		metric.ObjectCount.Update(int64(count))
+		return nil
+	})
 }

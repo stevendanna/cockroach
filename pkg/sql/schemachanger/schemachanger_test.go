@@ -1165,9 +1165,6 @@ func TestApproxMaxSchemaObjects(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t, "slow test, requires polling to wait for auto stats job")
-	skip.UnderShort(t, "slow test, requires polling to wait for auto stats job")
-
 	ctx := context.Background()
 
 	// Test with both declarative schema changer modes.
@@ -1177,41 +1174,40 @@ func TestApproxMaxSchemaObjects(t *testing.T) {
 			defer s.Stopper().Stop(ctx)
 
 			tdb := sqlutils.MakeSQLRunner(sqlDB)
-			tdb.Exec(t, "SET CLUSTER SETTING sql.stats.automatic_collection.min_stale_rows = 1")
 
 			// Configure the declarative schema changer mode.
 			if useDeclarative {
-				tdb.Exec(t, `SET sql.defaults.use_declarative_schema_changer = 'on'`)
 				tdb.Exec(t, `SET use_declarative_schema_changer = 'on'`)
 			} else {
-				tdb.Exec(t, `SET sql.defaults.use_declarative_schema_changer = 'off'`)
 				tdb.Exec(t, `SET use_declarative_schema_changer = 'off'`)
 			}
 
-			var maxObjects int
-			updateMaxObjects := func() {
-				// Manually refresh stats.
-				tdb.Exec(t, "ANALYZE system.public.descriptor")
+			// Get the current count of descriptors to set a realistic limit.
+			var currentCount int
+			tdb.QueryRow(t, `SELECT count(*) FROM system.descriptor`).Scan(&currentCount)
 
-				// Get the current count of descriptors to set a realistic limit.
-				var currentCount int
-				tdb.QueryRow(t, `SELECT count(*) FROM system.descriptor`).Scan(&currentCount)
+			// Set the limit to be slightly more than current count.
+			maxObjects := currentCount + 5
+			tdb.Exec(t, fmt.Sprintf(`SET CLUSTER SETTING sql.schema.approx_max_object_count = %d`, maxObjects))
 
-				// Set the limit to be slightly more than current count.
-				maxObjects = currentCount + 1
-				tdb.Exec(t, fmt.Sprintf(`SET CLUSTER SETTING sql.schema.approx_max_object_count = %d`, maxObjects))
-			}
-			updateMaxObjects()
+			// Create a test database and use it.
+			tdb.Exec(t, `CREATE DATABASE testdb`)
+			tdb.Exec(t, `USE testdb`)
 
 			// Test that different object types are subject to the limit.
 			objectTypes := []string{"table", "database", "schema", "type", "function"}
 			for _, objectType := range objectTypes {
 				t.Run(objectType, func(t *testing.T) {
 					// Increase the limit before each subtest to avoid interference.
-					updateMaxObjects()
+					maxObjects += 10
+					tdb.Exec(t, fmt.Sprintf(`SET CLUSTER SETTING sql.schema.approx_max_object_count = %d`, maxObjects))
+
+					// Try to create objects until we hit the limit.
+					// ANALYZE before starting to ensure stats are fresh.
+					tdb.Exec(t, `ANALYZE system.descriptor`)
 
 					objNum := 0
-					testutils.SucceedsWithin(t, func() error {
+					for {
 						var createStmt string
 						switch objectType {
 						case "table":
@@ -1228,22 +1224,30 @@ func TestApproxMaxSchemaObjects(t *testing.T) {
 
 						_, err := sqlDB.Exec(createStmt)
 						if err != nil {
-							// Check if we got the expected error and message.
+							// Check if we got the expected error.
 							if pqErr := (*pq.Error)(nil); errors.As(err, &pqErr) {
 								if string(pqErr.Code) == pgcode.ConfigurationLimitExceeded.String() {
-									if testutils.IsError(err, "would exceed approximate maximum") {
-										return nil
-									}
+									// Verify the error message mentions "approximate maximum".
+									testutils.IsError(err, "would exceed approximate maximum")
+									break
 								}
 							}
 							// Some other error occurred.
-							return err
+							t.Fatal(err)
 						}
 						objNum++
 
-						// Haven't hit the limit yet, keep trying.
-						return errors.Errorf("created %d %ss without hitting limit (max=%d)", objNum, objectType, maxObjects)
-					}, 5*time.Minute)
+						// Re-analyze periodically to update stats.
+						if objNum%2 == 0 {
+							tdb.Exec(t, `ANALYZE system.descriptor`)
+						}
+
+						// Safety check: if we created way more objects than expected,
+						// something is wrong.
+						if objNum > 30 {
+							t.Fatalf("created %d %ss without hitting limit (max=%d)", objNum, objectType, maxObjects)
+						}
+					}
 				})
 			}
 		})

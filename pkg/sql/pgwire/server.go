@@ -952,10 +952,8 @@ func (s *Server) ServeConn(
 	// been overridden by a status parameter).
 	connDetails.RemoteAddress = sArgs.RemoteAddr.String()
 	sp := tracing.SpanFromContext(ctx)
-	tags := logtags.BuildBuffer()
-	tags.Add("client", log.SafeOperational(connDetails.RemoteAddress))
-	tags.Add(preServeStatus.ConnType.String(), nil)
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	ctx = logtags.AddTag(ctx, "client", log.SafeOperational(connDetails.RemoteAddress))
+	ctx = logtags.AddTag(ctx, preServeStatus.ConnType.String(), nil)
 	sp.SetTag("conn_type", attribute.StringValue(preServeStatus.ConnType.String()))
 	sp.SetTag("client", attribute.StringValue(connDetails.RemoteAddress))
 

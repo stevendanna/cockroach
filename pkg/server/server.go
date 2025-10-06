@@ -1707,6 +1707,7 @@ func (s *topLevelServer) PreStart(ctx context.Context) error {
 		s.cfg.AmbientCtx,
 		s.rpcContext,
 		s.stopper,
+		s.grpc,
 		s.cfg.AdvertiseAddr,
 	)
 	if err != nil {

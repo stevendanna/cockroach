@@ -1203,13 +1203,6 @@ func TestReadCommittedLogic_jsonb_path_exists(
 	runLogicTest(t, "jsonb_path_exists")
 }
 
-func TestReadCommittedLogic_jsonb_path_exists_index_acceleration(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists_index_acceleration")
-}
-
 func TestReadCommittedLogic_jsonb_path_match(
 	t *testing.T,
 ) {
@@ -3014,6 +3007,13 @@ func TestReadCommittedExecBuild_fk_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "fk_read_committed")
+}
+
+func TestReadCommittedExecBuild_geospatial(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "geospatial")
 }
 
 func TestReadCommittedExecBuild_select_for_update_read_committed(

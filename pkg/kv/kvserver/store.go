@@ -99,7 +99,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil/singleflight"
-	"github.com/cockroachdb/cockroach/pkg/util/taskpacer"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
@@ -2578,7 +2577,7 @@ func (s *Store) startRangefeedUpdater(ctx context.Context) {
 		//   the rate of processing in accordance with the time remaining until the
 		//   refresh interval ends.
 		conf := newRangeFeedUpdaterConf(s.cfg.Settings)
-		pacer := taskpacer.New(conf)
+		pacer := NewTaskPacer(conf)
 		for {
 			// Configuration may have changed between runs, load it unconditionally.
 			// This will block until an "active" configuration exists, i.e. a one with
