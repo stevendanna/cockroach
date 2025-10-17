@@ -1334,6 +1334,8 @@ GO_TARGETS = [
     "//pkg/cmd/vecbench:vecbench_lib",
     "//pkg/cmd/whoownsit:whoownsit",
     "//pkg/cmd/whoownsit:whoownsit_lib",
+    "//pkg/cmd/workload-hist-viz:workload-hist-viz",
+    "//pkg/cmd/workload-hist-viz:workload-hist-viz_lib",
     "//pkg/cmd/workload:workload",
     "//pkg/cmd/workload:workload_lib",
     "//pkg/cmd/wraprules:wraprules",

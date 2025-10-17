@@ -1,0 +1,22 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "workload-hist-viz_lib",
+    srcs = [
+        "html.go",
+        "main.go",
+    ],
+    embedsrcs = ["template.html"],
+    importpath = "github.com/cockroachdb/cockroach/pkg/cmd/workload-hist-viz",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/workload/histogram/exporter",
+        "@com_github_codahale_hdrhistogram//:hdrhistogram",
+    ],
+)
+
+go_binary(
+    name = "workload-hist-viz",
+    embed = [":workload-hist-viz_lib"],
+    visibility = ["//visibility:public"],
+)

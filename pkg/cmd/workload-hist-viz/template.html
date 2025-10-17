@@ -1,0 +1,502 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>{{.Title}}</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        margin: 20px;
+        background-color: #f5f5f5;
+      }
+      h1 {
+        color: #333;
+        text-align: center;
+      }
+      .controls-section {
+        background: white;
+        margin: 20px auto;
+        padding: 0;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        max-width: 1400px;
+      }
+      .controls-header {
+        font-size: 18px;
+        font-weight: 600;
+        color: #333;
+        padding: 15px 20px;
+        cursor: pointer;
+        user-select: none;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .controls-header:hover {
+        background-color: #f8f9fa;
+      }
+      .controls-content {
+        padding: 20px;
+        display: none;
+      }
+      .controls-content.expanded {
+        display: block;
+      }
+      .toggle-icon {
+        transition: transform 0.3s;
+      }
+      .toggle-icon.expanded {
+        transform: rotate(180deg);
+      }
+      .control-group {
+        margin-bottom: 15px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .control-group label {
+        font-weight: 500;
+        min-width: 120px;
+      }
+      .control-group input {
+        padding: 5px 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      .control-group button {
+        padding: 6px 15px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .control-group button:hover {
+        background-color: #0056b3;
+      }
+      .chart-section {
+        background: white;
+        margin: 20px auto;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        max-width: 1400px;
+      }
+      .chart-title {
+        font-size: 24px;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 20px;
+        padding-bottom: 10px;
+        border-bottom: 2px solid #e0e0e0;
+      }
+      .chart {
+        height: 500px;
+      }
+      .marker-list {
+        margin-top: 20px;
+        padding-top: 15px;
+        border-top: 1px solid #e0e0e0;
+      }
+      .marker-list-title {
+        font-weight: 600;
+        margin-bottom: 10px;
+        color: #555;
+      }
+      .marker-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        margin-bottom: 5px;
+        background-color: #f8f9fa;
+        border-radius: 4px;
+      }
+      .marker-item-text {
+        flex-grow: 1;
+      }
+      .delete-btn {
+        padding: 4px 10px;
+        background-color: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .delete-btn:hover {
+        background-color: #c82333;
+      }
+      .empty-list {
+        color: #999;
+        font-style: italic;
+        padding: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>{{.Title}}</h1>
+
+    <div class="chart-section">
+      <div class="chart-title">Operations per Second</div>
+      <div id="throughput-chart" class="chart"></div>
+    </div>
+
+    <div class="chart-section">
+      <div class="chart-title">p95 Latency</div>
+      <div id="latency-chart" class="chart"></div>
+    </div>
+
+    <div class="controls-section">
+      <div class="controls-header" onclick="toggleControls()">
+        <span>Markers</span>
+        <span class="toggle-icon" id="toggle-icon">▼</span>
+      </div>
+      <div class="controls-content" id="controls-content">
+        <div class="control-group">
+          <label>Vertical Line:</label>
+          <input
+            type="text"
+            id="vline-offset"
+            placeholder="Duration (e.g., 5m, 30s)"
+          />
+          <input type="text" id="vline-label" placeholder="Label" />
+          <button onclick="addVLine()">Add Vertical Line</button>
+        </div>
+
+        <div class="control-group">
+          <label>Horizontal (Ops):</label>
+          <input type="number" id="hline-ops-value" placeholder="Value" />
+          <input type="text" id="hline-ops-label" placeholder="Label" />
+          <button onclick="addHLineOps()">Add to Ops Chart</button>
+        </div>
+
+        <div class="control-group">
+          <label>Horizontal (Latency):</label>
+          <input
+            type="number"
+            id="hline-latency-value"
+            placeholder="Value (ms)"
+          />
+          <input type="text" id="hline-latency-label" placeholder="Label" />
+          <button onclick="addHLineLatency()">Add to Latency Chart</button>
+        </div>
+
+        <div class="marker-list">
+          <div class="marker-list-title">Vertical Lines</div>
+          <div id="vline-list"></div>
+        </div>
+
+        <div class="marker-list">
+          <div class="marker-list-title">Horizontal Lines (Ops)</div>
+          <div id="hline-ops-list"></div>
+        </div>
+
+        <div class="marker-list">
+          <div class="marker-list-title">Horizontal Lines (Latency)</div>
+          <div id="hline-latency-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Toggle controls section
+      function toggleControls() {
+          const content = document.getElementById('controls-content');
+          const icon = document.getElementById('toggle-icon');
+          content.classList.toggle('expanded');
+          icon.classList.toggle('expanded');
+      }
+
+      // Origin timestamp (first data point)
+      const originTime = new Date({{.OriginTime}});
+      console.log('Origin time:', originTime.toISOString());
+
+      // Initial marker data from command line
+      let vlineMarkers = {{.VLinesJSON}};
+      let hlineOpsMarkers = {{.HLinesOpsJSON}};
+      let hlineLatencyMarkers = {{.HLinesLatencyJSON}};
+
+      // Metric data
+      const metricsData = [
+          {{range .Metrics}}
+          {
+              x: {{.TimestampsJSON}},
+              y: {{.OpsPerSecJSON}},
+              type: 'scatter',
+              mode: 'lines',
+              name: '{{.Name}}',
+              line: {width: 2}
+          },
+          {{end}}
+      ];
+
+      const latencyData = [
+          {{range .Metrics}}
+          {
+              x: {{.TimestampsJSON}},
+              y: {{.P95JSON}},
+              type: 'scatter',
+              mode: 'lines',
+              name: '{{.Name}}',
+              line: {width: 2}
+          },
+          {{end}}
+      ];
+
+      // Convert time offset to timestamp (returns ISO string to match chart data format)
+      function offsetToTimestamp(offsetMs) {
+          const result = new Date(originTime.getTime() + offsetMs);
+          console.log('Offset', offsetMs, 'ms from origin', originTime.toISOString(), '=', result.toISOString());
+          // Return ISO string instead of Date object to match the chart's x-axis format
+          return result.toISOString();
+      }
+
+      // Parse duration string (e.g., "5m", "30s") to milliseconds
+      function parseDuration(str) {
+          const match = str.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/);
+          if (!match) {
+              throw new Error('Invalid duration format. Use format like: 5m, 30s, 100ms');
+          }
+          const value = parseFloat(match[1]);
+          const unit = match[2];
+          const multipliers = { ms: 1, s: 1000, m: 60000, h: 3600000 };
+          return value * multipliers[unit];
+      }
+
+      // Generate shapes and annotations for markers
+      function generateMarkers(vlines, hlines) {
+          const shapes = [];
+          const annotations = [];
+
+          // Vertical lines
+          if (vlines) {
+              vlines.forEach(vline => {
+                  const timestamp = offsetToTimestamp(vline.offset);
+                  shapes.push({
+                      type: 'line',
+                      x0: timestamp,
+                      x1: timestamp,
+                      y0: 0,
+                      y1: 1,
+                      yref: 'paper',
+                      line: {
+                          color: 'red',
+                          width: 2,
+                          dash: 'dash'
+                      }
+                  });
+                  if (vline.label) {
+                      annotations.push({
+                          x: timestamp,
+                          y: 1,
+                          yref: 'paper',
+                          text: vline.label,
+                          showarrow: false,
+                          xanchor: 'left',
+                          yanchor: 'bottom',
+                          textangle: -90,
+                          font: { size: 12, color: 'red' }
+                      });
+                  }
+              });
+          }
+
+          // Horizontal lines
+          if (hlines) {
+              hlines.forEach(hline => {
+                  shapes.push({
+                      type: 'line',
+                      x0: 0,
+                      x1: 1,
+                      xref: 'paper',
+                      y0: hline.value,
+                      y1: hline.value,
+                      line: {
+                          color: 'orange',
+                          width: 2,
+                          dash: 'dash'
+                      }
+                  });
+                  if (hline.label) {
+                      annotations.push({
+                          x: 1,
+                          xref: 'paper',
+                          y: hline.value,
+                          text: hline.label,
+                          showarrow: false,
+                          xanchor: 'left',
+                          yanchor: 'middle',
+                          font: { size: 12, color: 'orange' }
+                      });
+                  }
+              });
+          }
+
+          return { shapes, annotations };
+      }
+
+      // Format duration for display
+      function formatDuration(ms) {
+          if (ms < 1000) return ms + 'ms';
+          if (ms < 60000) return (ms / 1000) + 's';
+          if (ms < 3600000) return (ms / 60000) + 'm';
+          return (ms / 3600000) + 'h';
+      }
+
+      // Update marker list displays
+      function updateMarkerLists() {
+          // Update vertical lines list
+          const vlineList = document.getElementById('vline-list');
+          if (vlineMarkers.length === 0) {
+              vlineList.innerHTML = '<div class="empty-list">No vertical lines</div>';
+          } else {
+              vlineList.innerHTML = vlineMarkers.map((marker, index) => `
+                  <div class="marker-item">
+                      <span class="marker-item-text">${formatDuration(marker.offset)}: ${marker.label || '(no label)'}</span>
+                      <button class="delete-btn" onclick="deleteVLine(${index})">Delete</button>
+                  </div>
+              `).join('');
+          }
+
+          // Update horizontal lines (ops) list
+          const hlineOpsList = document.getElementById('hline-ops-list');
+          if (hlineOpsMarkers.length === 0) {
+              hlineOpsList.innerHTML = '<div class="empty-list">No horizontal lines</div>';
+          } else {
+              hlineOpsList.innerHTML = hlineOpsMarkers.map((marker, index) => `
+                  <div class="marker-item">
+                      <span class="marker-item-text">${marker.value}: ${marker.label || '(no label)'}</span>
+                      <button class="delete-btn" onclick="deleteHLineOps(${index})">Delete</button>
+                  </div>
+              `).join('');
+          }
+
+          // Update horizontal lines (latency) list
+          const hlineLatencyList = document.getElementById('hline-latency-list');
+          if (hlineLatencyMarkers.length === 0) {
+              hlineLatencyList.innerHTML = '<div class="empty-list">No horizontal lines</div>';
+          } else {
+              hlineLatencyList.innerHTML = hlineLatencyMarkers.map((marker, index) => `
+                  <div class="marker-item">
+                      <span class="marker-item-text">${marker.value}ms: ${marker.label || '(no label)'}</span>
+                      <button class="delete-btn" onclick="deleteHLineLatency(${index})">Delete</button>
+                  </div>
+              `).join('');
+          }
+      }
+
+      // Delete vertical line
+      function deleteVLine(index) {
+          vlineMarkers.splice(index, 1);
+          updateMarkerLists();
+          renderCharts();
+      }
+
+      // Delete horizontal line (ops)
+      function deleteHLineOps(index) {
+          hlineOpsMarkers.splice(index, 1);
+          updateMarkerLists();
+          renderCharts();
+      }
+
+      // Delete horizontal line (latency)
+      function deleteHLineLatency(index) {
+          hlineLatencyMarkers.splice(index, 1);
+          updateMarkerLists();
+          renderCharts();
+      }
+
+      // Render charts with markers
+      function renderCharts() {
+          const opsMarkers = generateMarkers(vlineMarkers, hlineOpsMarkers);
+          Plotly.newPlot('throughput-chart', metricsData, {
+              xaxis: {title: 'Time'},
+              yaxis: {title: 'Operations per Second'},
+              hovermode: 'x unified',
+              showlegend: true,
+              legend: {x: 1.05, y: 1},
+              shapes: opsMarkers.shapes,
+              annotations: opsMarkers.annotations
+          }, {responsive: true});
+
+          const latencyMarkers = generateMarkers(vlineMarkers, hlineLatencyMarkers);
+          Plotly.newPlot('latency-chart', latencyData, {
+              xaxis: {title: 'Time'},
+              yaxis: {title: 'Latency (ms)'},
+              hovermode: 'x unified',
+              showlegend: true,
+              legend: {x: 1.05, y: 1},
+              shapes: latencyMarkers.shapes,
+              annotations: latencyMarkers.annotations
+          }, {responsive: true});
+      }
+
+      // Add vertical line
+      function addVLine() {
+          const offsetStr = document.getElementById('vline-offset').value;
+          const label = document.getElementById('vline-label').value;
+
+          try {
+              const offsetMs = parseDuration(offsetStr);
+              vlineMarkers.push({ offset: offsetMs, label: label });
+              updateMarkerLists();
+              renderCharts();
+
+              // Clear inputs
+              document.getElementById('vline-offset').value = '';
+              document.getElementById('vline-label').value = '';
+          } catch (e) {
+              alert(e.message);
+          }
+      }
+
+      // Add horizontal line to ops chart
+      function addHLineOps() {
+          const value = parseFloat(document.getElementById('hline-ops-value').value);
+          const label = document.getElementById('hline-ops-label').value;
+
+          if (isNaN(value)) {
+              alert('Please enter a valid numeric value');
+              return;
+          }
+
+          hlineOpsMarkers.push({ value: value, label: label });
+          updateMarkerLists();
+          renderCharts();
+
+          // Clear inputs
+          document.getElementById('hline-ops-value').value = '';
+          document.getElementById('hline-ops-label').value = '';
+      }
+
+      // Add horizontal line to latency chart
+      function addHLineLatency() {
+          const value = parseFloat(document.getElementById('hline-latency-value').value);
+          const label = document.getElementById('hline-latency-label').value;
+
+          if (isNaN(value)) {
+              alert('Please enter a valid numeric value');
+              return;
+          }
+
+          hlineLatencyMarkers.push({ value: value, label: label });
+          updateMarkerLists();
+          renderCharts();
+
+          // Clear inputs
+          document.getElementById('hline-latency-value').value = '';
+          document.getElementById('hline-latency-label').value = '';
+      }
+
+      // Initial render
+      updateMarkerLists();
+      renderCharts();
+    </script>
+  </body>
+</html>
