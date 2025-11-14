@@ -18,7 +18,6 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
@@ -457,13 +456,9 @@ func (dsp *DistSQLPlanner) setupFlows(
 	if len(statementSQL) > setupFlowRequestStmtMaxLength {
 		statementSQL = statementSQL[:setupFlowRequestStmtMaxLength]
 	}
-	v := execversion.V25_2
-	if dsp.st.Version.IsActive(ctx, clusterversion.V25_4) {
-		v = execversion.V25_4
-	}
 	setupReq := execinfrapb.SetupFlowRequest{
 		LeafTxnInputState: leafInputState,
-		Version:           v,
+		Version:           execversion.V25_2,
 		TraceKV:           recv.tracing.KVTracingEnabled(),
 		CollectStats:      planCtx.collectExecStats,
 		StatementSQL:      statementSQL,
@@ -750,7 +745,7 @@ func (dsp *DistSQLPlanner) Run(
 	// the line.
 	localState.EvalContext = evalCtx
 	localState.IsLocal = planCtx.isLocal
-	localState.MustUseLeaf = planCtx.mustUseLeafTxn
+	localState.AddConcurrency(planCtx.flowConcurrency)
 	localState.Txn = txn
 	localState.LocalProcs = plan.LocalProcessors
 	localState.LocalVectorSources = plan.LocalVectorSources
@@ -773,7 +768,9 @@ func (dsp *DistSQLPlanner) Run(
 		// cannot create a LeafTxn, so we cannot parallelize scans.
 		planCtx.parallelizeScansIfLocal = false
 		for _, flow := range flows {
-			localState.HasConcurrency = localState.HasConcurrency || execinfra.HasParallelProcessors(flow)
+			if execinfra.HasParallelProcessors(flow) {
+				localState.AddConcurrency(distsql.ConcurrencyHasParallelProcessors)
+			}
 		}
 	} else {
 		if planCtx.isLocal && noMutations && planCtx.parallelizeScansIfLocal {
@@ -781,7 +778,9 @@ func (dsp *DistSQLPlanner) Run(
 			// have decided to parallelize the scans. If that's the case, we
 			// will need to use the Leaf txn.
 			for _, flow := range flows {
-				localState.HasConcurrency = localState.HasConcurrency || execinfra.HasParallelProcessors(flow)
+				if execinfra.HasParallelProcessors(flow) {
+					localState.AddConcurrency(distsql.ConcurrencyHasParallelProcessors)
+				}
 			}
 		}
 		if noMutations {
@@ -824,12 +823,43 @@ func (dsp *DistSQLPlanner) Run(
 			// which are using the internal executor is error-prone, so we just
 			// disable the Streamer API for the "super-set" of problematic
 			// cases.
+			//
+			// Furthermore, when we have buffered some writes and a system
+			// column that requires MVCC decoding is requested, we disable the
+			// usage of the streamer since we must have access to the RootTxn to
+			// handle such scenario.
+			// TODO(#144166): relax this.
 			mustUseRootTxn := func() bool {
 				for _, p := range plan.Processors {
 					if n := p.Spec.Core.LocalPlanNode; n != nil {
 						if localPlanNodeMightUseTxn(n) {
 							log.VEventf(ctx, 3, "must use root txn due to %q wrapped planNode", n.Name)
 							return true
+						}
+					} else if txn.HasBufferedWrites() {
+						switch {
+						case p.Spec.Core.TableReader != nil:
+							if fetchSpecRequiresMVCCDecoding(p.Spec.Core.TableReader.FetchSpec) {
+								log.VEventf(ctx, 3, "must use root txn due to system column that requires MVCC decoding")
+								return true
+							}
+						case p.Spec.Core.JoinReader != nil:
+							if fetchSpecRequiresMVCCDecoding(p.Spec.Core.JoinReader.FetchSpec) {
+								log.VEventf(ctx, 3, "must use root txn due to system column that requires MVCC decoding")
+								return true
+							}
+						case p.Spec.Core.InvertedJoiner != nil:
+							if fetchSpecRequiresMVCCDecoding(p.Spec.Core.InvertedJoiner.FetchSpec) {
+								log.VEventf(ctx, 3, "must use root txn due to system column that requires MVCC decoding")
+								return true
+							}
+						case p.Spec.Core.ZigzagJoiner != nil:
+							for _, side := range p.Spec.Core.ZigzagJoiner.Sides {
+								if fetchSpecRequiresMVCCDecoding(side.FetchSpec) {
+									log.VEventf(ctx, 3, "must use root txn due to system column that requires MVCC decoding")
+									return true
+								}
+							}
 						}
 					}
 				}
@@ -840,15 +870,10 @@ func (dsp *DistSQLPlanner) Run(
 			// that we might have a plan where some expression (e.g. a cast to
 			// an Oid type) uses the planner's txn (which is the RootTxn), so
 			// it'd be illegal to use LeafTxns for a part of such plan.
-			// TODO(yuzefovich): this check is both excessive and insufficient.
-			// For example:
-			// - it disables the usage of the Streamer when a subquery has an
-			// Oid type, but that would have no impact on usage of the Streamer
-			// in the main query;
-			// - it might allow the usage of the Streamer even when the internal
-			// executor is used by a part of the plan, and the IE would use the
-			// RootTxn. Arguably, this would be a bug in not prohibiting the
-			// DistSQL altogether.
+			// TODO(yuzefovich): this check could be excessive. For example, it
+			// disables the usage of the Streamer when a subquery has an Oid
+			// type (due to a serialization issue), but that would have no
+			// impact on usage of the Streamer in the main query.
 			if !containsLocking && !mustUseRootTxn && planCtx.distSQLProhibitedErr == nil {
 				if evalCtx.SessionData().StreamerEnabled {
 					for _, proc := range plan.Processors {
@@ -856,7 +881,7 @@ func (dsp *DistSQLPlanner) Run(
 							// Both index and lookup joins, with and without
 							// ordering, are executed via the Streamer API that has
 							// concurrency.
-							localState.HasConcurrency = true
+							localState.AddConcurrency(distsql.ConcurrencyStreamer)
 							break
 						}
 					}
@@ -875,7 +900,7 @@ func (dsp *DistSQLPlanner) Run(
 			}
 			tis, err := txn.GetLeafTxnInputState(ctx, readsTree)
 			if err != nil {
-				log.Dev.Infof(ctx, "%s: %s", clientRejectedMsg, err)
+				log.Infof(ctx, "%s: %s", clientRejectedMsg, err)
 				recv.SetError(err)
 				return
 			}
@@ -977,6 +1002,41 @@ func (dsp *DistSQLPlanner) Run(
 	if err != nil {
 		recv.SetError(err)
 		return
+	}
+
+	if len(flows) == 1 && planCtx.planner != nil {
+		// We have a fully local plan, so check whether it'll be safe to use the
+		// DistSQLReceiver to push the metadata into directly from routines
+		// (which is the case when we don't have any concurrency between
+		// routines themselves as well as a routine and the "head" processor -
+		// the one pushing into the DistSQLReceiver).
+		var safe bool
+		if evalCtx.Txn != nil && evalCtx.Txn.Type() == kv.RootTxn {
+			// We have a RootTxn, so we don't expect any concurrency whatsoever.
+			safe = true
+		} else {
+			// We have a LeafTxn, so we need to examine what kind of concurrency
+			// is present in the flow.
+			var safeConcurrency distsql.ConcurrencyKind
+			// We don't care whether we use the Streamer API - it has
+			// concurrency only at the KV client level and below.
+			safeConcurrency |= distsql.ConcurrencyStreamer
+			// If we have "outer plan" concurrency, the "inner" and the
+			// "outer" plans have their own DistSQLReceivers.
+			//
+			// Note that the same is the case with parallel CHECKs concurrency,
+			// but then planCtx.planner is shared between goroutines, so we'll
+			// avoid mutating it. (We can't have routines in post-query CHECKs
+			// since only FK and UNIQUE checks are run in parallel.)
+			safeConcurrency |= distsql.ConcurrencyWithOuterPlan
+			unsafeConcurrency := ^safeConcurrency
+			if localState.GetConcurrency()&unsafeConcurrency == 0 {
+				safe = true
+			}
+		}
+		if safe {
+			planCtx.planner.routineMetadataForwarder = recv
+		}
 	}
 
 	if finishedSetupFn != nil {
@@ -1105,6 +1165,8 @@ type DistSQLReceiver struct {
 	}
 }
 
+var _ metadataForwarder = &DistSQLReceiver{}
+
 // rowResultWriter is a subset of CommandResult to be used with the
 // DistSQLReceiver. It's implemented by RowResultWriter.
 type rowResultWriter interface {
@@ -1168,12 +1230,12 @@ func NewMetadataCallbackWriter(
 // NewMetadataOnlyMetadataCallbackWriter creates a new MetadataCallbackWriter
 // that uses errOnlyResultWriter and only supports receiving
 // execinfrapb.ProducerMetadata.
-func NewMetadataOnlyMetadataCallbackWriter(
-	metaFn func(ctx context.Context, meta *execinfrapb.ProducerMetadata) error,
-) *MetadataCallbackWriter {
+func NewMetadataOnlyMetadataCallbackWriter() *MetadataCallbackWriter {
 	return NewMetadataCallbackWriter(
 		&errOnlyResultWriter{},
-		metaFn,
+		func(ctx context.Context, meta *execinfrapb.ProducerMetadata) error {
+			return nil
+		},
 	)
 }
 
@@ -1477,6 +1539,35 @@ func (r *DistSQLReceiver) checkConcurrentError() {
 	}
 }
 
+type metadataForwarder interface {
+	forwardMetadata(metadata *execinfrapb.ProducerMetadata)
+}
+
+// forwardInnerQueryStats propagates the query stats of "inner" plans as
+// metadata via the forwarder.
+func forwardInnerQueryStats(f metadataForwarder, stats topLevelQueryStats) {
+	if !buildutil.CrdbTestBuild && f == nil {
+		// Safety measure in production builds in case the forwarder is nil for
+		// some reason.
+		return
+	}
+	meta := execinfrapb.GetProducerMeta()
+	meta.Metrics = execinfrapb.GetMetricsMeta()
+	meta.Metrics.BytesRead = stats.bytesRead
+	meta.Metrics.RowsRead = stats.rowsRead
+	meta.Metrics.RowsWritten = stats.rowsWritten
+	// stats.networkEgressEstimate and stats.clientTime are ignored since they
+	// only matter at the "true" top-level query (and actually should be zero
+	// here anyway).
+	f.forwardMetadata(meta)
+}
+
+func (r *DistSQLReceiver) forwardMetadata(metadata *execinfrapb.ProducerMetadata) {
+	// Note that we don't use pushMeta method directly in order to go through
+	// the testing callback path.
+	r.Push(nil /* row */, metadata)
+}
+
 // pushMeta takes in non-empty metadata object and pushes it to the result
 // writer. Possibly updated status is returned.
 func (r *DistSQLReceiver) pushMeta(meta *execinfrapb.ProducerMetadata) execinfra.ConsumerStatus {
@@ -1513,6 +1604,8 @@ func (r *DistSQLReceiver) pushMeta(meta *execinfrapb.ProducerMetadata) execinfra
 		r.stats.bytesRead += meta.Metrics.BytesRead
 		r.stats.rowsRead += meta.Metrics.RowsRead
 		r.stats.rowsWritten += meta.Metrics.RowsWritten
+		r.stats.indexRowsWritten += meta.Metrics.IndexRowsWritten
+		r.stats.indexBytesWritten += meta.Metrics.IndexBytesWritten
 		if r.progressAtomic != nil && r.expectedRowsRead != 0 {
 			progress := float64(r.stats.rowsRead) / float64(r.expectedRowsRead)
 			atomic.StoreUint64(r.progressAtomic, math.Float64bits(progress))
@@ -1798,7 +1891,7 @@ func (dsp *DistSQLPlanner) PlanAndRunAll(
 			// Skip the diagram generation since on this "main" query path we
 			// can get it via the statement bundle.
 			true,  /* skipDistSQLDiagramGeneration */
-			false, /* mustUseLeafTxn */
+			false, /* innerPlansMustUseLeafTxn */
 		) {
 			return recv.commErr
 		}
@@ -1823,7 +1916,10 @@ func (dsp *DistSQLPlanner) PlanAndRunAll(
 		}
 		if !p.resumableFlow.cleanup.isComplete {
 			p.resumableFlow.cleanup.appendFunc(func(ctx context.Context) {
-				p.resumableFlow.flow.Cleanup(ctx)
+				if p.resumableFlow.flow != nil {
+					p.resumableFlow.flow.Cleanup(ctx)
+					p.resumableFlow.flow = nil
+				}
 			})
 		}
 	}
@@ -1862,7 +1958,7 @@ func (dsp *DistSQLPlanner) PlanAndRunSubqueries(
 	recv *DistSQLReceiver,
 	subqueryResultMemAcc *mon.BoundAccount,
 	skipDistSQLDiagramGeneration bool,
-	mustUseLeafTxn bool,
+	innerPlansMustUseLeafTxn bool,
 ) bool {
 	for planIdx, subqueryPlan := range subqueryPlans {
 		if err := dsp.planAndRunSubquery(
@@ -1875,7 +1971,7 @@ func (dsp *DistSQLPlanner) PlanAndRunSubqueries(
 			recv,
 			subqueryResultMemAcc,
 			skipDistSQLDiagramGeneration,
-			mustUseLeafTxn,
+			innerPlansMustUseLeafTxn,
 		); err != nil {
 			recv.SetError(err)
 			return false
@@ -1899,12 +1995,9 @@ func (dsp *DistSQLPlanner) planAndRunSubquery(
 	recv *DistSQLReceiver,
 	subqueryResultMemAcc *mon.BoundAccount,
 	skipDistSQLDiagramGeneration bool,
-	mustUseLeafTxn bool,
+	innerPlansMustUseLeafTxn bool,
 ) error {
-	subqueryDistribution, distSQLProhibitedErr := getPlanDistribution(
-		ctx, planner.Descriptors().HasUncommittedTypes(),
-		planner.SessionData(), subqueryPlan.plan, &planner.distSQLVisitor,
-	)
+	subqueryDistribution, distSQLProhibitedErr := planner.getPlanDistribution(ctx, subqueryPlan.plan)
 	distribute := DistributionType(LocalDistribution)
 	if subqueryDistribution.WillDistribute() {
 		distribute = FullDistribution
@@ -1914,7 +2007,9 @@ func (dsp *DistSQLPlanner) planAndRunSubquery(
 	subqueryPlanCtx.stmtType = tree.Rows
 	subqueryPlanCtx.skipDistSQLDiagramGeneration = skipDistSQLDiagramGeneration
 	subqueryPlanCtx.subOrPostQuery = true
-	subqueryPlanCtx.mustUseLeafTxn = mustUseLeafTxn
+	if innerPlansMustUseLeafTxn {
+		subqueryPlanCtx.flowConcurrency = distsql.ConcurrencyWithOuterPlan
+	}
 	if planner.instrumentation.ShouldSaveFlows() {
 		subqueryPlanCtx.saveFlows = getDefaultSaveFlowsFunc(ctx, planner, planComponentTypeSubquery)
 	}
@@ -2512,10 +2607,7 @@ func (dsp *DistSQLPlanner) planAndRunPostquery(
 	associateNodeWithComponents func(exec.Node, execComponents),
 	addTopLevelQueryStats func(stats *topLevelQueryStats),
 ) error {
-	postqueryDistribution, distSQLProhibitedErr := getPlanDistribution(
-		ctx, planner.Descriptors().HasUncommittedTypes(),
-		planner.SessionData(), postqueryPlan, &planner.distSQLVisitor,
-	)
+	postqueryDistribution, distSQLProhibitedErr := planner.getPlanDistribution(ctx, postqueryPlan)
 	distribute := DistributionType(LocalDistribution)
 	if postqueryDistribution.WillDistribute() {
 		distribute = FullDistribution
@@ -2532,7 +2624,9 @@ func (dsp *DistSQLPlanner) planAndRunPostquery(
 	}
 	postqueryPlanCtx.associateNodeWithComponents = associateNodeWithComponents
 	postqueryPlanCtx.collectExecStats = planner.instrumentation.ShouldCollectExecStats()
-	postqueryPlanCtx.mustUseLeafTxn = parallelCheck
+	if parallelCheck {
+		postqueryPlanCtx.flowConcurrency = distsql.ConcurrencyParallelChecks
+	}
 
 	postqueryPhysPlan, physPlanCleanup, err := dsp.createPhysPlan(ctx, postqueryPlanCtx, postqueryPlan)
 	defer physPlanCleanup()

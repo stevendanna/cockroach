@@ -150,7 +150,6 @@ func TestEncDatumNull(t *testing.T) {
 			}
 		}
 	}
-
 }
 
 // checkEncDatumCmp encodes the given values using the given encodings,
@@ -215,14 +214,8 @@ func TestEncDatumCompare(t *testing.T) {
 
 	for _, typ := range types.OidToType {
 		switch typ.Family() {
-		case types.AnyFamily, types.UnknownFamily, types.ArrayFamily,
-			types.TupleFamily, types.TSQueryFamily, types.TSVectorFamily,
-			types.PGVectorFamily, types.TriggerFamily, types.JsonpathFamily:
-			// These types don't have key-encoding.
-			continue
-		case types.VoidFamily:
-			// There is no point in testing VOID type as it only supports a
-			// single value.
+		case types.AnyFamily, types.UnknownFamily, types.ArrayFamily, types.JsonFamily, types.TupleFamily, types.VoidFamily,
+			types.TSQueryFamily, types.TSVectorFamily, types.PGVectorFamily, types.TriggerFamily, types.JsonpathFamily:
 			continue
 		case types.CollatedStringFamily:
 			typ = types.MakeCollatedString(types.String, *randgen.RandCollationLocale(rng))

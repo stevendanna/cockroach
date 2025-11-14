@@ -196,14 +196,9 @@ INSERT INTO t."%s" VALUES('a', 'foo');
 			t.Fatal(err)
 		}
 
-		finishedOpt := &finished
-		if finished == (time.Time{}) {
-			finishedOpt = nil
-		}
-
 		var id jobspb.JobID
 		db.QueryRow(t,
-			`INSERT INTO system.jobs (status, created, job_type, finished) VALUES ($1, $2, 'SCHEMA CHANGE', $3) RETURNING id`, state, created, finishedOpt).Scan(&id)
+			`INSERT INTO system.jobs (status, created, job_type) VALUES ($1, $2, 'SCHEMA CHANGE') RETURNING id`, state, created).Scan(&id)
 		db.Exec(t, `INSERT INTO system.job_info (job_id, info_key, value) VALUES ($1, $2, $3)`, id, GetLegacyPayloadKey(), payload)
 		db.Exec(t, `INSERT INTO system.job_info (job_id, info_key, value) VALUES ($1, $2, $3)`, id, GetLegacyProgressKey(), progress)
 		return strconv.Itoa(int(id))
@@ -256,7 +251,8 @@ INSERT INTO t."%s" VALUES('a', 'foo');
 			if err := s.JobRegistry().(*Registry).cleanupOldJobs(ctx, ts.Add(time.Minute*-10)); err != nil {
 				t.Fatal(err)
 			}
-			db.CheckQueryResults(t, selectJobsQuery, [][]string{{oldRunningJob}, {oldRevertFailedJob}, {newRunningJob}, {newRevertFailedJob}})
+			db.CheckQueryResults(t, selectJobsQuery, [][]string{
+				{oldRunningJob}, {oldRevertFailedJob}, {newRunningJob}, {newRevertFailedJob}})
 
 			// Delete the revert failed, and running jobs for the next run of the
 			// test.
@@ -304,7 +300,7 @@ func TestRegistryGCPagination(t *testing.T) {
 		require.NoError(t, err)
 		var jobID jobspb.JobID
 		db.QueryRow(t,
-			`INSERT INTO system.jobs (status, created, finished) VALUES ($1, $2, $2::timestamptz) RETURNING id`,
+			`INSERT INTO system.jobs (status, created) VALUES ($1, $2) RETURNING id`,
 			StateCanceled, timeutil.Now().Add(-time.Hour)).Scan(&jobID)
 		db.Exec(t, `INSERT INTO system.job_info (job_id, info_key, value) VALUES ($1, $2, $3)`,
 			jobID, GetLegacyPayloadKey(), payload)
@@ -868,7 +864,39 @@ func TestDeleteTerminalJobByID(t *testing.T) {
 		require.NoError(t, r.DeleteTerminalJobByID(ctx, j.ID()))
 		assertValidDeletion(j.ID())
 	})
+}
 
+func TestCleanupCorruptJobs(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
+
+	db := sqlutils.MakeSQLRunner(sqlDB)
+	r := s.ApplicationLayer().JobRegistry().(*Registry)
+
+	// Create a SQL STATS COMPACTION job in running state with proper job_info records.
+	jobID := r.MakeJobID()
+	db.Exec(t, `INSERT INTO system.jobs (id, status, created, job_type) VALUES ($1, 'running', now(), $2)`, jobID, jobspb.TypeAutoSQLStatsCompaction.String())
+	db.Exec(t, `INSERT INTO system.job_info (job_id, info_key, value) VALUES ($1, 'legacy_payload', 'payload')`, jobID)
+
+	// Job has info records, so CleanupCorruptJobs should do nothing.
+	require.NoError(t, r.CleanupCorruptJobs(ctx))
+
+	var count int
+	db.QueryRow(t, "SELECT count(*) FROM system.jobs WHERE id = $1", jobID).Scan(&count)
+	require.Equal(t, 1, count)
+
+	// Delete the job_info records to corrupt the running job.
+	db.Exec(t, "DELETE FROM system.job_info WHERE job_id = $1", jobID)
+
+	// Now CleanupCorruptJobs should delete the corrupt job.
+	require.NoError(t, r.CleanupCorruptJobs(ctx))
+
+	db.QueryRow(t, "SELECT count(*) FROM system.jobs WHERE id = $1", jobID).Scan(&count)
+	require.Zero(t, count)
 }
 
 // TestRunWithoutLoop tests that Run calls will trigger the execution of a
@@ -1077,7 +1105,6 @@ func TestJobIdleness(t *testing.T) {
 			})
 		}
 	})
-
 }
 
 // TestDisablingJobAdoptionClearsClaimSessionID tests that jobs adopted by a

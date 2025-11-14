@@ -278,7 +278,7 @@ func (dsp *DistSQLPlanner) ConstructAndSetSpanResolver(
 	ctx context.Context, nodeID roachpb.NodeID, locality roachpb.Locality,
 ) {
 	if dsp.spanResolver != nil {
-		log.Dev.Fatal(ctx, "trying to construct and set span resolver when one already exists")
+		log.Fatal(ctx, "trying to construct and set span resolver when one already exists")
 	}
 	sr := physicalplan.NewSpanResolver(dsp.st, dsp.distSender, dsp.nodeDescs, nodeID, locality,
 		dsp.clock, dsp.rpcCtx, ReplicaOraclePolicy)
@@ -461,6 +461,9 @@ var (
 	cannotDistributeVectorSearchErr = newQueryNotSupportedError(
 		"vector search operation cannot be distributed",
 	)
+	cannotDistributeSystemColumnsAndBufferedWrites = newQueryNotSupportedError(
+		"system column (that requires MVCC decoding) is requested when writes have been buffered",
+	)
 )
 
 // mustWrapNode returns true if a node has no DistSQL-processor equivalent.
@@ -546,6 +549,7 @@ func checkSupportForPlanNode(
 	node planNode,
 	distSQLVisitor *distSQLExprCheckVisitor,
 	sd *sessiondata.SessionData,
+	txnHasBufferedWrites bool,
 ) (retRec distRecommendation, retErr error) {
 	if buildutil.CrdbTestBuild {
 		defer func() {
@@ -563,19 +567,19 @@ func checkSupportForPlanNode(
 		return shouldDistribute, nil
 
 	case *distinctNode:
-		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *exportNode:
-		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *filterNode:
 		if err := checkExprForDistSQL(n.filter, distSQLVisitor); err != nil {
 			return cannotDistribute, err
 		}
-		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *groupNode:
-		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -604,10 +608,14 @@ func checkSupportForPlanNode(
 			// TODO(nvanbenschoten): lift this restriction.
 			return cannotDistribute, cannotDistributeRowLevelLockingErr
 		}
-		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		if txnHasBufferedWrites && n.fetch.requiresMVCCDecoding() {
+			// TODO(#144166): relax this.
+			return cannotDistribute, cannotDistributeSystemColumnsAndBufferedWrites
+		}
+		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *invertedFilterNode:
-		return checkSupportForInvertedFilterNode(ctx, n, distSQLVisitor, sd)
+		return checkSupportForInvertedFilterNode(ctx, n, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *invertedJoinNode:
 		if n.fetch.lockingStrength != descpb.ScanLockingStrength_FOR_NONE {
@@ -617,10 +625,14 @@ func checkSupportForPlanNode(
 			// TODO(nvanbenschoten): lift this restriction.
 			return cannotDistribute, cannotDistributeRowLevelLockingErr
 		}
+		if txnHasBufferedWrites && n.fetch.requiresMVCCDecoding() {
+			// TODO(#144166): relax this.
+			return cannotDistribute, cannotDistributeSystemColumnsAndBufferedWrites
+		}
 		if err := checkExprForDistSQL(n.onExpr, distSQLVisitor); err != nil {
 			return cannotDistribute, err
 		}
-		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -633,11 +645,11 @@ func checkSupportForPlanNode(
 		if err := checkExprForDistSQL(n.pred.onCond, distSQLVisitor); err != nil {
 			return cannotDistribute, err
 		}
-		recLeft, err := checkSupportForPlanNode(ctx, n.left, distSQLVisitor, sd)
+		recLeft, err := checkSupportForPlanNode(ctx, n.left, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
-		recRight, err := checkSupportForPlanNode(ctx, n.right, distSQLVisitor, sd)
+		recRight, err := checkSupportForPlanNode(ctx, n.right, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -658,7 +670,7 @@ func checkSupportForPlanNode(
 		// Note that we don't need to check whether we support distribution of
 		// n.countExpr or n.offsetExpr because those expressions are evaluated
 		// locally, during the physical planning.
-		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *lookupJoinNode:
 		if n.remoteLookupExpr != nil || n.remoteOnlyLookups {
@@ -672,7 +684,10 @@ func checkSupportForPlanNode(
 			// TODO(nvanbenschoten): lift this restriction.
 			return cannotDistribute, cannotDistributeRowLevelLockingErr
 		}
-
+		if txnHasBufferedWrites && n.fetch.requiresMVCCDecoding() {
+			// TODO(#144166): relax this.
+			return cannotDistribute, cannotDistributeSystemColumnsAndBufferedWrites
+		}
 		if err := checkExprForDistSQL(n.lookupExpr, distSQLVisitor); err != nil {
 			return cannotDistribute, err
 		}
@@ -682,7 +697,7 @@ func checkSupportForPlanNode(
 		if err := checkExprForDistSQL(n.onCond, distSQLVisitor); err != nil {
 			return cannotDistribute, err
 		}
-		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -699,7 +714,7 @@ func checkSupportForPlanNode(
 				return cannotDistribute, err
 			}
 		}
-		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *renderNode:
 		for _, e := range n.render {
@@ -707,7 +722,7 @@ func checkSupportForPlanNode(
 				return cannotDistribute, err
 			}
 		}
-		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		return checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 
 	case *scanNode:
 		if n.lockingStrength != descpb.ScanLockingStrength_FOR_NONE {
@@ -720,6 +735,10 @@ func checkSupportForPlanNode(
 		if n.localityOptimized {
 			// This is a locality optimized scan.
 			return cannotDistribute, localityOptimizedOpNotDistributableErr
+		}
+		if txnHasBufferedWrites && n.fetchPlanningInfo.requiresMVCCDecoding() {
+			// TODO(#144166): relax this.
+			return cannotDistribute, cannotDistributeSystemColumnsAndBufferedWrites
 		}
 		scanRec := canDistribute
 		if n.estimatedRowCount != 0 {
@@ -748,7 +767,7 @@ func checkSupportForPlanNode(
 		return scanRec, nil
 
 	case *sortNode:
-		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -765,7 +784,7 @@ func checkSupportForPlanNode(
 		return rec.compose(sortRec), nil
 
 	case *topKNode:
-		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -785,11 +804,11 @@ func checkSupportForPlanNode(
 		return canDistribute, nil
 
 	case *unionNode:
-		recLeft, err := checkSupportForPlanNode(ctx, n.left, distSQLVisitor, sd)
+		recLeft, err := checkSupportForPlanNode(ctx, n.left, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
-		recRight, err := checkSupportForPlanNode(ctx, n.right, distSQLVisitor, sd)
+		recRight, err := checkSupportForPlanNode(ctx, n.right, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -819,7 +838,7 @@ func checkSupportForPlanNode(
 		return cannotDistribute, cannotDistributeVectorSearchErr
 
 	case *windowNode:
-		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+		rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 		if err != nil {
 			return cannotDistribute, err
 		}
@@ -845,6 +864,10 @@ func checkSupportForPlanNode(
 				// TODO(nvanbenschoten): lift this restriction.
 				return cannotDistribute, cannotDistributeRowLevelLockingErr
 			}
+			if txnHasBufferedWrites && side.fetch.requiresMVCCDecoding() {
+				// TODO(#144166): relax this.
+				return cannotDistribute, cannotDistributeSystemColumnsAndBufferedWrites
+			}
 		}
 		if err := checkExprForDistSQL(n.onCond, distSQLVisitor); err != nil {
 			return cannotDistribute, err
@@ -864,8 +887,9 @@ func checkSupportForInvertedFilterNode(
 	n *invertedFilterNode,
 	distSQLVisitor *distSQLExprCheckVisitor,
 	sd *sessiondata.SessionData,
+	txnHasBufferedWrites bool,
 ) (distRecommendation, error) {
-	rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd)
+	rec, err := checkSupportForPlanNode(ctx, n.input, distSQLVisitor, sd, txnHasBufferedWrites)
 	if err != nil {
 		return cannotDistribute, err
 	}
@@ -965,7 +989,8 @@ type PlanningCtx struct {
 	// isLocal is set to true if we're planning this query on a single node.
 	isLocal bool
 	// distSQLProhibitedErr, if set, indicates why the plan couldn't be
-	// distributed.
+	// distributed. If any part of the plan isn't distributable, then this is
+	// guaranteed to be non-nil.
 	distSQLProhibitedErr error
 	planner              *planner
 
@@ -1007,11 +1032,11 @@ type PlanningCtx struct {
 	// query).
 	subOrPostQuery bool
 
-	// mustUseLeafTxn, if set, indicates that this PlanningCtx is used to handle
+	// flowConcurrency will be non-zero when this PlanningCtx is used to handle
 	// one of the plans that will run in parallel with other plans. As such, the
 	// DistSQL planner will need to use the LeafTxn (even if it's not needed
 	// based on other "regular" factors).
-	mustUseLeafTxn bool
+	flowConcurrency distsql.ConcurrencyKind
 
 	// onFlowCleanup contains non-nil functions that will be called after the
 	// local flow finished running and is being cleaned up. It allows us to
@@ -1554,7 +1579,7 @@ func (dsp *DistSQLPlanner) partitionSpan(
 	// lastKey maintains the EndKey of the last piece of `span`.
 	lastKey := rSpan.Key
 	if log.V(1) {
-		log.Dev.Infof(ctx, "partitioning span %s", span)
+		log.Infof(ctx, "partitioning span %s", span)
 	}
 	// We break up rSpan into its individual ranges (which may or may not be on
 	// separate nodes). We then create "partitioned spans" using the end keys of
@@ -1571,12 +1596,12 @@ func (dsp *DistSQLPlanner) partitionSpan(
 		desc := it.Desc()
 		if log.V(1) {
 			descCpy := desc // don't let desc escape
-			log.Dev.Infof(ctx, "lastKey: %s desc: %s", lastKey, &descCpy)
+			log.Infof(ctx, "lastKey: %s desc: %s", lastKey, &descCpy)
 		}
 
 		if !desc.ContainsKey(lastKey) {
 			// This range must contain the last range's EndKey.
-			log.Dev.Fatalf(
+			log.Fatalf(
 				ctx, "next range %v doesn't cover last end key %v. Partitions: %#v",
 				desc.RSpan(), lastKey, partitions,
 			)
@@ -1692,7 +1717,7 @@ func (dsp *DistSQLPlanner) partitionSpans(
 			if safeKey, err := keys.EnsureSafeSplitKey(span.Key); err == nil && len(safeKey) > 0 {
 				if safeKey.Equal(lastKey) {
 					if log.V(1) {
-						log.Dev.Infof(ctx, "stitching span %s into the previous span partition", span)
+						log.Infof(ctx, "stitching span %s into the previous span partition", span)
 					}
 					// TODO(yuzefovich): we're not updating
 					// SpanPartition.numRanges as well as spanPartitionState
@@ -1785,7 +1810,7 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 ) func(nodeID roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason) {
 	allInstances, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
 	if err != nil {
-		log.Dev.Warningf(ctx, "could not get all instances: %v", err)
+		log.Warningf(ctx, "could not get all instances: %v", err)
 		return dsp.alwaysUseGatewayWithReason(SpanPartitionReason_GATEWAY_ON_ERROR)
 	}
 
@@ -1806,7 +1831,7 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 				return sqlInstance, SpanPartitionReason_TARGET_HEALTHY
 			}
 		}
-		log.Dev.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
+		log.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
 		return dsp.gatewaySQLInstanceID, SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY
 	}
 }
@@ -1910,7 +1935,7 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 		if locFilter.NonEmpty() {
 			return nil, noInstancesMatchingLocalityFilterErr
 		}
-		log.Dev.Warningf(ctx, "no healthy sql instances available for planning, only using the gateway")
+		log.Warningf(ctx, "no healthy sql instances available for planning, only using the gateway")
 		return dsp.alwaysUseGatewayWithReason(SpanPartitionReason_GATEWAY_NO_HEALTHY_INSTANCES), nil
 	}
 
@@ -4347,7 +4372,7 @@ func (dsp *DistSQLPlanner) wrapPlan(
 	// expecting is in fact RowsAffected. RowsAffected statements return a single
 	// row with the number of rows affected by the statement, and are the only
 	// types of statement where it's valid to invoke a plan's fast path.
-	wrapper := newPlanNodeToRowSource(
+	wrapper, err := newPlanNodeToRowSource(
 		n,
 		runParams{
 			extendedEvalCtx: &evalCtx,
@@ -4356,6 +4381,9 @@ func (dsp *DistSQLPlanner) wrapPlan(
 		useFastPath,
 		firstNotWrapped,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	localProcIdx := p.AddLocalProcessor(wrapper)
 	var input []execinfrapb.InputSyncSpec
@@ -5309,7 +5337,6 @@ func (dsp *DistSQLPlanner) planExport(
 		ChunkRows:   int64(planInfo.chunkRows),
 		ChunkSize:   planInfo.chunkSize,
 		ColNames:    planInfo.colNames,
-		HeaderRow:   planInfo.headerRow,
 		UserProto:   planCtx.planner.User().EncodeProto(),
 	}
 
@@ -5399,7 +5426,16 @@ func checkScanParallelizationIfLocal(
 			if len(n.reqOrdering) == 0 && n.parallelize {
 				hasScanNodeToParallelize = true
 			}
-		case *distinctNode, *explainVecNode, *indexJoinNode, *limitNode,
+			if n.fetchPlanningInfo.requiresMVCCDecoding() {
+				prohibitParallelization = true
+				return
+			}
+		case *indexJoinNode:
+			if n.fetch.requiresMVCCDecoding() {
+				prohibitParallelization = true
+				return
+			}
+		case *distinctNode, *explainVecNode, *limitNode,
 			*ordinalityNode, *sortNode, *unionNode, *valuesNode:
 		default:
 			prohibitParallelization = true

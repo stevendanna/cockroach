@@ -689,13 +689,19 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 	sqlDB.Exec(t, `BACKUP data.bank INTO 'nodelocal://1/throwawayjob'`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
+	waitForJobPauseCancel := func(db *sqlutils.SQLRunner, jobID jobspb.JobID) {
+		db.Exec(t, `USE system;`)
+		jobutils.WaitForJobToPause(t, db, jobID)
+		db.Exec(t, `CANCEL JOB $1`, jobID)
+		jobutils.WaitForJobToCancel(t, db, jobID)
+	}
+
 	t.Run("during restoration of data", func(t *testing.T) {
 		_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication, base.TestClusterArgs{})
 		defer cleanupEmptyCluster()
 		var jobID jobspb.JobID
 		sqlDBRestore.QueryRow(t, `RESTORE FROM LATEST IN 'nodelocal://1/missing-ssts' WITH detached`).Scan(&jobID)
-		sqlDBRestore.Exec(t, "USE system")
-		jobutils.WaitForJobToFail(t, sqlDBRestore, jobID)
+		waitForJobPauseCancel(sqlDBRestore, jobID)
 		// Verify the failed RESTORE added some DROP tables.
 		// Note that the system tables here correspond to the temporary tables
 		// imported, not the system tables themselves.
@@ -1183,29 +1189,29 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 	sqlDB.Exec(t, `CREATE USER test2`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
-	sqlDB.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
-		{"root", "", "false", "1"},
-		{"admin", "", "true", "2"},
-		{"test1", "NULL", "false", "100"},
-		{"test2", "NULL", "false", "101"},
+	sqlDB.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole" FROM system.users ORDER BY user_id`, [][]string{
+		{"root", "", "false"},
+		{"admin", "", "true"},
+		{"test1", "NULL", "false"},
+		{"test2", "NULL", "false"},
 	})
 	// Ensure that the new backup succeeds.
 	sqlDBRestore.Exec(t, `RESTORE FROM LATEST IN $1`, localFoo)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
-		{"root", "", "false", "1"},
-		{"admin", "", "true", "2"},
-		{"test1", "NULL", "false", "100"},
-		{"test2", "NULL", "false", "101"},
+	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole" FROM system.users ORDER BY user_id`, [][]string{
+		{"root", "", "false"},
+		{"admin", "", "true"},
+		{"test1", "NULL", "false"},
+		{"test2", "NULL", "false"},
 	})
 
 	sqlDBRestore.Exec(t, `CREATE USER test3`)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
-		{"root", "", "false", "1"},
-		{"admin", "", "true", "2"},
-		{"test1", "NULL", "false", "100"},
-		{"test2", "NULL", "false", "101"},
-		{"test3", "NULL", "false", "102"},
+	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole" FROM system.users ORDER BY user_id`, [][]string{
+		{"root", "", "false"},
+		{"admin", "", "true"},
+		{"test1", "NULL", "false"},
+		{"test2", "NULL", "false"},
+		{"test3", "NULL", "false"},
 	})
 }

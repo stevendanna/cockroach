@@ -47,11 +47,6 @@ type deleteRangeNode struct {
 
 	// rowCount will be set to the count of rows deleted.
 	rowCount int
-
-	// curRowPrefix is the prefix for all KVs (i.e. for all column families) of
-	// the SQL row that increased rowCount last. It is maintained across
-	// different BatchRequests in order to not double count the same SQL row.
-	curRowPrefix []byte
 }
 
 var _ planNode = &deleteRangeNode{}
@@ -83,6 +78,17 @@ func (d *deleteRangeNode) rowsWritten() int64 {
 	return int64(d.rowCount)
 }
 
+func (d *deleteRangeNode) indexRowsWritten() int64 {
+	// Same as rowsWritten, because deleteRangeNode only applies to primary index
+	// rows (it is not used if there's a secondary index on the table).
+	return int64(d.rowCount)
+}
+
+func (d *deleteRangeNode) indexBytesWritten() int64 {
+	// No bytes counted as written for a deletion.
+	return 0
+}
+
 // startExec implements the planNode interface.
 func (d *deleteRangeNode) startExec(params runParams) error {
 	if err := params.p.cancelChecker.Check(); err != nil {
@@ -94,7 +100,7 @@ func (d *deleteRangeNode) startExec(params runParams) error {
 	// fetch kvs.
 	var spec fetchpb.IndexFetchSpec
 	if err := rowenc.InitIndexFetchSpec(
-		&spec, params.ExecCfg().Codec, d.desc, d.desc.GetPrimaryIndex(), nil, /* columnIDs */
+		&spec, params.ExecCfg().Codec, d.desc, d.desc.GetPrimaryIndex(), nil, /* fetchColumnIDs */
 	); err != nil {
 		return err
 	}
@@ -111,7 +117,6 @@ func (d *deleteRangeNode) startExec(params runParams) error {
 
 	ctx := params.ctx
 	log.VEvent(ctx, 2, "fast delete: skipping scan")
-	// TODO(yuzefovich): why are we making a copy of spans?
 	spans := make([]roachpb.Span, len(d.spans))
 	copy(spans, d.spans)
 	if !d.autoCommitEnabled {
@@ -121,7 +126,7 @@ func (d *deleteRangeNode) startExec(params runParams) error {
 		// hits the key limit).
 		for len(spans) != 0 {
 			b := params.p.txn.NewBatch()
-			b.Header.MaxSpanRequestKeys = int64(row.DeleteRangeChunkSize(params.extendedEvalCtx.TestingKnobs.ForceProductionValues))
+			b.Header.MaxSpanRequestKeys = row.TableTruncateChunkSize
 			b.Header.LockTimeout = params.SessionData().LockTimeout
 			b.Header.DeadlockTimeout = params.SessionData().DeadlockTimeout
 			d.deleteSpans(params, b, spans)
@@ -199,25 +204,11 @@ func (d *deleteRangeNode) deleteSpans(params runParams, b *kv.Batch, spans roach
 func (d *deleteRangeNode) processResults(
 	results []kv.Result, resumeSpans []roachpb.Span,
 ) (roachpb.Spans, error) {
-	if !d.autoCommitEnabled {
-		defer func() {
-			// Make a copy of curRowPrefix to avoid referencing the memory from
-			// the now-old BatchRequest.
-			//
-			// When auto-commit is enabled, we expect to not see any resume
-			// spans, so we won't need to access d.curRowPrefix later.
-			curRowPrefix := make([]byte, len(d.curRowPrefix))
-			copy(curRowPrefix, d.curRowPrefix)
-			d.curRowPrefix = curRowPrefix
-		}()
-	}
 	for _, r := range results {
-		// TODO(yuzefovich): when the table has 1 column family, we don't need
-		// to compare the key prefixes since each deleted key corresponds to a
-		// different deleted row.
+		var prev []byte
 		for _, keyBytes := range r.Keys {
 			// If prefix is same, don't bother decoding key.
-			if len(d.curRowPrefix) > 0 && bytes.HasPrefix(keyBytes, d.curRowPrefix) {
+			if len(prev) > 0 && bytes.HasPrefix(keyBytes, prev) {
 				continue
 			}
 
@@ -226,8 +217,8 @@ func (d *deleteRangeNode) processResults(
 				return nil, err
 			}
 			k := keyBytes[:len(keyBytes)-len(after)]
-			if !bytes.Equal(k, d.curRowPrefix) {
-				d.curRowPrefix = k
+			if !bytes.Equal(k, prev) {
+				prev = k
 				d.rowCount++
 			}
 		}

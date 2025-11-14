@@ -2852,7 +2852,7 @@ func TestAllocatorRebalanceDifferentLocalitySizes(t *testing.T) {
 	}
 
 	for i, tc := range testCases2 {
-		log.Dev.Infof(ctx, "case #%d", i)
+		log.Infof(ctx, "case #%d", i)
 		var rangeUsageInfo allocator.RangeUsageInfo
 		result, _, details, ok := a.RebalanceVoter(
 			ctx,
@@ -8764,13 +8764,13 @@ func (ts *testStore) rebalance(ots *testStore, bytes int64, qps float64, do Disk
 	// almost out of disk. (In a real allocator this is, for example, in
 	// rankedCandidateListFor{Allocation,Rebalancing}).
 	if !do.maxCapacityCheck(ots.StoreDescriptor) {
-		log.Dev.Infof(
+		log.Infof(
 			context.Background(),
 			"s%d too full to accept snapshot from s%d: %v", ots.StoreID, ts.StoreID, ots.Capacity,
 		)
 		return
 	}
-	log.Dev.Infof(context.Background(), "s%d accepting snapshot from s%d", ots.StoreID, ts.StoreID)
+	log.Infof(context.Background(), "s%d accepting snapshot from s%d", ots.StoreID, ts.StoreID)
 	ts.Capacity.RangeCount--
 	ts.Capacity.QueriesPerSecond -= qps
 	if ts.immediateCompaction {
@@ -8783,160 +8783,6 @@ func (ts *testStore) rebalance(ots *testStore, bytes int64, qps float64, do Disk
 	ots.Capacity.Available -= bytes
 	ots.Capacity.Used += bytes
 	ots.Capacity.LogicalBytes += bytes
-}
-
-func (ts *testStore) compact() {
-	ts.Capacity.Used = ts.Capacity.LogicalBytes
-	ts.Capacity.Available = ts.Capacity.Capacity - ts.Capacity.Used
-}
-
-func TestAllocatorFullDisks(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-
-	st := cluster.MakeTestingClusterSettings()
-	tr := tracing.NewTracer()
-	clock := hlc.NewClockForTesting(nil)
-
-	g := gossip.NewTest(1, stopper, metric.NewRegistry())
-
-	liveness.TimeUntilNodeDead.Override(ctx, &st.SV, liveness.TestTimeUntilNodeDeadOff)
-
-	const generations = 100
-	const nodes = 20
-	const capacity = (1 << 30) + 1
-	const rangeSize = 16 << 20
-
-	mockNodeLiveness := storepool.NewMockNodeLiveness(livenesspb.NodeLivenessStatus_LIVE)
-	sp := storepool.NewStorePool(
-		log.MakeTestingAmbientContext(tr),
-		st,
-		g,
-		clock,
-		func() int {
-			return nodes
-		},
-		mockNodeLiveness.NodeLivenessFunc,
-		false, /* deterministic */
-	)
-	alloc := MakeAllocator(st, false /* deterministic */, func(id roachpb.NodeID) (time.Duration, bool) {
-		return 0, false
-	}, nil)
-
-	var wg sync.WaitGroup
-	g.RegisterCallback(gossip.MakePrefixPattern(gossip.KeyStoreDescPrefix),
-		func(_ string, _ roachpb.Value, _ int64) { wg.Done() },
-		// Redundant callbacks are required by this test.
-		gossip.Redundant)
-
-	do := makeDiskCapacityOptions(&st.SV)
-
-	// Each range is equally sized (16mb), we want the number of ranges per node,
-	// when their size is added, to be no greater than the full disk rebalance
-	// threshold (0.925%) e.g for below:
-	//   capacity  = 1024mb
-	//   rangeSize = 16mb
-	//   threshold = 0.925
-	//   rangesPerNode =  ⌊1024mb * 0.925 / 16mb⌋ = 59
-	rangesPerNode := int(math.Floor(capacity * do.RebalanceToThreshold / rangeSize))
-	rangesToAdd := rangesPerNode * nodes
-
-	// Initialize testStores.
-	var testStores [nodes]testStore
-	for i := 0; i < len(testStores); i++ {
-		// Don't immediately reclaim disk space from removed ranges. This mimics
-		// range deletions don't immediately reclaim disk space in rocksdb.
-		testStores[i].immediateCompaction = false
-		testStores[i].StoreID = roachpb.StoreID(i)
-		testStores[i].Node = roachpb.NodeDescriptor{NodeID: roachpb.NodeID(i)}
-		testStores[i].Capacity = roachpb.StoreCapacity{Capacity: capacity, Available: capacity}
-	}
-	// Initialize the cluster with a single range.
-	testStores[0].add(rangeSize, 0)
-	rangesAdded := 1
-
-	for i := 0; i < generations; i++ {
-		// First loop through test stores and randomly add data.
-		for j := 0; j < len(testStores); j++ {
-			if mockNodeLiveness.NodeLivenessFunc(roachpb.NodeID(j)) == livenesspb.NodeLivenessStatus_DEAD {
-				continue
-			}
-			ts := &testStores[j]
-			// Add [0,2) ranges to the node, simulating splits and data growth.
-			toAdd := alloc.randGen.Intn(2)
-			for k := 0; k < toAdd; k++ {
-				if rangesAdded < rangesToAdd {
-					ts.add(rangeSize, 0)
-					rangesAdded++
-				}
-			}
-			if ts.Capacity.Available <= 0 {
-				t.Errorf("testStore %d ran out of space during generation %d (rangesAdded=%d/%d): %+v",
-					j, i, rangesAdded, rangesToAdd, ts.Capacity)
-				mockNodeLiveness.SetNodeStatus(roachpb.NodeID(j), livenesspb.NodeLivenessStatus_DEAD)
-			}
-			wg.Add(1)
-			if err := g.AddInfoProto(gossip.MakeStoreDescKey(roachpb.StoreID(j)), &ts.StoreDescriptor, 0); err != nil {
-				t.Fatal(err)
-			}
-		}
-		wg.Wait()
-
-		// Loop through each store a number of times and maybe rebalance.
-		for j := 0; j < 10; j++ {
-			for k := 0; k < len(testStores); k++ {
-				if mockNodeLiveness.NodeLivenessFunc(roachpb.NodeID(k)) == livenesspb.NodeLivenessStatus_DEAD {
-					continue
-				}
-				ts := &testStores[k]
-				// Rebalance until there's no more rebalancing to do.
-				if ts.Capacity.RangeCount > 0 {
-					var rangeUsageInfo allocator.RangeUsageInfo
-					target, _, details, ok := alloc.RebalanceVoter(
-						ctx,
-						sp,
-						emptySpanConfig(),
-						nil,
-						[]roachpb.ReplicaDescriptor{{NodeID: ts.Node.NodeID, StoreID: ts.StoreID}},
-						nil,
-						rangeUsageInfo,
-						storepool.StoreFilterThrottled,
-						alloc.ScorerOptions(ctx),
-					)
-					if ok {
-						if log.V(1) {
-							log.Dev.Infof(ctx, "rebalancing to %v; details: %s", target, details)
-						}
-						testStores[k].rebalance(&testStores[int(target.StoreID)], rangeSize, 0 /* qps */, do)
-					}
-				}
-				// Gossip occasionally, as real Stores do when replicas move around.
-				if j%3 == 2 {
-					wg.Add(1)
-					if err := g.AddInfoProto(gossip.MakeStoreDescKey(roachpb.StoreID(j)), &ts.StoreDescriptor, 0); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-		}
-
-		// Simulate rocksdb compactions freeing up disk space.
-		for j := 0; j < len(testStores); j++ {
-			if mockNodeLiveness.NodeLivenessFunc(roachpb.NodeID(j)) != livenesspb.NodeLivenessStatus_DEAD {
-				ts := &testStores[j]
-				if ts.Capacity.Available <= 0 {
-					t.Errorf("testStore %d ran out of space during generation %d: %+v", j, i, ts.Capacity)
-					mockNodeLiveness.SetNodeStatus(roachpb.NodeID(j), livenesspb.NodeLivenessStatus_DEAD)
-				} else {
-					ts.compact()
-				}
-			}
-		}
-	}
 }
 
 func Example_rangeCountRebalancing() {
@@ -8955,7 +8801,7 @@ func Example_rangeCountRebalancing() {
 			alloc.ScorerOptions(ctx),
 		)
 		if ok {
-			log.Dev.Infof(ctx, "rebalancing to %v; details: %s", target, details)
+			log.Infof(ctx, "rebalancing to %v; details: %s", target, details)
 			ts.rebalance(
 				&testStores[int(target.StoreID)],
 				alloc.randGen.Int63n(1<<20),
@@ -9070,7 +8916,7 @@ func qpsBasedRebalanceFn(
 		opts,
 	)
 	if ok {
-		log.Dev.Infof(ctx, "rebalancing from %v to %v; details: %s", remove, add, details)
+		log.Infof(ctx, "rebalancing from %v to %v; details: %s", remove, add, details)
 		candidate.rebalance(&testStores[int(add.StoreID)], alloc.randGen.Int63n(1<<20), jitteredQPS, opts.DiskOptions)
 	}
 }
@@ -9627,183 +9473,5 @@ func TestAllocatorRebalanceTargetVoterConstraintUnsatisfied(t *testing.T) {
 					storeLocalities[demote.StoreID-1], storeLocalities[tc.expectedDemote.StoreID-1], details)
 			}
 		})
-	}
-}
-
-// TestRoundToNearestPriorityCategory tests the RoundToNearestPriorityCategory
-// function.
-func TestRoundToNearestPriorityCategory(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	testCases := []struct {
-		name     string
-		input    float64
-		expected float64
-	}{
-		{
-			name:     "zero",
-			input:    0.0,
-			expected: 0.0,
-		},
-		{
-			name:     "exact multiple of 100",
-			input:    100.0,
-			expected: 100.0,
-		},
-		{
-			name:     "round down to nearest 100",
-			input:    149.0,
-			expected: 100.0,
-		},
-		{
-			name:     "round up to nearest 100",
-			input:    151.0,
-			expected: 200.0,
-		},
-		{
-			name:     "negative exact multiple of 100",
-			input:    -200.0,
-			expected: -200.0,
-		},
-		{
-			name:     "negative round down to nearest 100",
-			input:    -249.0,
-			expected: -200.0,
-		},
-		{
-			name:     "negative round up to nearest 100",
-			input:    -251.0,
-			expected: -300.0,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.expected, roundToNearestPriorityCategory(tc.input))
-		})
-	}
-}
-
-// TestCheckPriorityInversion tests the CheckPriorityInversion function.
-func TestCheckPriorityInversion(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	for action := AllocatorNoop; action <= AllocatorFinalizeAtomicReplicationChange; action++ {
-		t.Run(action.String(), func(t *testing.T) {
-			if action == AllocatorConsiderRebalance || action == AllocatorNoop || action == AllocatorRangeUnavailable {
-				inversion, requeue := CheckPriorityInversion(action.Priority(), AllocatorConsiderRebalance)
-				require.False(t, inversion)
-				require.False(t, requeue)
-			} else {
-				inversion, requeue := CheckPriorityInversion(action.Priority(), AllocatorConsiderRebalance)
-				require.True(t, inversion)
-				require.True(t, requeue)
-			}
-		})
-	}
-
-	testCases := []struct {
-		name               string
-		priorityAtEnqueue  float64
-		actionAtProcessing AllocatorAction
-		expectedInversion  bool
-		expectedRequeue    bool
-	}{
-		{
-			name:               "AllocatorNoop at processing is noop",
-			priorityAtEnqueue:  AllocatorFinalizeAtomicReplicationChange.Priority(),
-			actionAtProcessing: AllocatorNoop,
-			expectedInversion:  true,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "AllocatorRangeUnavailable at processing is noop",
-			priorityAtEnqueue:  AllocatorFinalizeAtomicReplicationChange.Priority(),
-			actionAtProcessing: AllocatorRangeUnavailable,
-			expectedInversion:  true,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "priority -1 bypasses",
-			priorityAtEnqueue:  -1,
-			actionAtProcessing: AllocatorConsiderRebalance,
-			expectedInversion:  false,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "priority increase",
-			priorityAtEnqueue:  0,
-			actionAtProcessing: AllocatorFinalizeAtomicReplicationChange,
-			expectedInversion:  false,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "above range priority(1e5)",
-			priorityAtEnqueue:  1e5,
-			actionAtProcessing: AllocatorConsiderRebalance,
-			expectedInversion:  false,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "below range priority at -10",
-			priorityAtEnqueue:  -10,
-			actionAtProcessing: -100,
-			expectedInversion:  false,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "inversion but small priority changes",
-			priorityAtEnqueue:  AllocatorFinalizeAtomicReplicationChange.Priority(),
-			actionAtProcessing: AllocatorReplaceDecommissioningNonVoter,
-			expectedInversion:  true,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "inversion but small priority changes",
-			priorityAtEnqueue:  AllocatorRemoveDeadVoter.Priority(),
-			actionAtProcessing: AllocatorAddNonVoter,
-			expectedInversion:  true,
-			expectedRequeue:    false,
-		},
-		{
-			name:               "inversion but small priority changes",
-			priorityAtEnqueue:  AllocatorConsiderRebalance.Priority(),
-			actionAtProcessing: AllocatorNoop,
-			expectedInversion:  false,
-			expectedRequeue:    false,
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			inversion, requeue := CheckPriorityInversion(tc.priorityAtEnqueue, tc.actionAtProcessing)
-			require.Equal(t, tc.expectedInversion, inversion)
-			require.Equal(t, tc.expectedRequeue, requeue)
-		})
-	}
-}
-
-// TestAllocatorPriorityInvariance verifies that allocator priorities remain
-// spaced in multiples of 100. This prevents regressions against the contract
-// relied on by CheckPriorityInversion. For details, see the comment above
-// action.Priority().
-func TestAllocatorPriorityInvariance(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	exceptions := map[AllocatorAction]struct{}{
-		AllocatorFinalizeAtomicReplicationChange: {},
-		AllocatorRemoveLearner:                   {},
-		AllocatorReplaceDeadVoter:                {},
-	}
-	lowestPriority := AllocatorNoop.Priority()
-	for action := AllocatorNoop; action < AllocatorMaxPriority; action++ {
-		require.GreaterOrEqualf(t, action.Priority(), lowestPriority,
-			"priority %f is less than AllocatorNoop: likely violating contract",
-			action.Priority())
-		if _, ok := exceptions[action]; !ok {
-			require.Equalf(t, int(action.Priority())%100, 0,
-				"priority %f is not a multiple of 100: likely violating contract",
-				action.Priority())
-
-		}
 	}
 }

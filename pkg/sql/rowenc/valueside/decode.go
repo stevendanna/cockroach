@@ -65,6 +65,9 @@ func DecodeUntaggedDatum(
 		if err != nil {
 			return nil, b, err
 		}
+		if t.Oid() == oid.T_name {
+			return a.NewDName(tree.DString(data)), b, nil
+		}
 		return a.NewDString(tree.DString(data)), b, nil
 	case types.CollatedStringFamily:
 		b, data, err := encoding.DecodeUntaggedBytesValue(buf)
@@ -244,9 +247,6 @@ func DecodeUntaggedDatum(
 		// the loss of variable length encoding.
 		b, data, err := encoding.DecodeUntaggedIntValue(buf)
 		return a.NewDOid(tree.MakeDOid(oid.Oid(data), t)), b, err
-	case types.LTreeFamily:
-		b, l, err := encoding.DecodeUntaggedLTreeValue(buf)
-		return tree.NewDLTree(l), b, err
 	case types.ArrayFamily:
 		// Skip the encoded data length.
 		b, _, _, err := encoding.DecodeNonsortingUvarint(buf)

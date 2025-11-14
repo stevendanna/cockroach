@@ -18,8 +18,12 @@ type Cost struct {
 	// cost is compared to other costs with Less.
 	aux struct {
 		// fullScanCount is the number of full table or index scans in a
-		// sub-plan, up to 255.
-		fullScanCount uint8
+		// sub-plan, up to 65535.
+		fullScanCount uint16
+		// unboundedReadCount is the number of read expressions (e.g., scans,
+		// lookup joins, etc.) in a sub-plan that have no upper-bound
+		// cardinality, up to 65535.
+		unboundedReadCount uint16
 	}
 }
 
@@ -57,26 +61,28 @@ func (c Cost) Less(other Cost) bool {
 func (c *Cost) Add(other Cost) {
 	c.C += other.C
 	c.Flags.Add(other.Flags)
-	if c.aux.fullScanCount > math.MaxUint8-other.aux.fullScanCount {
-		// Avoid overflow.
-		c.aux.fullScanCount = math.MaxUint8
-	} else {
-		c.aux.fullScanCount += other.aux.fullScanCount
-	}
+	c.aux.fullScanCount = addUint16(c.aux.fullScanCount, other.aux.fullScanCount)
+	c.aux.unboundedReadCount = addUint16(c.aux.unboundedReadCount, other.aux.unboundedReadCount)
 }
 
 // FullScanCount returns the number of full scans in the cost.
-func (c Cost) FullScanCount() uint8 {
+func (c Cost) FullScanCount() uint16 {
 	return c.aux.fullScanCount
 }
 
 // IncrFullScanCount increments that auxiliary full scan count within c.
 func (c *Cost) IncrFullScanCount() {
-	if c.aux.fullScanCount == math.MaxUint8 {
-		// Avoid overflow.
-		return
-	}
-	c.aux.fullScanCount++
+	c.aux.fullScanCount = addUint16(c.aux.fullScanCount, 1)
+}
+
+// UnboundedReadCount returns the number of full scans in the cost.
+func (c Cost) UnboundedReadCount() uint16 {
+	return c.aux.unboundedReadCount
+}
+
+// IncrUnboundedReadCount increments that auxiliary full scan count within c.
+func (c *Cost) IncrUnboundedReadCount() {
+	c.aux.unboundedReadCount = addUint16(c.aux.unboundedReadCount, 1)
 }
 
 // CostFlags contains flags that penalize the cost of an operator.
@@ -123,4 +129,11 @@ func (c *CostFlags) Add(other CostFlags) {
 // Empty returns true if these flags are empty.
 func (c CostFlags) Empty() bool {
 	return !c.FullScanPenalty && !c.HugeCostPenalty && !c.UnboundedCardinality
+}
+
+func addUint16(a, b uint16) uint16 {
+	if a > math.MaxUint16-b {
+		return math.MaxUint16
+	}
+	return a + b
 }

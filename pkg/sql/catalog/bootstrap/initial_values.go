@@ -23,10 +23,11 @@ import (
 // InitialValuesOpts is used to get initial values for system/secondary tenants
 // and allows overriding initial values with ones from previous releases.
 type InitialValuesOpts struct {
-	DefaultZoneConfig       *zonepb.ZoneConfig
-	DefaultSystemZoneConfig *zonepb.ZoneConfig
-	OverrideKey             clusterversion.Key
-	Codec                   keys.SQLCodec
+	DefaultZoneConfig          *zonepb.ZoneConfig
+	DefaultSystemZoneConfig    *zonepb.ZoneConfig
+	OverrideKey                clusterversion.Key
+	Codec                      keys.SQLCodec
+	DynamicSystemTableIDOffset uint32
 }
 
 // GenerateInitialValues generates the initial values with which to bootstrap a
@@ -71,20 +72,13 @@ var initialValuesFactoryByKey = map[clusterversion.Key]initialValuesFactoryFn{
 		nonSystem:     v25_2_tenant_keys,
 		nonSystemHash: v25_2_tenant_sha256,
 	}.build,
-
-	clusterversion.V25_3: hardCodedInitialValues{
-		system:        v25_3_system_keys,
-		systemHash:    v25_3_system_sha256,
-		nonSystem:     v25_3_tenant_keys,
-		nonSystemHash: v25_3_tenant_sha256,
-	}.build,
 }
 
 // buildLatestInitialValues is the default initial value factory.
 func buildLatestInitialValues(
 	opts InitialValuesOpts,
 ) (kvs []roachpb.KeyValue, splits []roachpb.RKey, _ error) {
-	schema := MakeMetadataSchema(opts.Codec, opts.DefaultZoneConfig, opts.DefaultSystemZoneConfig)
+	schema := MakeMetadataSchema(opts.Codec, opts.DefaultZoneConfig, opts.DefaultSystemZoneConfig, opts.DynamicSystemTableIDOffset)
 	kvs, splits = schema.GetInitialValues()
 	return kvs, splits, nil
 }
@@ -147,15 +141,3 @@ var v25_2_tenant_keys string
 
 //go:embed data/25_2_tenant.sha256
 var v25_2_tenant_sha256 string
-
-//go:embed data/25_3_system.keys
-var v25_3_system_keys string
-
-//go:embed data/25_3_system.sha256
-var v25_3_system_sha256 string
-
-//go:embed data/25_3_tenant.keys
-var v25_3_tenant_keys string
-
-//go:embed data/25_3_tenant.sha256
-var v25_3_tenant_sha256 string

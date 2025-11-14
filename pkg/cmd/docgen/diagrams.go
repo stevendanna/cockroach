@@ -419,7 +419,6 @@ var specs = []stmtSpec{
 		name:    "alter_index",
 		stmt:    "alter_index_stmt",
 		inline:  []string{"alter_oneindex_stmt", "alter_index_cmds", "alter_index_cmd", "partition_by_index", "partition_by_inner", "partition_by", "table_index_name", "alter_split_index_stmt", "alter_unsplit_index_stmt", "alter_rename_index_stmt", "alter_zone_index_stmt", "var_set_list", "alter_index_visible_stmt", "set_zone_config", "alter_index_visible"},
-		exclude: []*regexp.Regexp{regexp.MustCompile("alter_scatter_index_stmt")},
 		replace: map[string]string{"standalone_index_name": "index_name", "var_name": "variable", "var_value": "value", "'RENAME' 'TO' index_name": "'RENAME' 'TO' index_new_name"},
 		unlink:  []string{"index_new_name", "variable", "value"},
 	},
@@ -550,7 +549,6 @@ var specs = []stmtSpec{
 		name:    "alter_table",
 		stmt:    "alter_table_stmt",
 		inline:  []string{"alter_onetable_stmt", "alter_table_cmds", "alter_split_stmt", "alter_unsplit_stmt", "alter_zone_table_stmt", "alter_rename_table_stmt", "alter_table_set_schema_stmt", "alter_table_locality_stmt", "alter_table_owner_stmt", "set_zone_config", "var_set_list"},
-		exclude: []*regexp.Regexp{regexp.MustCompile("alter_scatter_stmt")},
 		replace: map[string]string{"relation_expr": "table_name", "'RENAME' 'TO' table_name": "'RENAME' 'TO' table_new_name", "var_name": "variable", "var_value": "value"},
 		unlink:  []string{"table_name", "table_new_name", "variable", "value"},
 	},
@@ -782,10 +780,9 @@ var specs = []stmtSpec{
 		unlink:  []string{"non_reserved_word_or_sconst", "signed_iconst", "encoding", "limit"},
 		nosplit: true,
 	},
-	// TODO: Add new database level changefeed syntax here when it is ready to be released (#149347).
 	{
 		name:   "create_changefeed_stmt",
-		inline: []string{"changefeed_table_targets", "opt_changefeed_sink", "opt_with_options", "kv_option_list", "kv_option"},
+		inline: []string{"changefeed_targets", "opt_changefeed_sink", "opt_with_options", "kv_option_list", "kv_option"},
 		replace: map[string]string{
 			"table_option":                 "table_name",
 			"'INTO' string_or_placeholder": "'INTO' sink",
@@ -840,7 +837,7 @@ var specs = []stmtSpec{
 	},
 	{
 		name:   "create_schedule_for_changefeed_stmt",
-		inline: []string{"opt_with_schedule_options", "changefeed_table_targets", "table_pattern", "opt_where_clause", "changefeed_target_expr", "cron_expr"},
+		inline: []string{"opt_with_schedule_options", "changefeed_targets", "table_pattern", "opt_where_clause", "changefeed_target_expr", "cron_expr"},
 		replace: map[string]string{
 			"schedule_label_spec":   "( 'IF NOT EXISTS' | )  schedule_label",
 			"changefeed_sink":       "( 'INTO' changefeed_sink )",

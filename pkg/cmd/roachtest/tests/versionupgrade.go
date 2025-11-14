@@ -23,7 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils/release"
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -263,7 +263,7 @@ func makeVersionFixtureAndFatal(
 	// cluster version might be 2.0, so we can only use the 2.0 or
 	// 2.1 binary, but not the 19.1 binary (as 19.1 and 2.0 are not
 	// compatible).
-	binaryVersion, err := clusterupgrade.BinaryVersion(ctx, dbFunc(1))
+	binaryVersion, err := clusterupgrade.BinaryVersion(ctx, t.L(), dbFunc(1))
 	if err != nil {
 		t.Fatalf("fetching binary version on n1: %v", err)
 	}
@@ -281,7 +281,7 @@ func makeVersionFixtureAndFatal(
 	// #54761.
 	c.Run(ctx, option.WithNodes(c.Node(1)), "cp", "{store-dir}/cluster-bootstrapped", "{store-dir}/"+name)
 	// Similar to the above - newer versions require the min version file to open a store.
-	c.Run(ctx, option.WithNodes(c.All()), "cp", fmt.Sprintf("{store-dir}/%s", fs.MinVersionFilename), "{store-dir}/"+name)
+	c.Run(ctx, option.WithNodes(c.All()), "cp", fmt.Sprintf("{store-dir}/%s", storage.MinVersionFilename), "{store-dir}/"+name)
 	c.Run(ctx, option.WithNodes(c.All()), "tar", "-C", "{store-dir}/"+name, "-czf", "{log-dir}/"+name+".tgz", ".")
 	t.Fatalf(`successfully created checkpoints; failing test on purpose.
 

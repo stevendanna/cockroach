@@ -175,7 +175,7 @@ func runMultiTenantFairness(
 		node := virtualClusters[name]
 		c.StartServiceForVirtualCluster(
 			ctx, t.L(),
-			option.StartVirtualClusterOpts(name, node, option.NoBackupSchedule),
+			option.StartVirtualClusterOpts(name, node),
 			install.MakeClusterSettings(),
 		)
 
@@ -205,6 +205,10 @@ func runMultiTenantFairness(
 
 		c.Run(ctx, option.WithNodes(node), initKV)
 	}
+
+	t.L().Printf("setting up prometheus/grafana (<%s)", 2*time.Minute)
+	_, cleanupFunc := setupPrometheusForRoachtest(ctx, t, c, promCfg, nil)
+	defer cleanupFunc()
 
 	t.L().Printf("loading per-tenant data (<%s)", 10*time.Minute)
 	m1 := c.NewDeprecatedMonitor(ctx, c.All())
@@ -344,7 +348,7 @@ func runMultiTenantFairness(
 	}
 
 	ok, maxLatencyDelta := floatsWithinPercentage(meanLatencies, failThreshold)
-	t.L().Printf("max-latency-delta=%d% mean-latency-per-tenant=%v\n", int(maxLatencyDelta*100), meanLatencies)
+	t.L().Printf("max-latency-delta=%d%% mean-latency-per-tenant=%v\n", int(maxLatencyDelta*100), meanLatencies)
 	if !ok {
 		// TODO(irfansharif): Same as above -- this is a weak assertion.
 		t.L().Printf("latency not within expectations: %f > %f %v", maxLatencyDelta, failThreshold, meanLatencies)

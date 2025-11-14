@@ -90,7 +90,7 @@ func TestConn(t *testing.T) {
 		t.Fatal(err)
 	}
 	serverAddr := ln.Addr()
-	log.Dev.Infof(context.Background(), "started listener on %s", serverAddr)
+	log.Infof(context.Background(), "started listener on %s", serverAddr)
 
 	var g errgroup.Group
 	ctx, cancelConn := context.WithCancel(context.Background())
@@ -202,7 +202,7 @@ func TestPipelineMetric(t *testing.T) {
 		t.Fatal(err)
 	}
 	serverAddr := ln.Addr()
-	log.Dev.Infof(context.Background(), "started listener on %s", serverAddr)
+	log.Infof(context.Background(), "started listener on %s", serverAddr)
 
 	ctx, cancelConn := context.WithCancel(context.Background())
 	defer cancelConn()
@@ -555,31 +555,31 @@ func processPgxStartup(ctx context.Context, s serverutils.TestServerInterface, c
 	for {
 		cmd, err := rd.CurCmd()
 		if err != nil {
-			log.Dev.Errorf(ctx, "CurCmd error: %v", err)
+			log.Errorf(ctx, "CurCmd error: %v", err)
 			return err
 		}
 
 		if _, ok := cmd.(sql.Sync); ok {
-			log.Dev.Infof(ctx, "advancing Sync")
+			log.Infof(ctx, "advancing Sync")
 			rd.AdvanceOne()
 			continue
 		}
 
 		exec, ok := cmd.(sql.ExecStmt)
 		if !ok {
-			log.Dev.Infof(ctx, "stop wait at: %v", cmd)
+			log.Infof(ctx, "stop wait at: %v", cmd)
 			return nil
 		}
 		query := exec.AST.String()
 		if !strings.HasPrefix(query, "SELECT t.oid") {
-			log.Dev.Infof(ctx, "stop wait at query: %s", query)
+			log.Infof(ctx, "stop wait at query: %s", query)
 			return nil
 		}
 		if err := execQuery(ctx, query, s, c); err != nil {
-			log.Dev.Errorf(ctx, "execQuery %s error: %v", query, err)
+			log.Errorf(ctx, "execQuery %s error: %v", query, err)
 			return err
 		}
-		log.Dev.Infof(ctx, "executed query: %s", query)
+		log.Infof(ctx, "executed query: %s", query)
 		rd.AdvanceOne()
 	}
 }
@@ -1076,7 +1076,7 @@ type pgxTestLogger struct{}
 func (l pgxTestLogger) Log(
 	ctx context.Context, level pgx.LogLevel, msg string, data map[string]interface{},
 ) {
-	log.Dev.Infof(ctx, "pgx log [%s] %s - %s", level, msg, data)
+	log.Infof(ctx, "pgx log [%s] %s - %s", level, msg, data)
 }
 
 // pgxTestLogger implements pgx.Logger.
@@ -1449,8 +1449,11 @@ func TestConnServerAbortsOnRepeatedErrors(t *testing.T) {
 	conn, err := db.Conn(ctx)
 	require.NoError(t, err)
 
+	// Get the current value of the cluster setting.
+	maxErrors := int(maxRepeatedErrorCount.Get(&srv.ClusterSettings().SV))
+
 	atomic.StoreUint32(&shouldError, 1)
-	for i := 0; i < maxRepeatedErrorCount+100; i++ {
+	for i := 0; i < maxErrors+100; i++ {
 		var s int
 		err := conn.QueryRowContext(ctx, "SELECT 1").Scan(&s)
 		if err != nil {
@@ -1459,9 +1462,9 @@ func TestConnServerAbortsOnRepeatedErrors(t *testing.T) {
 			}
 			if errors.Is(err, driver.ErrBadConn) {
 				// The server closed the connection, which is what we want!
-				require.GreaterOrEqualf(t, i, maxRepeatedErrorCount,
+				require.GreaterOrEqualf(t, i, maxErrors,
 					"the server should have aborted after seeing %d errors",
-					maxRepeatedErrorCount,
+					maxErrors,
 				)
 				return
 			}
@@ -1706,7 +1709,7 @@ func TestParseClientProvidedSessionParameters(t *testing.T) {
 			}
 			defer func() { _ = ln.Close() }()
 			serverAddr := ln.Addr()
-			log.Dev.Infof(context.Background(), "started listener on %s", serverAddr)
+			log.Infof(context.Background(), "started listener on %s", serverAddr)
 			baseURL := fmt.Sprintf("postgres://%s/system?sslmode=disable", serverAddr)
 
 			var netConn net.Conn

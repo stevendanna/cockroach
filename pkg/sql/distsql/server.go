@@ -37,7 +37,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tochar"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/grpcinterceptor"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -129,7 +128,7 @@ func (ds *ServerImpl) Drain(
 	ctx context.Context, flowDrainWait time.Duration, reporter func(int, redact.SafeString),
 ) {
 	if err := ds.setDraining(true); err != nil {
-		log.Dev.Warningf(ctx, "unable to gossip distsql draining state: %v", err)
+		log.Warningf(ctx, "unable to gossip distsql draining state: %v", err)
 	}
 
 	flowWait := flowDrainWait
@@ -230,7 +229,7 @@ func (ds *ServerImpl) setupFlow(
 			"version mismatch in flow request: %d; this node accepts %d through %d",
 			req.Version, execversion.MinAccepted, execversion.Latest,
 		)
-		log.Dev.Warningf(ctx, "%v", err)
+		log.Warningf(ctx, "%v", err)
 		return ctx, nil, nil, err
 	}
 	ctx = execversion.WithVersion(ctx, req.Version)
@@ -354,6 +353,7 @@ func (ds *ServerImpl) setupFlow(
 			ReCache:                   ds.regexpCache,
 			ToCharFormatCache:         ds.toCharFormatCache,
 			Locality:                  ds.ServerConfig.Locality,
+			OriginalLocality:          ds.ServerConfig.Locality,
 			Tracer:                    ds.ServerConfig.Tracer,
 			Planner:                   &faketreeeval.DummyEvalPlanner{Monitor: monitor},
 			StreamManagerFactory:      &faketreeeval.DummyStreamManagerFactory{},
@@ -428,7 +428,7 @@ func (ds *ServerImpl) setupFlow(
 	var err error
 	ctx, opChains, err = f.Setup(ctx, &req.Flow, opt)
 	if err != nil {
-		log.Dev.Errorf(ctx, "error setting up flow: %s", err)
+		log.Errorf(ctx, "error setting up flow: %s", err)
 		return ctx, nil, nil, err
 	}
 	if isVectorized {
@@ -533,6 +533,28 @@ func newFlow(
 	return rowflow.NewRowBasedFlow(base)
 }
 
+// ConcurrencyKind indicates which concurrency type is present within the local
+// DistSQL flow. Note that inter-node concurrency (i.e. whether we have a
+// distributed plan) is not reflected here.
+type ConcurrencyKind uint32
+
+const (
+	// ConcurrencyHasParallelProcessors, if set, indicates that we have multiple
+	// processors running for the same plan stage.
+	ConcurrencyHasParallelProcessors ConcurrencyKind = (1 << iota)
+	// ConcurrencyStreamer, if set, indicates we have concurrency due to usage
+	// of the Streamer API.
+	ConcurrencyStreamer
+	// ConcurrencyParallelChecks, if set, indicates that we're running
+	// post-query CHECKs in parallel with each other (i.e. the concurrency is
+	// with _other_ local flows).
+	ConcurrencyParallelChecks
+	// ConcurrencyWithOuterPlan, if set, indicates that - if we're running an
+	// "inner" plan (like an apply-join iteration or a routine) - we might have
+	// concurrency with the "outer" plan.
+	ConcurrencyWithOuterPlan
+)
+
 // LocalState carries information that is required to set up a flow with wrapped
 // planNodes.
 type LocalState struct {
@@ -547,13 +569,9 @@ type LocalState struct {
 	// remote flows.
 	IsLocal bool
 
-	// HasConcurrency indicates whether the local flow uses multiple goroutines.
-	HasConcurrency bool
-
-	// MustUseLeaf indicates whether the local flow must use the LeafTxn even if
-	// there is no concurrency in the flow on its own because there would be
-	// concurrency with other flows which prohibits the usage of the RootTxn.
-	MustUseLeaf bool
+	// concurrency tracks the types of concurrency present when accessing the
+	// Txn.
+	concurrency ConcurrencyKind
 
 	// Txn is filled in on the gateway only. It is the RootTxn that the query is running in.
 	// This will be used directly by the flow if the flow has no concurrency and IsLocal is set.
@@ -570,10 +588,22 @@ type LocalState struct {
 	LocalVectorSources map[int32]any
 }
 
+// AddConcurrency marks the given concurrency kinds as present in the local
+// flow.
+func (l *LocalState) AddConcurrency(kind ConcurrencyKind) {
+	l.concurrency |= kind
+}
+
+// GetConcurrency returns the bit-mask representing all concurrency kinds
+// present in the local flow.
+func (l LocalState) GetConcurrency() ConcurrencyKind {
+	return l.concurrency
+}
+
 // MustUseLeafTxn returns true if a LeafTxn must be used. It is valid to call
-// this method only after IsLocal and HasConcurrency have been set correctly.
+// this method only after IsLocal and all concurrency kinds have been set.
 func (l LocalState) MustUseLeafTxn() bool {
-	return !l.IsLocal || l.HasConcurrency || l.MustUseLeaf
+	return !l.IsLocal || l.concurrency != 0
 }
 
 // SetupLocalSyncFlow sets up a synchronous flow on the current (planning) node,
@@ -612,13 +642,13 @@ func (ds *ServerImpl) setupSpanForIncomingRPC(
 		// It's not expected to have a span in the context since the gRPC server
 		// interceptor that generally opens spans exempts this particular RPC. Note
 		// that this method is not called for flows local to the gateway.
-		return tr.StartSpanCtx(ctx, tracingutil.SetupFlowMethodName,
+		return tr.StartSpanCtx(ctx, grpcinterceptor.SetupFlowMethodName,
 			tracing.WithParent(parentSpan),
 			tracing.WithServerSpanKind)
 	}
 
 	if !req.TraceInfo.Empty() {
-		return tr.StartSpanCtx(ctx, tracingutil.SetupFlowMethodName,
+		return tr.StartSpanCtx(ctx, grpcinterceptor.SetupFlowMethodName,
 			tracing.WithRemoteParentFromTraceInfo(req.TraceInfo),
 			tracing.WithServerSpanKind)
 	}
@@ -626,9 +656,9 @@ func (ds *ServerImpl) setupSpanForIncomingRPC(
 	// gRPC metadata, we use it.
 	remoteParent, err := grpcinterceptor.ExtractSpanMetaFromGRPCCtx(ctx, tr)
 	if err != nil {
-		log.Dev.Warningf(ctx, "error extracting tracing info from gRPC: %s", err)
+		log.Warningf(ctx, "error extracting tracing info from gRPC: %s", err)
 	}
-	return tr.StartSpanCtx(ctx, tracingutil.SetupFlowMethodName,
+	return tr.StartSpanCtx(ctx, grpcinterceptor.SetupFlowMethodName,
 		tracing.WithRemoteParentFromSpanMeta(remoteParent),
 		tracing.WithServerSpanKind)
 }
@@ -741,7 +771,7 @@ func (ds *ServerImpl) flowStreamInt(
 	flowID := msg.Header.FlowID
 	streamID := msg.Header.StreamID
 	if log.V(1) {
-		log.Dev.Infof(ctx, "connecting inbound stream %s/%d", flowID.Short(), streamID)
+		log.Infof(ctx, "connecting inbound stream %s/%d", flowID.Short(), streamID)
 	}
 	f, streamStrategy, cleanup, err := ds.flowRegistry.ConnectInboundStream(
 		ctx, flowID, streamID, stream, flowinfra.SettingFlowStreamTimeout.Get(&ds.Settings.SV),
@@ -774,7 +804,7 @@ func (ds *ServerImpl) flowStream(stream execinfrapb.RPCDistSQL_FlowStreamStream)
 		// flowStreamInt may return an error during normal operation (e.g. a flow
 		// was canceled as part of a graceful teardown). Log this error at the INFO
 		// level behind a verbose flag for visibility.
-		log.Dev.Infof(ctx, "%v", err)
+		log.Infof(ctx, "%v", err)
 	}
 	return err
 }

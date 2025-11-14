@@ -373,7 +373,8 @@ func (mb *mutationBuilder) recomputeComputedColsForTrigger(eventType tree.Trigge
 			colIDs[i] = 0
 		}
 	}
-	mb.addSynthesizedComputedCols(colIDs, false /* restrict */)
+	mb.addSynthesizedComputedCols(colIDs,
+		nil /* targetColList */, nil /* targetColSet */, false /* restrict */)
 }
 
 // ============================================================================
@@ -846,8 +847,6 @@ func (b *Builder) buildTriggerFunction(
 	stmtScope := plBuilder.buildRootBlock(stmt.AST, triggerFuncScope, params)
 	udfDef.Body = []memo.RelExpr{stmtScope.expr}
 	udfDef.BodyProps = []*physical.Required{stmtScope.makePhysicalProps()}
-	// Placeholder that ensure the length of BodyTags is the same as Body.
-	udfDef.BodyTags = make([]string, 1)
 
 	return f.ConstructUDFCall(args, &memo.UDFCallPrivate{Def: udfDef}), resolvedDef
 }

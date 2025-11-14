@@ -172,7 +172,7 @@ func ExamineDescriptors(
 		desc := descLookupFn(id)
 		if desc == nil {
 			// This should never happen as ids are parsed and inserted from descTable.
-			log.Dev.Fatalf(ctx, "Descriptor ID %d not found", row.ID)
+			log.Fatalf(ctx, "Descriptor ID %d not found", row.ID)
 		}
 		if desc.GetID() != id {
 			problemsFound = true
@@ -271,7 +271,7 @@ func descReport(stdout io.Writer, desc catalog.Descriptor, format string, args .
 // timestamp.
 func DumpSQL(out io.Writer, descTable DescriptorTable, namespaceTable NamespaceTable) error {
 	// Assume the target is an empty cluster with the same binary version
-	ms := bootstrap.MakeMetadataSchema(keys.SystemSQLCodec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
+	ms := bootstrap.MakeMetadataSchema(keys.SystemSQLCodec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), bootstrap.NoOffset)
 	minUserDescID := ms.FirstNonSystemDescriptorID()
 	minUserCreatedDescID := minUserDescID + descpb.ID(len(catalogkeys.DefaultUserDBs))*2
 	// Print first transaction, which removes all predefined user descriptors.

@@ -343,9 +343,15 @@ func newCopyMachine(
 	// to have field data then we have to populate the expectedHiddenColumnIdxs
 	// field with the columns indexes we expect to be hidden.
 	if c.p.SessionData().ExpectAndIgnoreNotVisibleColumnsInCopy && len(n.Columns) == 0 {
+		numInaccessibleCols := 0
 		for i, col := range tableDesc.PublicColumns() {
 			if col.IsHidden() {
-				c.expectedHiddenColumnIdxs = append(c.expectedHiddenColumnIdxs, i)
+				// Offset the index by the number of preceding inaccessible
+				// columns, which are never expected in the input.
+				c.expectedHiddenColumnIdxs = append(c.expectedHiddenColumnIdxs, i-numInaccessibleCols)
+			}
+			if col.IsInaccessible() {
+				numInaccessibleCols++
 			}
 		}
 	}
@@ -420,6 +426,19 @@ func (c *copyMachine) canSupportVectorized(table catalog.TableDescriptor) bool {
 	}
 	// Columnar vector index encoding is not yet supported.
 	if len(table.VectorIndexes()) > 0 {
+		return false
+	}
+	forcePut := table.GetPrimaryIndex().ForcePut()
+	secondaryIndexes := table.WritableNonPrimaryIndexes()
+	for i := 0; !forcePut && i < len(secondaryIndexes); i++ {
+		forcePut = secondaryIndexes[i].ForcePut()
+	}
+	if forcePut {
+		// Even though the vector encoder supports ForcePut behavior, testing
+		// COPY with a concurrent ALTER PRIMARY KEY has resulted in different
+		// corruption scenarios. The non-vectorized COPY doesn't hit those, so
+		// we choose to fall back.
+		// TODO(#157198): investigate this.
 		return false
 	}
 	// Vectorized COPY doesn't support foreign key checks, no reason it couldn't
@@ -1072,7 +1091,7 @@ func (p *planner) preparePlannerForCopy(
 						if rollbackErr := txnOpt.txn.Rollback(ctx); rollbackErr != nil {
 							// Since we failed to roll back the txn, we don't
 							// know whether retrying this batch wouldn't corrupt
-							// the data, so we return this non-retryable error.
+							// the data, so we return this non-retriable error.
 							return errors.Wrap(rollbackErr, "non-atomic COPY couldn't roll back its txn")
 						}
 						// The rollback succeeded, so we can simply attempt to
@@ -1084,7 +1103,7 @@ func (p *planner) preparePlannerForCopy(
 			} else if rollbackErr := txnOpt.txn.Rollback(ctx); rollbackErr != nil {
 				// Since we failed to roll back the txn, we don't know whether
 				// retrying this batch wouldn't corrupt the data, so we return
-				// this non-retryable error.
+				// this non-retriable error.
 				return errors.Wrap(rollbackErr, "non-atomic COPY couldn't roll back its txn")
 			}
 
@@ -1147,8 +1166,8 @@ func (c *copyMachine) insertRows(ctx context.Context, finalBatch bool) error {
 			// for the next batch.
 			return c.doneWithRows(ctx)
 		} else {
-			if errIsRetryable(err) {
-				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with retryable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
+			if errIsRetriable(err) {
+				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with retriable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
 				// It is currently only safe to retry if we are not in atomic copy
 				// mode & we are in an implicit transaction.
 				//
@@ -1167,13 +1186,13 @@ func (c *copyMachine) insertRows(ctx context.Context, finalBatch bool) error {
 					log.SqlExec.Infof(
 						ctx,
 						"%s is not retrying; "+
-							"implicit: %v; copy_from_atomic_enabled: %v; copy_from_retryable_enabled %v",
+							"implicit: %v; copy_from_atomic_enabled: %v; copy_from_retriable_enabled %v",
 						c.copyFromAST.String(), c.implicitTxn,
 						c.p.SessionData().CopyFromAtomicEnabled, c.p.SessionData().CopyFromRetriesEnabled,
 					)
 				}
 			} else {
-				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with non-retryable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
+				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with non-retriable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
 			}
 			return err
 		}

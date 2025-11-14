@@ -34,7 +34,7 @@ var _ jobs.Resumer = &sqlStatsCompactionResumer{}
 
 // Resume implements the jobs.Resumer interface.
 func (r *sqlStatsCompactionResumer) Resume(ctx context.Context, execCtx interface{}) error {
-	log.Dev.Infof(ctx, "starting sql stats compaction job")
+	log.Infof(ctx, "starting sql stats compaction job")
 	p := execCtx.(JobExecContext)
 
 	var (
@@ -98,7 +98,7 @@ func (r *sqlStatsCompactionResumer) CollectProfile(_ context.Context, _ interfac
 func (r *sqlStatsCompactionResumer) maybeNotifyJobTerminated(
 	ctx context.Context, db isql.DB, jobKnobs *jobs.TestingKnobs, status jobs.State,
 ) error {
-	log.Dev.Infof(ctx, "sql stats compaction job terminated with status = %s", status)
+	log.Infof(ctx, "sql stats compaction job terminated with status = %s", status)
 	if r.sj == nil {
 		return nil
 	}
@@ -174,6 +174,7 @@ func (e *scheduledSQLStatsCompactionExecutor) ExecuteJob(
 ) error {
 	if err := e.createSQLStatsCompactionJob(ctx, cfg, sj, txn); err != nil {
 		e.metrics.NumFailed.Inc(1)
+		return err
 	}
 
 	e.metrics.NumStarted.Inc(1)

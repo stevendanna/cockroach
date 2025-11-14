@@ -36,10 +36,10 @@ func (s *topLevelServer) startAttemptUpgrade(ctx context.Context) error {
 		if k := s.cfg.TestingKnobs.Server; k != nil {
 			upgradeTestingKnobs := k.(*TestingKnobs)
 			if disableCh := upgradeTestingKnobs.DisableAutomaticVersionUpgrade; disableCh != nil {
-				log.Dev.Infof(ctx, "auto upgrade disabled by testing")
+				log.Infof(ctx, "auto upgrade disabled by testing")
 				select {
 				case <-disableCh:
-					log.Dev.Infof(ctx, "auto upgrade no longer disabled by testing")
+					log.Infof(ctx, "auto upgrade no longer disabled by testing")
 				case <-s.stopper.ShouldQuiesce():
 					return
 				}
@@ -49,7 +49,7 @@ func (s *topLevelServer) startAttemptUpgrade(ctx context.Context) error {
 		for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
 			clusterVersion, err := s.clusterVersion(ctx)
 			if err != nil {
-				log.Dev.Errorf(ctx, "unable to retrieve cluster version: %v", err)
+				log.Errorf(ctx, "unable to retrieve cluster version: %v", err)
 				continue
 			}
 
@@ -58,32 +58,40 @@ func (s *topLevelServer) startAttemptUpgrade(ctx context.Context) error {
 			status, err := s.upgradeStatus(ctx, clusterVersion)
 			switch status {
 			case UpgradeBlockedDueToError:
-				log.Dev.Errorf(ctx, "failed attempt to upgrade cluster version, error: %v", err)
+				log.Errorf(ctx, "failed attempt to upgrade cluster version, error: %v", err)
 				continue
 			case UpgradeBlockedDueToMixedVersions:
-				log.Dev.Infof(ctx, "failed attempt to upgrade cluster version: %v", err)
+				log.Infof(ctx, "failed attempt to upgrade cluster version: %v", err)
 				continue
 			case UpgradeDisabledByConfigurationToPreserveDowngrade:
-				log.Dev.Infof(ctx, "auto upgrade is disabled by preserve_downgrade_option")
+				log.Infof(ctx, "auto upgrade is disabled by preserve_downgrade_option")
 				// Note: we do 'continue' here (and not 'return') so that the
 				// auto-upgrade gets a chance to continue/complete if the
 				// operator resets `preserve_downgrade_option` after the node
 				// has started up already.
 				continue
 			case UpgradeDisabledByConfiguration:
-				log.Dev.Infof(ctx, "auto upgrade is disabled by cluster.auto_upgrade.enabled")
+				log.Infof(ctx, "auto upgrade is disabled by cluster.auto_upgrade.enabled")
 				// Note: we do 'continue' here (and not 'return') so that the
 				// auto-upgrade gets a chance to continue/complete if the
 				// operator resets `auto_upgrade.enabled` after the node
 				// has started up already.
 				continue
 			case UpgradeAlreadyCompleted:
-				log.Dev.Info(ctx, "no need to upgrade, cluster already at the newest version")
+				log.Info(ctx, "no need to upgrade, cluster already at the newest version")
 				return
 			case UpgradeAllowed:
 				// Fall out of the select below.
 			default:
 				panic(errors.AssertionFailedf("unhandled case: %d", status))
+			}
+
+			if clusterversion.AutoUpgradeSystemClusterFromMeta1Leaseholder.Get(&s.ClusterSettings().SV) {
+				isMeta1LH, err := s.sqlServer.isMeta1Leaseholder(ctx, s.clock.NowAsClockTimestamp())
+				if err != nil || !isMeta1LH {
+					log.Ops.VInfof(ctx, 2, "not upgrading since we are not the Meta1 leaseholder; err=%v", err)
+					continue
+				}
 			}
 
 			upgradeRetryOpts := retry.Options{
@@ -101,9 +109,9 @@ func (s *topLevelServer) startAttemptUpgrade(ctx context.Context) error {
 					sessiondata.NodeUserSessionDataOverride,
 					"SET CLUSTER SETTING version = crdb_internal.node_executable_version();",
 				); err != nil {
-					log.Dev.Errorf(ctx, "error when finalizing cluster version upgrade: %v", err)
+					log.Errorf(ctx, "error when finalizing cluster version upgrade: %v", err)
 				} else {
-					log.Dev.Info(ctx, "successfully upgraded cluster version")
+					log.Info(ctx, "successfully upgraded cluster version")
 					return
 				}
 			}
@@ -174,6 +182,17 @@ func (s *topLevelServer) upgradeStatus(
 			// cluster may be up-to-date, but a node is down).
 			if notRunningErr == nil {
 				notRunningErr = errors.Errorf("node %d not running (%d), cannot determine version", nodeID, st)
+			}
+			// However, we don't want to exit the auto upgrade process if we can't validate
+			// our own version. Consider the case where the meta1 leaseholder is the first
+			// node to restart to the new version but has transient liveness issues. If we skip
+			// the check here, we will see all other nodes at the same (old) version and exit
+			// the auto upgrade process with UpgradeAlreadyCompleted. Since the meta1 leaseholder
+			// is the only node that can perform the upgrade, this indefinitely blocks the upgrade.
+			if clusterversion.AutoUpgradeSystemClusterFromMeta1Leaseholder.Get(&s.ClusterSettings().SV) {
+				if s.node.Descriptor.NodeID == nodeID {
+					return UpgradeBlockedDueToError, errors.Errorf("node %d not running (%d), cannot determine version", nodeID, st)
+				}
 			}
 			continue
 		}

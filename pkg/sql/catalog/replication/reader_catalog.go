@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemadesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
@@ -65,7 +64,7 @@ func SetupOrAdvanceStandbyReaderCatalog(
 			// below.
 			descriptorsToWrite := make([]catalog.MutableDescriptor, 0, len(allExistingDescs.OrderedDescriptorIDs()))
 			if err := extracted.ForEachDescriptor(func(fromDesc catalog.Descriptor) error {
-				if !shouldSetupForReader(fromDesc.GetID(), fromDesc.GetName(), fromDesc.GetParentID()) {
+				if !shouldSetupForReader(fromDesc.GetID(), fromDesc.GetParentID()) {
 					return nil
 				}
 				// Track this descriptor was updated.
@@ -133,28 +132,16 @@ func SetupOrAdvanceStandbyReaderCatalog(
 			// if a table and sequence depend on each other, then updating one and
 			// fetching the other in a mutable way to remove a dependency will hit
 			// a validation error.
-			for _, mut := range descriptorsToWrite {
-				if err := txn.Descriptors().WriteDescToBatch(ctx, true, mut, b); err != nil {
-					return errors.Wrapf(err, "unable to create replicated descriptor: %d %T", mut.GetID(), mut)
-				}
-			}
-			if err := extracted.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
-				if !shouldSetupForReader(e.GetID(), e.GetName(), e.GetParentID()) {
-					return nil
-				}
-				// Do not upsert entries if one already exists.
-				entry := allExistingDescs.LookupNamespaceEntry(catalog.MakeNameInfo(e))
-				if entry != nil && e.GetID() == entry.GetID() {
-					return nil
-				}
-				return errors.Wrapf(txn.Descriptors().UpsertNamespaceEntryToBatch(ctx, true, e, b), "namespace entry %v", e)
-			}); err != nil {
-				return err
-			}
+
 			// Figure out which descriptors should be deleted.
+			//
+			// NB: we issue deletes of existing descriptors/namespace entries before
+			// we upsert new ones in the batch to ensure that if we need to delete and
+			// upsert the same namespace entry but for a different table id, after the
+			// txn, the reader will see the upsert.
 			if err := allExistingDescs.ForEachDescriptor(func(desc catalog.Descriptor) error {
 				// Skip descriptors that were updated above
-				if !shouldSetupForReader(desc.GetID(), desc.GetName(), desc.GetParentID()) ||
+				if !shouldSetupForReader(desc.GetID(), desc.GetParentID()) ||
 					descriptorsUpdated.Contains(desc.GetID()) {
 					return nil
 				}
@@ -168,13 +155,32 @@ func SetupOrAdvanceStandbyReaderCatalog(
 			if err := allExistingDescs.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
 				// Skip descriptors that were updated above that were
 				// not renamed.
-				if !shouldSetupForReader(e.GetID(), e.GetName(), e.GetParentID()) ||
+				if !shouldSetupForReader(e.GetID(), e.GetParentID()) ||
 					(descriptorsUpdated.Contains(e.GetID()) &&
 						!descriptorsRenamed.Contains(e.GetID())) {
 					return nil
 				}
 				return errors.Wrapf(txn.Descriptors().DeleteNamespaceEntryToBatch(ctx, true, e, b),
 					"deleting namespace")
+			}); err != nil {
+				return err
+			}
+
+			for _, mut := range descriptorsToWrite {
+				if err := txn.Descriptors().WriteDescToBatch(ctx, true, mut, b); err != nil {
+					return errors.Wrapf(err, "unable to create replicated descriptor: %d %T", mut.GetID(), mut)
+				}
+			}
+			if err := extracted.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
+				if !shouldSetupForReader(e.GetID(), e.GetParentID()) {
+					return nil
+				}
+				// Do not upsert entries if one already exists with the same ID.
+				entry := allExistingDescs.LookupNamespaceEntry(catalog.MakeNameInfo(e))
+				if entry != nil && e.GetID() == entry.GetID() {
+					return nil
+				}
+				return errors.Wrapf(txn.Descriptors().UpsertNamespaceEntryToBatch(ctx, true, e, b), "namespace entry %v", e)
 			}); err != nil {
 				return err
 			}
@@ -293,23 +299,15 @@ func replicateDescriptorForReader(
 }
 
 // shouldSetupForReader determines if a descriptor should be setup
-// access via external row data, based on the ID for tables with fixed IDs or on
-// the name and parentID for tables with dynamic IDs.
-func shouldSetupForReader(id descpb.ID, name string, parentID descpb.ID) bool {
+// access via external row data.
+func shouldSetupForReader(id descpb.ID, parentID descpb.ID) bool {
 	switch id {
 	case keys.UsersTableID, keys.RoleMembersTableID, keys.RoleOptionsTableID,
 		keys.DatabaseRoleSettingsTableID, keys.TableStatisticsTableID:
 		return true
 	default:
-		if parentID == keys.SystemDatabaseID {
-			switch name {
-			case string(catconstants.SystemPrivilegeTableName):
-				return true
-			default:
-				return false
-			}
-		}
-		return id != keys.SystemDatabaseID
+		return parentID != keys.SystemDatabaseID &&
+			id != keys.SystemDatabaseID
 	}
 }
 

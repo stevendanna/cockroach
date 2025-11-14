@@ -279,11 +279,15 @@ func (b *blockingBuffer) AcquireMemory(ctx context.Context, n int64) (alloc Allo
 // Add implements Writer interface.
 func (b *blockingBuffer) Add(ctx context.Context, e Event) error {
 	if b.knobs.BeforeAdd != nil {
-		ctx, e = b.knobs.BeforeAdd(ctx, e)
+		var shouldAdd bool
+		ctx, e, shouldAdd = b.knobs.BeforeAdd(ctx, e)
+		if !shouldAdd {
+			return nil
+		}
 	}
 
 	if log.V(2) {
-		log.Dev.Infof(ctx, "Add event: %s", e.String())
+		log.Infof(ctx, "Add event: %s", e.String())
 	}
 
 	// Immediately enqueue event if it already has allocation,
@@ -522,13 +526,13 @@ func logSlowAcquisition(
 	return func(ctx context.Context, poolName string, r quotapool.Request, start time.Time) func() {
 		shouldLog := logSlowAcquire.ShouldLog()
 		if shouldLog {
-			log.Dev.Warningf(ctx, "have been waiting %s attempting to acquire changefeed quota (buffer=%s)", redact.SafeString(bufType),
+			log.Warningf(ctx, "have been waiting %s attempting to acquire changefeed quota (buffer=%s)", redact.SafeString(bufType),
 				timeutil.Since(start))
 		}
 
 		return func() {
 			if shouldLog {
-				log.Dev.Infof(ctx, "acquired changefeed quota after %s (buffer=%s)", timeutil.Since(start), redact.SafeString(bufType))
+				log.Infof(ctx, "acquired changefeed quota after %s (buffer=%s)", timeutil.Since(start), redact.SafeString(bufType))
 			}
 		}
 	}

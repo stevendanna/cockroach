@@ -742,15 +742,6 @@ func (oc *optCatalog) codec() keys.SQLCodec {
 	return oc.planner.ExecCfg().Codec
 }
 
-// DisableUnsafeInternalCheck sets the planners skipUnsafeInternalsCheck
-// to true, and returns a function which reverses it to false.
-func (oc *optCatalog) DisableUnsafeInternalCheck() func() {
-	oc.planner.skipUnsafeInternalsCheck = true
-	return func() {
-		oc.planner.skipUnsafeInternalsCheck = false
-	}
-}
-
 // optView is a wrapper around catalog.TableDescriptor that implements
 // the cat.Object, cat.DataSource, and cat.View interfaces.
 type optView struct {
@@ -1155,12 +1146,13 @@ func newOptTable(
 				canUseTombstones := idx.ImplicitPartitioningColumnCount() == 1 &&
 					partitionColumn.GetType().Family() == types.EnumFamily
 				ot.uniqueConstraints = append(ot.uniqueConstraints, optUniqueConstraint{
-					name:                  idx.GetName(),
-					table:                 ot.ID(),
-					columns:               idx.IndexDesc().KeyColumnIDs[idx.IndexDesc().ExplicitColumnStartIdx():],
-					withoutIndex:          true,
-					canUseTombstones:      canUseTombstones,
-					tombstoneIndexOrdinal: idx.Ordinal(),
+					name:             idx.GetName(),
+					table:            ot.ID(),
+					columns:          idx.IndexDesc().KeyColumnIDs[idx.IndexDesc().ExplicitColumnStartIdx():],
+					withoutIndex:     true,
+					canUseTombstones: canUseTombstones,
+					// One would assume that this would be idx.Ordinal(), but they can differ during schema change
+					tombstoneIndexOrdinal: i,
 					predicate:             idx.GetPredicate(),
 					// TODO(rytaft): will we ever support an unvalidated unique constraint
 					// here?
@@ -1761,7 +1753,7 @@ func (oi *optIndex) init(
 				valueEncBuf, nil, /* prefixDatums */
 			)
 			if err != nil {
-				log.Dev.Fatalf(context.TODO(), "error while decoding partition tuple: %+v %+v",
+				log.Fatalf(context.TODO(), "error while decoding partition tuple: %+v %+v",
 					oi.tab.desc, oi.tab.desc.GetDependsOnTypes())
 			}
 			op.datums = append(op.datums, t.Datums)
@@ -2087,7 +2079,7 @@ func (os *optTableStat) init(
 				)
 			}
 			// For release builds, skip over the stat and log a warning.
-			log.Dev.Warningf(ctx, "skipping stat %d due to failed type check: %v", stat.StatisticID, err)
+			log.Warningf(ctx, "skipping stat %d due to failed type check: %v", stat.StatisticID, err)
 			return false, nil
 		}
 	}

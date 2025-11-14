@@ -9,7 +9,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/bulk"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -77,13 +76,6 @@ var indexBackfillIngestConcurrency = settings.RegisterIntSetting(
 	"the number of goroutines to use for bulk adding index entries",
 	2,
 	settings.PositiveInt, /* validateFn */
-)
-
-var indexBackfillElasticCPUControlEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"bulkio.index_backfill.elastic_control.enabled",
-	"determines whether index backfill operations integrate with elastic CPU control",
-	false, // TODO(dt): enable this by default after more benchmarking.
 )
 
 func newIndexBackfiller(
@@ -162,9 +154,8 @@ func (ib *indexBackfiller) constructIndexEntries(
 
 			// Identify the Span for which we have constructed index entries. This is
 			// used for reporting progress and updating the job details.
-			completedSpan := ib.spec.Spans[i]
+			completedSpan := roachpb.Span{Key: startKey, EndKey: ib.spec.Spans[i].EndKey}
 			if todo.Key != nil {
-				completedSpan.Key = startKey
 				completedSpan.EndKey = todo.Key
 			}
 
@@ -337,18 +328,9 @@ func (ib *indexBackfiller) ingestIndexEntries(
 	g.GoCtx(func(ctx context.Context) error {
 		defer close(stopProgress)
 
-		// Create a pacer for admission control for index entry processing.
-		pacer := bulk.NewCPUPacer(ctx, ib.flowCtx.Cfg.DB.KV(), indexBackfillElasticCPUControlEnabled)
-		defer pacer.Close()
-
 		var vectorInputEntry rowenc.IndexEntry
 		for indexBatch := range indexEntryCh {
 			for _, indexEntry := range indexBatch.indexEntries {
-				// Pace the admission control before processing each index entry.
-				if err := pacer.Pace(ctx); err != nil {
-					return err
-				}
-
 				// If there is at least one vector index being written, we need to check to see
 				// if this IndexEntry is going to a vector index and then re-encode it for that
 				// index if so.
@@ -529,20 +511,19 @@ func (ib *indexBackfiller) getProgressReportInterval() time.Duration {
 	return indexBackfillProgressReportInterval
 }
 
-// buildIndexEntryBatch constructs the index entries for a single indexBatch.
+// buildIndexEntryBatch constructs the index entries for a single indexBatch for
+// the given span. A non-nil resumeKey is returned when there is still work to
+// be done in this span (sp.Key < resumeKey < sp.EndKey), which happens if the
+// entire span does not fit within the batch size.
 func (ib *indexBackfiller) buildIndexEntryBatch(
 	tctx context.Context, sp roachpb.Span, readAsOf hlc.Timestamp,
-) (roachpb.Key, []rowenc.IndexEntry, int64, error) {
+) (resumeKey roachpb.Key, entries []rowenc.IndexEntry, memUsedBuildingBatch int64, err error) {
 	knobs := &ib.flowCtx.Cfg.TestingKnobs
 	if knobs.RunBeforeBackfillChunk != nil {
 		if err := knobs.RunBeforeBackfillChunk(sp); err != nil {
 			return nil, nil, 0, err
 		}
 	}
-
-	var memUsedBuildingBatch int64
-	var key roachpb.Key
-	var entries []rowenc.IndexEntry
 
 	br := indexBatchRetry{
 		nextChunkSize: ib.spec.ChunkSize,
@@ -582,7 +563,7 @@ func (ib *indexBackfiller) buildIndexEntryBatch(
 
 		// TODO(knz): do KV tracing in DistSQL processors.
 		var err error
-		entries, key, memUsedBuildingBatch, err = ib.BuildIndexEntriesChunk(
+		entries, resumeKey, memUsedBuildingBatch, err = ib.BuildIndexEntriesChunk(
 			ctx, txn.KV(), ib.desc, sp, br.nextChunkSize, false, /* traceKV */
 		)
 		return err
@@ -598,7 +579,7 @@ func (ib *indexBackfiller) buildIndexEntryBatch(
 	log.VEventf(ctx, 3, "index backfill stats: entries %d, prepare %+v",
 		len(entries), prepTime)
 
-	return key, entries, memUsedBuildingBatch, nil
+	return resumeKey, entries, memUsedBuildingBatch, nil
 }
 
 // Resume is part of the execinfra.Processor interface.
@@ -637,7 +618,7 @@ func (b *indexBatchRetry) buildBatchWithRetry(ctx context.Context, db isql.DB) e
 					return errors.Wrapf(err, "failed after %d retries", r.CurrentAttempt())
 				}
 				b.nextChunkSize = max(1, b.nextChunkSize/2)
-				log.Dev.Infof(ctx,
+				log.Infof(ctx,
 					"out of memory while building index entries; retrying with batch size %d. Silencing error: %v",
 					b.nextChunkSize, err)
 				continue

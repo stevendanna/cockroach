@@ -215,7 +215,7 @@ SELECT $1::INT = ALL (
 					"--url", url, "--certs-dir", certsDir, "-e", "'SELECT 1'")
 
 				// Report the results of execution.
-				t.L().Printf("server %d, attempt %d, result:\n%s\n", server, attempt, b)
+				t.L().Printf("server %d, attempt %d, result:\n%+v\n", server, attempt, b)
 				// Indicate, to the main goroutine, that we have at least one connection
 				// attempt completed.
 				atomic.AddUint32(&numConns, 1)
@@ -338,7 +338,7 @@ func runClientNetworkConnectionTimeout(ctx context.Context, t test.Test, c clust
 	grp.Go(func(ctx context.Context, l *logger.Logger) error {
 		urls, err := roachprod.PgURL(ctx, l, c.MakeNodes(c.Node(1)), certsDir, roachprod.PGURLOptions{
 			External: true,
-			Secure:   install.SimpleSecureOption(true),
+			Secure:   true,
 		})
 		if err != nil {
 			return err

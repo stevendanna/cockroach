@@ -79,7 +79,7 @@ var (
 	// for an internal query (i.e., performed by the framework) to
 	// complete. These queries are typically associated with gathering
 	// upgrade state data to be displayed during execution.
-	internalQueryTimeout = 30 * time.Second
+	internalQueryTimeout = 90 * time.Second
 )
 
 func newServiceRuntime(desc *ServiceDescriptor) *serviceRuntime {
@@ -508,13 +508,6 @@ func (tr *testRunner) loggerFor(step *singleStep) (*logger.Logger, error) {
 	return prefixedLoggerWithFilename(tr.logger, prefix, filepath.Join(logPrefix, name))
 }
 
-// getAvailableNodes returns the nodes that are available for the given service descriptor.
-func (tr *testRunner) getAvailableNodes(
-	serviceDescriptor *ServiceDescriptor,
-) option.NodeListOption {
-	return serviceDescriptor.Nodes.Intersect(tr.monitor.AvailableNodes(serviceDescriptor.Name))
-}
-
 // refreshBinaryVersions updates the `binaryVersions` field for every
 // service with the binary version running on each node of the
 // cluster. We use the `atomic` package here as this function may be
@@ -525,15 +518,16 @@ func (tr *testRunner) refreshBinaryVersions(ctx context.Context, service *servic
 	defer cancel()
 
 	group := ctxgroup.WithContext(connectionCtx)
-	for j, node := range tr.getAvailableNodes(service.descriptor) {
+	for j, node := range service.descriptor.Nodes {
 		group.GoCtx(func(ctx context.Context) error {
-			bv, err := clusterupgrade.BinaryVersion(ctx, tr.conn(node, service.descriptor.Name))
+			bv, err := clusterupgrade.BinaryVersion(ctx, tr.logger, tr.conn(node, service.descriptor.Name))
 			if err != nil {
 				return fmt.Errorf(
 					"failed to get binary version for node %d (%s): %w",
 					node, service.descriptor.Name, err,
 				)
 			}
+
 			newBinaryVersions[j] = bv
 			return nil
 		})
@@ -556,9 +550,9 @@ func (tr *testRunner) refreshClusterVersions(ctx context.Context, service *servi
 	defer cancel()
 
 	group := ctxgroup.WithContext(connectionCtx)
-	for j, node := range tr.getAvailableNodes(service.descriptor) {
+	for j, node := range service.descriptor.Nodes {
 		group.GoCtx(func(ctx context.Context) error {
-			cv, err := clusterupgrade.ClusterVersion(ctx, tr.conn(node, service.descriptor.Name))
+			cv, err := clusterupgrade.ClusterVersion(ctx, tr.logger, tr.conn(node, service.descriptor.Name))
 			if err != nil {
 				return fmt.Errorf(
 					"failed to get cluster version for node %d (%s): %w",
@@ -615,7 +609,7 @@ func (tr *testRunner) maybeInitConnections(service *serviceRuntime) error {
 	}
 
 	cc := map[int]*gosql.DB{}
-	for _, node := range tr.getAvailableNodes(service.descriptor) {
+	for _, node := range service.descriptor.Nodes {
 		conn, err := tr.cluster.ConnE(
 			tr.ctx, tr.logger, node, option.VirtualClusterName(service.descriptor.Name),
 		)
@@ -641,7 +635,6 @@ func (tr *testRunner) newHelper(
 		connFunc := func(node int) *gosql.DB {
 			return tr.conn(node, sc.Descriptor.Name)
 		}
-		nodes := sc.Descriptor.Nodes
 
 		return &Service{
 			ServiceContext: sc,
@@ -650,8 +643,6 @@ func (tr *testRunner) newHelper(
 			connFunc:        connFunc,
 			stepLogger:      l,
 			clusterVersions: cv,
-			monitor:         tr.monitor,
-			nodes:           nodes,
 		}
 	}
 

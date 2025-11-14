@@ -215,8 +215,10 @@ func sanitizeVersionForBackup(v *clusterupgrade.Version) string {
 // hasInternalSystemJobs returns true if the cluster is expected to
 // have the `crdb_internal.system_jobs` vtable. If so, it should be
 // used instead of `system.jobs` when querying job status.
-func hasInternalSystemJobs(ctx context.Context, rng *rand.Rand, db *gosql.DB) (bool, error) {
-	cv, err := clusterupgrade.ClusterVersion(ctx, db)
+func hasInternalSystemJobs(
+	ctx context.Context, l *logger.Logger, rng *rand.Rand, db *gosql.DB,
+) (bool, error) {
+	cv, err := clusterupgrade.ClusterVersion(ctx, l, db)
 	if err != nil {
 		return false, fmt.Errorf("failed to query cluster version: %w", err)
 	}
@@ -622,9 +624,8 @@ func newFingerprintContents(db *gosql.DB, table string) *fingerprintContents {
 	return &fingerprintContents{db: db, table: table}
 }
 
-// Load computes the fingerprints for the underlying table and stores the
-// contents in the `fingeprints` field. If timestamp is not set, computes
-// the fingerprint for the current time.
+// Load computes the fingerprints for the underlying table and stores
+// the contents in the `fingeprints` field.
 func (fc *fingerprintContents) Load(
 	ctx context.Context, l *logger.Logger, timestamp string, _ tableContents,
 ) error {
@@ -1288,7 +1289,7 @@ func (d *BackupRestoreTestDriver) verifyBackupCollection(
 		}
 	}
 	_, db := d.testUtils.RandomDB(rng, d.testUtils.roachNodes)
-	if err := roachtestutil.CheckInvalidDescriptors(ctx, db); err != nil {
+	if err := roachtestutil.CheckInvalidDescriptors(ctx, l, db); err != nil {
 		return fmt.Errorf("failed descriptor check: %w", err)
 	}
 
@@ -2210,7 +2211,7 @@ func (mvb *mixedVersionBackup) createBackupCollection(
 	backupNamePrefix := mvb.backupNamePrefix(h, label)
 	n, db := h.System.RandomDB(rng)
 	l.Printf("checking existence of crdb_internal.system_jobs via node %d", n)
-	internalSystemJobs, err := hasInternalSystemJobs(ctx, rng, db)
+	internalSystemJobs, err := hasInternalSystemJobs(ctx, l, rng, db)
 	if err != nil {
 		return err
 	}
@@ -2355,9 +2356,11 @@ func (d *BackupRestoreTestDriver) deleteUserTableSST(
 	ctx context.Context, l *logger.Logger, db *gosql.DB, collection *backupCollection,
 ) error {
 	var sstPath string
+	var startPretty, endPretty string
+	var sizeBytes, numRows int
 	if err := db.QueryRowContext(
 		ctx,
-		`SELECT path FROM
+		`SELECT path, start_pretty, end_pretty, size_bytes, rows FROM
 		(
 			SELECT row_number() OVER (), * FROM
 			[SHOW BACKUP FILES FROM LATEST IN $1]
@@ -2366,14 +2369,17 @@ func (d *BackupRestoreTestDriver) deleteUserTableSST(
 		ORDER BY row_number DESC
 		LIMIT 1`,
 		collection.uri(),
-	).Scan(&sstPath); err != nil {
+	).Scan(&sstPath, &startPretty, &endPretty, &sizeBytes, &numRows); err != nil {
 		return errors.Wrapf(err, "failed to get SST path from %s", collection.uri())
 	}
 	uri, err := url.Parse(collection.uri())
 	if err != nil {
 		return errors.Wrapf(err, "failed to parse backup collection URI %q", collection.uri())
 	}
-	l.Printf("deleting sst %s at %s", sstPath, uri)
+	l.Printf(
+		"deleting sst %s at %s: covering %d bytes and %d rows in [%s, %s)",
+		sstPath, uri, sizeBytes, numRows, startPretty, endPretty,
+	)
 	storage, err := cloud.ExternalStorageFromURI(
 		ctx,
 		collection.uri(),
@@ -2673,7 +2679,13 @@ func (d BackupRestoreTestDriver) getORDownloadJobID(
 	ctx context.Context, l *logger.Logger, rng *rand.Rand,
 ) (int, error) {
 	var downloadJobID int
-	if err := d.testUtils.QueryRow(ctx, rng, `SELECT job_id FROM [SHOW JOBS] WHERE description LIKE '%Background Data Download%' ORDER BY created DESC LIMIT 1`).Scan(&downloadJobID); err != nil {
+	if err := d.testUtils.QueryRow(
+		ctx,
+		rng,
+		`SELECT job_id FROM [SHOW JOBS]
+		WHERE description LIKE '%Background Data Download%' AND job_type = 'RESTORE'
+		ORDER BY created DESC LIMIT 1`,
+	).Scan(&downloadJobID); err != nil {
 		return 0, err
 	}
 	return downloadJobID, nil
@@ -2701,7 +2713,7 @@ func (u *CommonTestUtils) resetCluster(
 	}
 
 	cockroachPath := clusterupgrade.CockroachPathForVersion(u.t, version)
-	settings = append(settings, install.BinaryOption(cockroachPath), install.SimpleSecureOption(true))
+	settings = append(settings, install.BinaryOption(cockroachPath), install.SecureOption(true))
 	return clusterupgrade.StartWithSettings(
 		ctx, l, u.cluster, u.roachNodes, option.NewStartOpts(opts...), settings...,
 	)
@@ -2735,7 +2747,7 @@ func (mvb *mixedVersionBackup) verifySomeBackups(
 
 	n, db := h.System.RandomDB(rng)
 	l.Printf("checking existence of crdb_internal.system_jobs via node %d", n)
-	internalSystemJobs, err := hasInternalSystemJobs(ctx, rng, db)
+	internalSystemJobs, err := hasInternalSystemJobs(ctx, l, rng, db)
 	if err != nil {
 		return err
 	}
@@ -2816,7 +2828,7 @@ func (mvb *mixedVersionBackup) verifyAllBackups(
 
 			n, db := h.System.RandomDB(rng)
 			l.Printf("checking existence of crdb_internal.system_jobs via node %d", n)
-			internalSystemJobs, err := hasInternalSystemJobs(ctx, rng, db)
+			internalSystemJobs, err := hasInternalSystemJobs(ctx, l, rng, db)
 			if err != nil {
 				restoreErrors = append(restoreErrors, fmt.Errorf("error checking for internal system jobs: %w", err))
 				return
@@ -2959,13 +2971,8 @@ func registerBackupMixedVersion(r registry.Registry) {
 			//   the cluster relatively busy while the backup and restores
 			//   take place. Its schema is also more complex, and the
 			//   operations more closely resemble a customer workload.
-
-			// Use the same versioned workload binary as the cluster. The bank workload
-			// is no longer backwards compatible after #149374, so we need to use the same
-			// version as the cockroach cluster.
-			// TODO(testeng): Replace with https://github.com/cockroachdb/cockroach/issues/147374
-			stopBank := mvt.Workload("bank", c.WorkloadNode(), bankInit, bankRun, true /* overrideBinary */)
-			stopTPCC := mvt.Workload("tpcc", c.WorkloadNode(), tpccInit, tpccRun, false /* overrideBinary */)
+			stopBank := mvt.Workload("bank", c.WorkloadNode(), bankInit, bankRun)
+			stopTPCC := mvt.Workload("tpcc", c.WorkloadNode(), tpccInit, tpccRun)
 			stopSystemWriter := mvt.BackgroundFunc("system table writer", backupTest.systemTableWriter)
 
 			mvt.InMixedVersion("plan and run backups", backupTest.planAndRunBackups)

@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catsessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descidgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
@@ -100,9 +101,9 @@ type extendedEvalContext struct {
 	// jobs refers to jobs in extraTxnState.
 	jobs *txnJobsCollection
 
-	persistedSQLStats *persistedsqlstats.PersistedSQLStats
+	statsProvider *persistedsqlstats.PersistedSQLStats
 
-	localSQLStats *sslocal.SQLStats
+	localStatsProvider *sslocal.SQLStats
 
 	indexUsageStats *idxusage.LocalIndexUsageStats
 
@@ -133,6 +134,7 @@ func (evalCtx *extendedEvalContext) copyFromExecCfg(execCfg *ExecutorConfig) {
 	evalCtx.ClusterName = execCfg.RPCContext.ClusterName()
 	evalCtx.NodeID = execCfg.NodeInfo.NodeID
 	evalCtx.Locality = execCfg.Locality
+	evalCtx.OriginalLocality = execCfg.Locality
 	evalCtx.NodesStatusServer = execCfg.NodesStatusServer
 	evalCtx.TenantStatusServer = execCfg.TenantStatusServer
 	evalCtx.SQLStatusServer = execCfg.SQLStatusServer
@@ -235,6 +237,15 @@ type planner struct {
 
 	sqlCursors sqlCursors
 
+	// routineMetadataForwarder, if set, is used to propagate ProducerMetadata
+	// out of the routine execution.
+	// TODO(yuzefovich): this is rather ugly, but the routines are expressions,
+	// so we don't have easy access to the DistSQL infrastructure. Additionally,
+	// we don't want to mutate the eval.Context for this. It seems fine given
+	// that we only have local plans with routines and there should be no
+	// concurrency.
+	routineMetadataForwarder metadataForwarder
+
 	storedProcTxnState storedProcTxnStateAccessor
 
 	createdSequences createdSequences
@@ -304,10 +315,6 @@ type planner struct {
 	// statement. It's similar to autoRetryCounter / txnState.mu.autoRetryCounter
 	// but for statement retries.
 	autoRetryStmtCounter int
-
-	// skipUnsafeInternalsCheck is used to skip the check that the
-	// planner is not used for unsafe internal statements.
-	skipUnsafeInternalsCheck bool
 }
 
 // hasFlowForPausablePortal returns true if the planner is for re-executing a
@@ -459,7 +466,11 @@ func newInternalPlanner(
 	p.extendedEvalCtx.ClusterName = execCfg.RPCContext.ClusterName()
 	p.extendedEvalCtx.NodeID = execCfg.NodeInfo.NodeID
 	p.extendedEvalCtx.Locality = execCfg.Locality
+	p.extendedEvalCtx.OriginalLocality = execCfg.Locality
 	p.extendedEvalCtx.DescIDGenerator = execCfg.DescIDGenerator
+	if execCfg.TestingKnobs.UseTransactionalDescIDGenerator && txn != nil {
+		p.extendedEvalCtx.DescIDGenerator = descidgen.NewTransactionalGenerator(execCfg.Settings, execCfg.Codec, txn)
+	}
 
 	p.sessionDataMutatorIterator = smi
 
@@ -524,7 +535,7 @@ func internalExtendedEvalCtx(
 		if ief.server != nil {
 			indexUsageStats = ief.server.indexUsageStats
 			schemaTelemetryController = ief.server.schemaTelemetryController
-			sqlStatsProvider = ief.server.persistedSQLStats
+			sqlStatsProvider = ief.server.sqlStats
 			localSqlStatsProvider = ief.server.localSqlStats
 		} else {
 			// If the indexUsageStats is nil from the sql.Server, we create a dummy
@@ -556,12 +567,12 @@ func internalExtendedEvalCtx(
 			StmtDiagnosticsRequestInserter: execCfg.StmtDiagnosticsRecorder.InsertRequest,
 			RangeStatsFetcher:              execCfg.RangeStatsFetcher,
 		},
-		Tracing:           &SessionTracing{},
-		Descs:             tables,
-		indexUsageStats:   indexUsageStats,
-		persistedSQLStats: sqlStatsProvider,
-		localSQLStats:     localSqlStatsProvider,
-		jobs:              newTxnJobsCollection(),
+		Tracing:            &SessionTracing{},
+		Descs:              tables,
+		indexUsageStats:    indexUsageStats,
+		statsProvider:      sqlStatsProvider,
+		localStatsProvider: localSqlStatsProvider,
+		jobs:               newTxnJobsCollection(),
 	}
 	ret.copyFromExecCfg(execCfg)
 	return ret
@@ -943,7 +954,6 @@ func (p *planner) resetPlanner(
 	p.txn = txn
 	p.stmt = Statement{}
 	p.instrumentation = instrumentationHelper{}
-	p.curPlan = planTop{}
 	p.monitor = plannerMon
 	p.sessionMonitor = sessionMon
 
@@ -968,6 +978,7 @@ func (p *planner) resetPlanner(
 	p.skipDescriptorCache = false
 	p.typeResolutionDbID = descpb.InvalidID
 	p.pausablePortal = nil
+	p.routineMetadataForwarder = nil
 	p.autoRetryCounter = 0
 	p.autoRetryStmtReason = nil
 	p.autoRetryStmtCounter = 0
@@ -1060,8 +1071,9 @@ func (p *planner) ClearTableStatsCache() {
 	}
 }
 
-// mustUseLeafTxn returns true if inner plans must use a leaf transaction.
-func (p *planner) mustUseLeafTxn() bool {
+// innerPlansMustUseLeafTxn returns true if inner plans must use a leaf
+// transaction.
+func (p *planner) innerPlansMustUseLeafTxn() bool {
 	return atomic.LoadInt32(&p.atomic.innerPlansMustUseLeafTxn) >= 1
 }
 
@@ -1078,15 +1090,4 @@ func (p *planner) ExtendHistoryRetention(ctx context.Context, jobID jobspb.JobID
 // RetryCounter is part of the eval.Planner interface.
 func (p *planner) RetryCounter() int {
 	return p.autoRetryCounter + p.autoRetryStmtCounter
-}
-
-// ProcessVectorIndexFixups is part of the eval.Planner interface.
-func (p *planner) ProcessVectorIndexFixups(
-	ctx context.Context, tableID descpb.ID, indexID descpb.IndexID,
-) error {
-	vi, err := p.execCfg.VecIndexManager.Get(ctx, tableID, indexID)
-	if err != nil {
-		return err
-	}
-	return vi.ProcessFixups(ctx)
 }

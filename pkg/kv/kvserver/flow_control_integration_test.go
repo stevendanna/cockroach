@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
@@ -2849,6 +2850,15 @@ func TestFlowControlSendQueueRangeMigrate(t *testing.T) {
 					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
 						return true
 					},
+					EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
+						// Because we are migrating from a version (currently) prior to the
+						// range force flush key version gate, we won't trigger the force
+						// flush via migrate until we're on the endV, which defeats the
+						// purpose of this test. We override the behavior here to allow the
+						// force flush to be triggered on the startV from a Migrate
+						// request.
+						OverrideDoTimelyApplicationToAllReplicas: true,
+					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
 						OverrideTokenDeduction: func(tokens kvflowcontrol.Tokens) kvflowcontrol.Tokens {
@@ -3351,7 +3361,7 @@ func TestFlowControlSendQueueRangeFeed(t *testing.T) {
 	h.resetV2TokenMetrics(ctx)
 	h.waitForConnectedStreams(ctx, desc.RangeID, 3, 0 /* serverIdx */)
 
-	ts := tc.Server(2)
+	srv2 := tc.Server(2)
 	span := desc.KeySpan().AsRawSpanWithNoLocals()
 	ignoreValues := func(event kvcoord.RangeFeedMessage) {}
 
@@ -3392,17 +3402,26 @@ func TestFlowControlSendQueueRangeFeed(t *testing.T) {
   WHERE name LIKE 'kv.rangefeed.closed_timestamp.slow_ranges.cancelled'
   ORDER BY name ASC;
 `
-
-	closeFeed := rangeFeed(
-		ctx,
-		ts.DistSenderI(),
-		span,
-		tc.Server(0).Clock().Now(),
-		ignoreValues,
-		kvcoord.WithRangeObserver(observer),
-	)
+	// The rangefeed is supposed to live on n3, since that's srv2 and it is
+	// supposed to prefer the local replica. However, it can happen that n3
+	// doesn't see itself in the gossip network yet. Retry until the rangefeed
+	// does get planned on n3.
+	var closeFeed func()
+	testutils.SucceedsSoon(t, func() error {
+		if closeFeed != nil {
+			closeFeed()
+		}
+		closeFeed = rangeFeed(
+			ctx,
+			srv2.DistSenderI(),
+			span,
+			tc.Server(0).Clock().Now(),
+			ignoreValues,
+			kvcoord.WithRangeObserver(observer),
+		)
+		return checkRangeFeedNodeID(3, true /* include */)
+	})
 	defer closeFeed()
-	testutils.SucceedsSoon(t, func() error { return checkRangeFeedNodeID(3, true /* include */) })
 	h.comment(`(Rangefeed on n3)`)
 
 	h.comment(`
@@ -3763,7 +3782,7 @@ func (h *flowControlTestHelper) comment(comment string) {
 
 func (h *flowControlTestHelper) log(msg string) {
 	if log.ShowLogs() {
-		log.Dev.Infof(context.Background(), "%s", msg)
+		log.Infof(context.Background(), "%s", msg)
 	}
 }
 

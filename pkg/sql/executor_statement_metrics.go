@@ -54,11 +54,11 @@ type EngineMetrics struct {
 	SQLContendedTxns    *metric.Counter
 
 	// TxnAbortCount counts transactions that were aborted, either due
-	// to non-retryable errors, or retryable errors when the client-side
+	// to non-retriable errors, or retriable errors when the client-side
 	// retry protocol is not in use.
 	TxnAbortCount *metric.Counter
 
-	// FailureCount counts non-retryable errors in open transactions.
+	// FailureCount counts non-retriable errors in open transactions.
 	FailureCount *aggmetric.SQLCounter
 
 	// StatementTimeoutCount tracks the number of statement failures due
@@ -83,6 +83,23 @@ type EngineMetrics struct {
 	// StatementRetryCount counts the number of automatic statement retries that
 	// have occurred under READ COMMITTED isolation.
 	StatementRetryCount *metric.Counter
+
+	// StatementRowsRead counts the number of rows read by SQL statements from
+	// primary and secondary indexes. Note that some secondary indexes can have
+	// multiple index rows per primary index row (e.g. inverted and vector).
+	StatementRowsRead *metric.Counter
+
+	// StatementBytesRead counts the number of bytes scanned by SQL statements
+	// from primary and secondary indexes.
+	StatementBytesRead *metric.Counter
+
+	// StatementIndexRowsWritten counts the number of primary and secondary index
+	// rows modified by SQL statements.
+	StatementIndexRowsWritten *metric.Counter
+
+	// StatementIndexBytesWritten counts the number of primary and secondary index
+	// bytes modified by SQL statements.
+	StatementIndexBytesWritten *metric.Counter
 }
 
 // EngineMetrics implements the metric.Struct interface.
@@ -197,51 +214,61 @@ func (ex *connExecutor) recordStatementSummary(
 	if automaticRetryStmtCount > 0 {
 		autoRetryReason = planner.autoRetryStmtReason
 	}
-	if ex.statsCollector.EnabledForTransaction() {
-		recordedStmtStats := &sqlstats.RecordedStmtStats{
-			FingerprintID:        stmtFingerprintID,
-			QuerySummary:         stmt.StmtSummary,
-			Generic:              flags.IsSet(planFlagGeneric),
-			DistSQL:              flags.ShouldBeDistributed(),
-			Vec:                  flags.IsSet(planFlagVectorized),
-			ImplicitTxn:          implicitTxn,
-			PlanHash:             planner.instrumentation.planGist.Hash(),
-			SessionID:            ex.planner.extendedEvalCtx.SessionID,
-			StatementID:          stmt.QueryID,
-			AutoRetryCount:       automaticRetryTxnCount + automaticRetryStmtCount,
-			Failed:               stmtErr != nil,
-			AutoRetryReason:      autoRetryReason,
-			RowsAffected:         rowsAffected,
-			IdleLatencySec:       idleLatSec,
-			ParseLatencySec:      parseLatSec,
-			PlanLatencySec:       planLatSec,
-			RunLatencySec:        runLatSec,
-			ServiceLatencySec:    svcLatSec,
-			OverheadLatencySec:   execOverheadSec,
-			BytesRead:            stats.bytesRead,
-			RowsRead:             stats.rowsRead,
-			RowsWritten:          stats.rowsWritten,
-			Nodes:                sqlInstanceIDs,
-			KVNodeIDs:            kvNodeIDs,
-			StatementType:        stmt.AST.StatementType(),
-			PlanGist:             planner.instrumentation.planGist.String(),
-			StatementError:       stmtErr,
-			IndexRecommendations: idxRecommendations,
-			Query:                stmt.StmtNoConstants,
-			StartTime:            startTime,
-			EndTime:              startTime.Add(svcLatRaw),
-			FullScan:             fullScan,
-			ExecStats:            queryLevelStats,
-			// TODO(mgartner): Use a slice of struct{uint64, uint64} instead of
-			// converting to strings.
-			Indexes:       planner.instrumentation.indexesUsed.Strings(),
-			Database:      planner.SessionData().Database,
-			QueryTags:     stmt.QueryTags,
-			App:           ex.statsCollector.CurrentApplicationName(),
-			UnderOuterTxn: ex.extraTxnState.underOuterTxn,
-		}
 
-		ex.statsCollector.RecordStatement(ctx, recordedStmtStats)
+	// Update SQL statement metrics.
+	ex.metrics.EngineMetrics.StatementRowsRead.Inc(stats.rowsRead)
+	ex.metrics.EngineMetrics.StatementBytesRead.Inc(stats.bytesRead)
+	ex.metrics.EngineMetrics.StatementIndexRowsWritten.Inc(stats.indexRowsWritten)
+	ex.metrics.EngineMetrics.StatementIndexBytesWritten.Inc(stats.indexBytesWritten)
+
+	recordedStmtStats := &sqlstats.RecordedStmtStats{
+		FingerprintID:        stmtFingerprintID,
+		QuerySummary:         stmt.StmtSummary,
+		Generic:              flags.IsSet(planFlagGeneric),
+		DistSQL:              flags.ShouldBeDistributed(),
+		Vec:                  flags.IsSet(planFlagVectorized),
+		ImplicitTxn:          implicitTxn,
+		PlanHash:             planner.instrumentation.planGist.Hash(),
+		SessionID:            ex.planner.extendedEvalCtx.SessionID,
+		StatementID:          stmt.QueryID,
+		AutoRetryCount:       automaticRetryTxnCount + automaticRetryStmtCount,
+		Failed:               stmtErr != nil,
+		AutoRetryReason:      autoRetryReason,
+		RowsAffected:         rowsAffected,
+		IdleLatencySec:       idleLatSec,
+		ParseLatencySec:      parseLatSec,
+		PlanLatencySec:       planLatSec,
+		RunLatencySec:        runLatSec,
+		ServiceLatencySec:    svcLatSec,
+		OverheadLatencySec:   execOverheadSec,
+		BytesRead:            stats.bytesRead,
+		RowsRead:             stats.rowsRead,
+		RowsWritten:          stats.rowsWritten,
+		Nodes:                sqlInstanceIDs,
+		KVNodeIDs:            kvNodeIDs,
+		StatementType:        stmt.AST.StatementType(),
+		PlanGist:             planner.instrumentation.planGist.String(),
+		StatementError:       stmtErr,
+		IndexRecommendations: idxRecommendations,
+		Query:                stmt.StmtNoConstants,
+		StartTime:            startTime,
+		EndTime:              startTime.Add(svcLatRaw),
+		FullScan:             fullScan,
+		ExecStats:            queryLevelStats,
+		// TODO(mgartner): Use a slice of struct{uint64, uint64} instead of
+		// converting to strings.
+		Indexes:   planner.instrumentation.indexesUsed.Strings(),
+		Database:  planner.SessionData().Database,
+		QueryTags: stmt.QueryTags,
+	}
+
+	err := ex.statsCollector.RecordStatement(ctx, recordedStmtStats)
+
+	if err != nil {
+		if log.V(1) {
+			log.Warningf(ctx, "failed to record statement: %s", err)
+		}
+		ex.server.ServerMetrics.StatsMetrics.DiscardedStatsCount.Inc(1)
 	}
 
 	// Record statement execution statistics if span is recorded and no error was
@@ -296,7 +323,7 @@ func (ex *connExecutor) recordStatementSummary(
 		// ages since significant epochs
 		sessionAge := phaseTimes.GetSessionAge().Seconds()
 
-		log.Dev.Infof(ctx,
+		log.Infof(ctx,
 			"query stats: %d rows, %d retries, "+
 				"parse %.2fµs (%.1f%%), "+
 				"plan %.2fµs (%.1f%%), "+
