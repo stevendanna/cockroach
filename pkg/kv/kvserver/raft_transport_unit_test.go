@@ -14,13 +14,11 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowdispatch"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/node_rac2"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil"
@@ -64,18 +62,17 @@ func TestRaftTransportStartNewQueue(t *testing.T) {
 		return addr, roachpb.Locality{}, nil
 	}
 
+	ctxWithTracer := log.MakeTestingAmbientCtxWithNewTracer()
 	tp := NewRaftTransport(
-		log.MakeTestingAmbientCtxWithNewTracer(),
+		ctxWithTracer,
 		cluster.MakeTestingClusterSettings(),
-		stopper,
-		hlc.NewClockForTesting(nil),
+		ctxWithTracer.Tracer,
 		nodedialer.New(rpcC, resolver),
 		grpcServer,
+		stopper,
 		kvflowdispatch.NewDummyDispatch(),
 		NoopStoresFlowControlIntegration{},
 		NoopRaftTransportDisconnectListener{},
-		(*node_rac2.AdmittedPiggybacker)(nil),
-		nil, /* PiggybackedAdmittedResponseScheduler */
 		nil, /* knobs */
 	)
 

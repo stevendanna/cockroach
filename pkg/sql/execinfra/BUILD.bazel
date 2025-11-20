@@ -15,6 +15,7 @@ go_library(
         "server_config.go",
         "testutils.go",
         "utils.go",
+        "version.go",
         ":gen-consumerstatus-stringer",  # keep
         ":gen-procstate-stringer",  # keep
     ],
@@ -29,7 +30,6 @@ go_library(
         "//pkg/keys",
         "//pkg/kv",
         "//pkg/kv/kvclient/kvcoord",
-        "//pkg/kv/kvclient/kvstreamer",
         "//pkg/kv/kvclient/rangecache",
         "//pkg/kv/kvpb",
         "//pkg/kv/kvserver/diskmap",
@@ -77,9 +77,10 @@ go_library(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_pebble//vfs",
         "@com_github_cockroachdb_redact//:redact",
+        "@com_github_cockroachdb_redact//interfaces",
         "@com_github_marusama_semaphore//:semaphore",
         "@io_opentelemetry_go_otel//attribute",
-        "@org_golang_google_grpc//:grpc",
+        "@org_golang_google_grpc//:go_default_library",
     ],
 )
 
@@ -89,6 +90,7 @@ go_test(
     srcs = [
         "base_test.go",
         "main_test.go",
+        "version_test.go",
     ],
     embed = [":execinfra"],
     deps = [
@@ -104,6 +106,7 @@ go_test(
         "//pkg/testutils/testcluster",
         "//pkg/util/leaktest",
         "//pkg/util/randutil",
+        "@com_github_stretchr_testify//require",
     ],
 )
 

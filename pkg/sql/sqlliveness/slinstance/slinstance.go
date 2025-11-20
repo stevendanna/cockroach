@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slstorage"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -416,11 +415,7 @@ func NewSQLInstance(
 		stopper:        stopper,
 		sessionEvents:  sessionEvents,
 		ttl: func() time.Duration {
-			ttl := slbase.DefaultTTL.Get(&settings.SV)
-			if util.RaceEnabled {
-				ttl *= 5
-			}
-			return ttl
+			return slbase.DefaultTTL.Get(&settings.SV)
 		},
 		hb: func() time.Duration {
 			return slbase.DefaultHeartBeat.Get(&settings.SV)

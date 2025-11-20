@@ -34,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowdispatch"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/node_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
@@ -42,7 +41,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitiesauthorizer"
 	"github.com/cockroachdb/cockroach/pkg/raft"
@@ -233,19 +231,14 @@ func createTestStoreWithoutStart(
 	cfg.Transport = NewRaftTransport(
 		cfg.AmbientCtx,
 		cfg.Settings,
-		stopper,
-		cfg.Clock,
+		cfg.Tracer(),
 		cfg.NodeDialer,
 		server,
+		stopper,
 		kvflowdispatch.NewDummyDispatch(),
 		NoopStoresFlowControlIntegration{},
 		NoopRaftTransportDisconnectListener{},
-		(*node_rac2.AdmittedPiggybacker)(nil),
-		nil, /* PiggybackedAdmittedResponseScheduler */
 		nil, /* knobs */
-	)
-	cfg.StoreLivenessTransport = storeliveness.NewTransport(
-		cfg.AmbientCtx, stopper, cfg.Clock, cfg.NodeDialer, server, nil, /* knobs */
 	)
 
 	stores := NewStores(cfg.AmbientCtx, cfg.Clock)
@@ -318,6 +311,14 @@ func createTestStoreWithConfig(
 	ctx context.Context, t testing.TB, stopper *stop.Stopper, opts testStoreOpts, cfg *StoreConfig,
 ) *Store {
 	store := createTestStoreWithoutStart(ctx, t, stopper, opts, cfg)
+	// Put an empty system config into gossip.
+	//
+	// TODO(ajwerner): Remove this in 22.2. It's possible it can be removed
+	// already.
+	if err := store.Gossip().AddInfoProto(gossip.KeyDeprecatedSystemConfig,
+		&config.SystemConfigEntries{}, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Start(ctx, stopper); err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +541,7 @@ func TestInitializeEngineErrors(t *testing.T) {
 	require.NoError(t, eng.PutUnversioned(roachpb.Key("foo"), []byte("bar")))
 
 	cfg := TestStoreConfig(nil)
-	cfg.Transport = NewDummyRaftTransport(cfg.AmbientCtx, cfg.Settings, cfg.Clock)
+	cfg.Transport = NewDummyRaftTransport(cfg.Settings, cfg.AmbientCtx.Tracer)
 	store := NewStore(ctx, cfg, eng, &roachpb.NodeDescriptor{NodeID: 1})
 
 	// Can't init as haven't bootstrapped.
@@ -691,12 +692,10 @@ func TestReplicasByKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep.raftMu.Lock()
 	rep.mu.Lock()
-	desc := *rep.shMu.state.Desc // shallow copy to replace desc wholesale
+	desc := *rep.mu.state.Desc // shallow copy to replace desc wholesale
 	desc.EndKey = roachpb.RKey("e")
-	rep.shMu.state.Desc = &desc
-	rep.raftMu.Unlock()
+	rep.mu.state.Desc = &desc
 	rep.mu.Unlock()
 
 	// Ensure that this shrinkage is recognized by future additions to replicasByKey.
@@ -923,11 +922,7 @@ func TestMarkReplicaInitialized(t *testing.T) {
 		ReplicaID: 1,
 	}}
 	desc.NextReplicaID = 2
-	func() {
-		r.raftMu.Lock()
-		defer r.raftMu.Unlock()
-		r.setDescRaftMuLocked(ctx, desc)
-	}()
+	r.setDescRaftMuLocked(ctx, desc)
 	expectedResult = "not in uninitReplicas"
 	func() {
 		r.mu.Lock()
@@ -1234,7 +1229,7 @@ func TestStoreSendWithClockOffset(t *testing.T) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
 	cfg := TestStoreConfig(hlc.NewClock(timeutil.NewManualTime(timeutil.Unix(0, 123)),
-		time.Millisecond /* maxOffset */, time.Millisecond /* toleratedOffset */, hlc.PanicLogger))
+		time.Millisecond /* maxOffset */, time.Millisecond /* toleratedOffset */))
 	store := createTestStoreWithConfig(ctx, t, stopper, testStoreOpts{createSystemRanges: true}, &cfg)
 	args := getArgs([]byte("a"))
 	// Set args timestamp to exceed max offset.
@@ -1384,7 +1379,7 @@ func TestStoreResolveWriteIntent(t *testing.T) {
 
 	manual := timeutil.NewManualTime(timeutil.Unix(0, 123))
 	cfg := TestStoreConfig(hlc.NewClock(
-		manual, 1000*time.Nanosecond /* maxOffset */, 1000*time.Nanosecond /* toleratedOffset */, hlc.PanicLogger))
+		manual, 1000*time.Nanosecond /* maxOffset */, 1000*time.Nanosecond /* toleratedOffset */))
 	cfg.TestingKnobs.EvalKnobs.TestingEvalFilter =
 		func(filterArgs kvserverbase.FilterArgs) *kvpb.Error {
 			pr, ok := filterArgs.Req.(*kvpb.PushTxnRequest)
@@ -2174,11 +2169,11 @@ func TestStoreSkipLockedTSCache(t *testing.T) {
 			// Verify the timestamp cache has been set for "a" and "c", but not for "b".
 			t2TS := makeTS(t2.UnixNano(), 0)
 			rTS, _ := store.tsCache.GetMax(ctx, roachpb.Key("a"), nil)
-			require.Equal(t, t2TS, rTS)
+			require.True(t, rTS.EqOrdering(t2TS))
 			rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("b"), nil)
 			require.True(t, rTS.Less(t2TS))
 			rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("c"), nil)
-			require.Equal(t, t2TS, rTS)
+			require.True(t, rTS.EqOrdering(t2TS))
 		})
 	}
 }
@@ -2781,7 +2776,7 @@ func TestStoreGCThreshold(t *testing.T) {
 			t.Fatal(err)
 		}
 		repl.mu.Lock()
-		gcThreshold := *repl.shMu.state.GCThreshold
+		gcThreshold := *repl.mu.state.GCThreshold
 		pgcThreshold, err := repl.mu.stateLoader.LoadGCThreshold(context.Background(), store.TODOEngine())
 		repl.mu.Unlock()
 		if err != nil {
@@ -4089,7 +4084,7 @@ func TestManuallyEnqueueUninitializedReplica(t *testing.T) {
 		StoreID:   tc.store.StoreID(),
 		ReplicaID: 7,
 	})
-	_, err := tc.store.Enqueue(
+	_, _, err := tc.store.Enqueue(
 		ctx, "replicaGC", repl, true /* skipShouldQueue */, false, /* async */
 	)
 	require.Error(t, err)

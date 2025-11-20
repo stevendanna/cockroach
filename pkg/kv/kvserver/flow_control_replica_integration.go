@@ -6,12 +6,10 @@
 package kvserver
 
 import (
-	"cmp"
 	"context"
-	"slices"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -128,8 +126,8 @@ func (f *replicaFlowControlIntegrationImpl) onBecameLeader(ctx context.Context) 
 		for _, stream := range f.disconnectedStreams {
 			disconnected = append(disconnected, stream)
 		}
-		slices.SortFunc(disconnected, func(a, b kvflowcontrol.Stream) int {
-			return cmp.Compare(a.StoreID, b.StoreID)
+		sort.Slice(disconnected, func(i, j int) bool {
+			return disconnected[i].StoreID < disconnected[j].StoreID
 		})
 		log.VInfof(ctx, 1, "assumed raft leadership: initializing flow handle for %s starting at %s (disconnected streams: %s)",
 			f.replicaForFlowControl.getDescriptor(),
@@ -221,7 +219,7 @@ func (f *replicaFlowControlIntegrationImpl) onRaftTransportDisconnected(
 		return // nothing to do
 	}
 
-	if fn := f.knobs.V1.MaintainStreamsForBrokenRaftTransport; fn != nil && fn() {
+	if fn := f.knobs.MaintainStreamsForBrokenRaftTransport; fn != nil && fn() {
 		return // nothing to do
 	}
 
@@ -306,12 +304,12 @@ func (f *replicaFlowControlIntegrationImpl) notActivelyReplicatingTo() []roachpb
 	inactiveFollowers := f.replicaForFlowControl.getInactiveFollowers()
 	disconnectedFollowers := f.replicaForFlowControl.getDisconnectedFollowers()
 
-	maintainStreamsForBrokenRaftTransport := f.knobs.V1.MaintainStreamsForBrokenRaftTransport != nil &&
-		f.knobs.V1.MaintainStreamsForBrokenRaftTransport()
-	maintainStreamsForInactiveFollowers := f.knobs.V1.MaintainStreamsForInactiveFollowers != nil &&
-		f.knobs.V1.MaintainStreamsForInactiveFollowers()
-	maintainStreamsForBehindFollowers := f.knobs.V1.MaintainStreamsForBehindFollowers != nil &&
-		f.knobs.V1.MaintainStreamsForBehindFollowers()
+	maintainStreamsForBrokenRaftTransport := f.knobs.MaintainStreamsForBrokenRaftTransport != nil &&
+		f.knobs.MaintainStreamsForBrokenRaftTransport()
+	maintainStreamsForInactiveFollowers := f.knobs.MaintainStreamsForInactiveFollowers != nil &&
+		f.knobs.MaintainStreamsForInactiveFollowers()
+	maintainStreamsForBehindFollowers := f.knobs.MaintainStreamsForBehindFollowers != nil &&
+		f.knobs.MaintainStreamsForBehindFollowers()
 
 	notActivelyReplicatingTo := make(map[roachpb.ReplicaDescriptor]struct{})
 	ourReplicaID := f.replicaForFlowControl.getReplicaID()
@@ -396,7 +394,9 @@ func (f *replicaFlowControlIntegrationImpl) tryReconnect(ctx context.Context) {
 		disconnectedRepls = append(disconnectedRepls, replID)
 	}
 	if buildutil.CrdbTestBuild {
-		slices.Sort(disconnectedRepls) // for determinism in tests
+		sort.Slice(disconnectedRepls, func(i, j int) bool { // for determinism in tests
+			return disconnectedRepls[i] < disconnectedRepls[j]
+		})
 	}
 
 	notActivelyReplicatingTo := f.notActivelyReplicatingTo()
@@ -435,39 +435,4 @@ func (f *replicaFlowControlIntegrationImpl) clearState(ctx context.Context) {
 	f.innerHandle = nil
 	f.lastKnownReplicas = roachpb.MakeReplicaSet(nil)
 	f.disconnectedStreams = nil
-}
-
-type noopReplicaFlowControlIntegration struct{}
-
-func (n noopReplicaFlowControlIntegration) onBecameLeader(context.Context)    {}
-func (n noopReplicaFlowControlIntegration) onBecameFollower(context.Context)  {}
-func (n noopReplicaFlowControlIntegration) onDescChanged(context.Context)     {}
-func (n noopReplicaFlowControlIntegration) onFollowersPaused(context.Context) {}
-func (n noopReplicaFlowControlIntegration) onRaftTransportDisconnected(
-	context.Context, ...roachpb.StoreID,
-) {
-}
-func (n noopReplicaFlowControlIntegration) onRaftTicked(context.Context) {}
-func (n noopReplicaFlowControlIntegration) onDestroyed(context.Context)  {}
-func (n noopReplicaFlowControlIntegration) handle() (kvflowcontrol.Handle, bool) {
-	return nil, false
-}
-
-type replicaForRACv2 Replica
-
-var _ replica_rac2.ReplicaForTesting = &replicaForRACv2{}
-
-// IsScratchRange implements replica_rac2.ReplicaForTesting.
-func (r *replicaForRACv2) IsScratchRange() bool {
-	return (*Replica)(r).IsScratchRange()
-}
-
-// MuLock implements replica_rac2.ReplicaForRaftNode.
-func (r *replicaForRACv2) MuLock() {
-	r.mu.Lock()
-}
-
-// MuUnlock implements replica_rac2.ReplicaForRaftNode.
-func (r *replicaForRACv2) MuUnlock() {
-	r.mu.Unlock()
 }

@@ -68,7 +68,7 @@ func newMergeJoiner(
 		m.ExecStatsForTrace = m.execStatsForTrace
 	}
 
-	if _, err := m.joinerBase.init(
+	if err := m.joinerBase.init(
 		ctx, m /* self */, flowCtx, processorID, leftSource.OutputTypes(), rightSource.OutputTypes(),
 		spec.Type, spec.OnExpr, false /* outputContinuationColumn */, post,
 		execinfra.ProcStateOpts{
@@ -227,7 +227,7 @@ func (m *mergeJoiner) nextRow() (rowenc.EncDatumRow, *execinfrapb.ProducerMetada
 		// TODO(paul): Investigate (with benchmarks) whether or not it's
 		// worthwhile to only buffer one row from the right stream per batch
 		// for semi-joins.
-		m.leftRows, m.rightRows, meta = m.streamMerger.NextBatch(m.Ctx(), m.FlowCtx.EvalCtx)
+		m.leftRows, m.rightRows, meta = m.streamMerger.NextBatch(m.Ctx(), m.EvalCtx)
 		if meta != nil {
 			return nil, meta
 		}

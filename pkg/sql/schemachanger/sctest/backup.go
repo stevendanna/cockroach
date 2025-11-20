@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -134,7 +135,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 	url := fmt.Sprintf("userfile://backups.public.userfiles_$user/data_%s_%d",
 		cs.Phase, cs.StageOrdinal)
 	var dbForBackup atomic.Pointer[gosql.DB]
-	var isBackupPostBackfill atomic.Bool
+	var isBackupPostBackfill syncutil.AtomicBool
 	pe := MakePlanExplainer()
 	knobs := &scexec.TestingKnobs{
 		// Back up the database exactly once when reaching the stage prescribed
@@ -162,7 +163,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 						// schema changer state.
 						for j := i + 1; j < stageIdx; j++ {
 							if p.Stages[j].Type() == scop.MutationType {
-								isBackupPostBackfill.Store(true)
+								isBackupPostBackfill.Set(true)
 								break OuterLoop
 							}
 						}
@@ -208,7 +209,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 			mayRollback:             false,
 			expectedOnRollback:      before,
 		}
-		if isBackupPostBackfill.Load() {
+		if isBackupPostBackfill.Get() {
 			const countRowsQ = `
 				SELECT coalesce(sum(rows), 0)
 				FROM [SHOW BACKUP FROM LATEST IN $2]

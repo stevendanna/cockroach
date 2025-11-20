@@ -52,17 +52,22 @@ type PreparedStatement struct {
 
 	// BaseMemo is the memoized data structure constructed by the cost-based
 	// optimizer during prepare of a SQL statement.
+	//
+	// It may be a fully-optimized memo if it contains an "ideal generic plan"
+	// that is guaranteed to be optimal across all executions of the prepared
+	// statement. Ideal generic plans are generated when the statement has no
+	// placeholders nor fold-able stable expressions, or when the placeholder
+	// fast-path is utilized.
+	//
+	// If it is not an ideal generic plan, it is an unoptimized, normalized
+	// memo that is used as a starting point for optimization of custom plans.
 	BaseMemo *memo.Memo
 
 	// GenericMemo, if present, is a fully-optimized memo that can be executed
 	// as-is.
+	// TODO(mgartner): Put all fully-optimized plans in the GenericMemo field to
+	// reduce confusion.
 	GenericMemo *memo.Memo
-
-	// IdealGenericPlan is true if GenericMemo is guaranteed to be optimal
-	// across all executions of the prepared statement. Ideal generic plans are
-	// generated when the statement has no placeholders nor fold-able stable
-	// expressions, or when the placeholder fast-path is utilized.
-	IdealGenericPlan bool
 
 	// Costs tracks the costs of previously optimized custom and generic plans.
 	Costs planCosts
@@ -322,7 +327,7 @@ func (p *PreparedPortal) close(
 	prepStmtsNamespaceMemAcc.Shrink(ctx, p.size(portalName))
 	p.Stmt.decRef(ctx)
 	if p.pauseInfo != nil {
-		p.pauseInfo.cleanupAll(ctx)
+		p.pauseInfo.cleanupAll()
 		p.pauseInfo = nil
 	}
 }
@@ -331,28 +336,34 @@ func (p *PreparedPortal) size(portalName string) int64 {
 	return int64(uintptr(len(portalName)) + unsafe.Sizeof(p))
 }
 
-// isPausable checks if a portal is pausable.
 func (p *PreparedPortal) isPausable() bool {
-	return p != nil && p.pauseInfo != nil
+	return p.pauseInfo != nil
 }
 
 // cleanupFuncStack stores cleanup functions for a portal. The clean-up
 // functions are added during the first-time execution of a portal. When the
 // first-time execution is finished, we mark isComplete to true.
 type cleanupFuncStack struct {
-	stack      []func(context.Context)
+	stack      []namedFunc
 	isComplete bool
 }
 
-func (n *cleanupFuncStack) appendFunc(f func(context.Context)) {
+func (n *cleanupFuncStack) appendFunc(f namedFunc) {
 	n.stack = append(n.stack, f)
 }
 
-func (n *cleanupFuncStack) run(ctx context.Context) {
+func (n *cleanupFuncStack) run() {
 	for i := 0; i < len(n.stack); i++ {
-		n.stack[i](ctx)
+		n.stack[i].f()
 	}
 	*n = cleanupFuncStack{}
+}
+
+// namedFunc is function with name, which makes the debugging easier. It is
+// used just for clean up functions of a pausable portal.
+type namedFunc struct {
+	fName string
+	f     func()
 }
 
 // instrumentationHelperWrapper wraps the instrumentation helper.
@@ -464,11 +475,11 @@ type portalPauseInfo struct {
 }
 
 // cleanupAll is to run all the cleanup layers.
-func (pm *portalPauseInfo) cleanupAll(ctx context.Context) {
-	pm.resumableFlow.cleanup.run(ctx)
-	pm.dispatchToExecutionEngine.cleanup.run(ctx)
-	pm.execStmtInOpenState.cleanup.run(ctx)
-	pm.exhaustPortal.cleanup.run(ctx)
+func (pm *portalPauseInfo) cleanupAll() {
+	pm.resumableFlow.cleanup.run()
+	pm.dispatchToExecutionEngine.cleanup.run()
+	pm.execStmtInOpenState.cleanup.run()
+	pm.exhaustPortal.cleanup.run()
 }
 
 // isQueryIDSet returns true if the query id for the portal is set.

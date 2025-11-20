@@ -10,42 +10,43 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 )
 
 type admittedLogEntryAdaptor struct {
-	dispatchWriterV1 kvflowcontrol.DispatchWriter
-	callbackV2       admission.OnLogEntryAdmitted
+	dispatchWriter kvflowcontrol.DispatchWriter
 }
 
 var _ admission.OnLogEntryAdmitted = &admittedLogEntryAdaptor{}
 
 func newAdmittedLogEntryAdaptor(
-	dispatchWriterV1 kvflowcontrol.DispatchWriter, callbackV2 admission.OnLogEntryAdmitted,
+	dispatchWriter kvflowcontrol.DispatchWriter,
 ) *admittedLogEntryAdaptor {
 	return &admittedLogEntryAdaptor{
-		dispatchWriterV1: dispatchWriterV1,
-		callbackV2:       callbackV2,
+		dispatchWriter: dispatchWriter,
 	}
 }
 
 // AdmittedLogEntry implements the admission.OnLogEntryAdmitted interface.
 func (a *admittedLogEntryAdaptor) AdmittedLogEntry(
-	ctx context.Context, cbState admission.LogEntryAdmittedCallbackState,
+	ctx context.Context,
+	origin roachpb.NodeID,
+	pri admissionpb.WorkPriority,
+	storeID roachpb.StoreID,
+	rangeID roachpb.RangeID,
+	pos admission.LogPosition,
 ) {
-	if cbState.IsV2Protocol {
-		a.callbackV2.AdmittedLogEntry(ctx, cbState)
-		return
-	}
 	// TODO(irfansharif,aaditya): This contributes to a high count of
 	// inuse_objects. Look to address it as part of #104154.
-	a.dispatchWriterV1.Dispatch(ctx, cbState.Origin, kvflowcontrolpb.AdmittedRaftLogEntries{
-		RangeID:           cbState.RangeID,
-		AdmissionPriority: int32(cbState.Pri),
+	a.dispatchWriter.Dispatch(ctx, origin, kvflowcontrolpb.AdmittedRaftLogEntries{
+		RangeID:           rangeID,
+		AdmissionPriority: int32(pri),
 		UpToRaftLogPosition: kvflowcontrolpb.RaftLogPosition{
-			Term:  cbState.Pos.Term,
-			Index: cbState.Pos.Index,
+			Term:  pos.Term,
+			Index: pos.Index,
 		},
-		StoreID: cbState.StoreID,
+		StoreID: storeID,
 	})
 }

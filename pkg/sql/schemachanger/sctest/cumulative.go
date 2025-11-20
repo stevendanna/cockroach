@@ -180,7 +180,7 @@ func ExecuteWithDMLInjection(t *testing.T, relPath string, factory TestServerFac
 
 				if t.Failed() {
 					t.Log("forcing job failure from BeforeStage due to test failure")
-					return jobs.MarkAsPermanentJobError(errors.New("t.Failed() is true"))
+					return errors.New("t.Failed() is true")
 				}
 
 				s := p.Stages[stageIdx]
@@ -193,7 +193,6 @@ func ExecuteWithDMLInjection(t *testing.T, relPath string, factory TestServerFac
 					defer jobErrorMutex.Unlock()
 					key := makeStageKey(s.Phase, s.Ordinal, p.InRollback || p.CurrentState.InRollback)
 					if _, ok := usedStages[key.AsInt()]; !ok {
-						t.Logf("Injecting into stage: %s", &key)
 						// Rollbacks don't count towards the successful count
 						if !p.InRollback && !p.CurrentState.InRollback &&
 							p.Stages[stageIdx].Phase != scop.PreCommitPhase {
@@ -244,7 +243,6 @@ func ExecuteWithDMLInjection(t *testing.T, relPath string, factory TestServerFac
 			// commits, this enforces any sanity checks one last time in
 			// the final descriptor state.
 			if lastRollbackStageKey != nil {
-				t.Logf("Job transaction committed. Re-inject statements from rollback: %s", lastRollbackStageKey.String())
 				injectionFunc(*lastRollbackStageKey, tdb, successfulStages)
 			}
 			require.Equal(t, errorDetected, schemaChangeErrorRegex != nil)

@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -76,10 +75,10 @@ func makeTransferLeasesEventFn(gateway, target int) leasePreferencesEventFn {
 		conn := c.Conn(ctx, t.L(), gateway)
 		defer conn.Close()
 		_, err := conn.ExecContext(ctx, fmt.Sprintf(`
-      ALTER RANGE RELOCATE LEASE TO %d
-      FOR SELECT range_id
+      ALTER RANGE RELOCATE LEASE TO %d 
+      FOR SELECT range_id 
       FROM [SHOW RANGES FROM DATABASE kv WITH DETAILS]
-      WHERE lease_holder <> %d
+      WHERE lease_holder <> %d 
       `,
 			target, target,
 		))
@@ -172,18 +171,15 @@ func runLeasePreferences(
 	// waitForLessPreferred=false). This duration is used to ensure the lease
 	// preference satisfaction is reasonably permanent.
 	const stableDuration = 30 * time.Second
+	// initialWaitDuration is how long the test will wait for initial lease
+	// preference conformance. This duration is approx. a replica scanner cycle.
+	const initialWaitDuration = 10 * time.Minute
 
 	numNodes := c.Spec().NodeCount
 	allNodes := make([]int, 0, numNodes)
 	for i := 1; i <= numNodes; i++ {
 		allNodes = append(allNodes, i)
 	}
-
-	// TODO(kvoli): temporary workaround for
-	// https://github.com/cockroachdb/cockroach/issues/105274
-	settings := install.MakeClusterSettings()
-	settings.ClusterSettings["server.span_stats.span_batch_limit"] = "4096"
-	settings.ClusterSettings["kv.enqueue_in_replicate_queue_on_span_config_update.enabled"] = "true"
 
 	startNodes := func(nodes ...int) {
 		for _, node := range nodes {
@@ -198,7 +194,7 @@ func runLeasePreferences(
 				// dc=N: n2N-1 n2N
 				fmt.Sprintf("--locality=region=fake-region,zone=fake-zone,dc=%d", (node-1)/2+1),
 				"--vmodule=replica_proposal=2,lease_queue=3,lease=3")
-			c.Start(ctx, t.L(), opts, settings, c.Node(node))
+			c.Start(ctx, t.L(), opts, install.MakeClusterSettings(), c.Node(node))
 
 		}
 	}
@@ -215,9 +211,13 @@ func runLeasePreferences(
 	conn := c.Conn(ctx, t.L(), numNodes)
 	defer conn.Close()
 
-	checkLeasePreferenceConformance := func(ctx context.Context) {
+	checkLeasePreferenceConformance := func(ctx context.Context, initial bool) {
+		duration := spec.postEventWaitDuration
+		if initial {
+			duration = initialWaitDuration
+		}
 		result, err := waitForLeasePreferences(
-			ctx, t, c, spec.checkNodes, spec.waitForLessPreferred, stableDuration, spec.postEventWaitDuration)
+			ctx, t, c, spec.checkNodes, spec.waitForLessPreferred, stableDuration, duration)
 		require.NoError(t, err, result)
 		require.Truef(t, !result.violating(), "violating lease preferences %s", result)
 		if spec.waitForLessPreferred {
@@ -238,13 +238,13 @@ func runLeasePreferences(
 	// Wait for the existing ranges (not kv) to be up-replicated. That way,
 	// creating the splits and waiting for up-replication on kv will be much
 	// quicker.
-	require.NoError(t, roachtestutil.WaitForReplication(ctx, t.L(), conn, spec.replFactor, roachtestutil.AtLeastReplicationFactor))
+	require.NoError(t, WaitForReplication(ctx, t, t.L(), conn, spec.replFactor, atLeastReplicationFactor))
 	c.Run(ctx, option.WithNodes(c.Node(numNodes)), fmt.Sprintf(
 		`./cockroach workload init kv --scatter --splits %d {pgurl:%d}`,
 		spec.ranges, numNodes))
 	// Wait for under-replicated ranges before checking lease preference
 	// enforcement.
-	require.NoError(t, roachtestutil.WaitForReplication(ctx, t.L(), conn, spec.replFactor, roachtestutil.AtLeastReplicationFactor))
+	require.NoError(t, WaitForReplication(ctx, t, t.L(), conn, spec.replFactor, atLeastReplicationFactor))
 
 	// Set a lease preference for the liveness range, to be on n5. This test
 	// would occasionally fail due to the liveness heartbeat failures, when the
@@ -260,7 +260,7 @@ func runLeasePreferences(
 		leasePreference: spec.preferences,
 	})
 	t.L().Printf("waiting for initial lease preference conformance")
-	checkLeasePreferenceConformance(ctx)
+	checkLeasePreferenceConformance(ctx, true /* initial */)
 
 	// Run the spec event function. The event function will move leases to
 	// non-conforming localities.
@@ -273,7 +273,7 @@ func runLeasePreferences(
 	// Wait for the preference conformance with some leases in non-conforming
 	// localities.
 	t.L().Printf("waiting for post-event lease preference conformance")
-	checkLeasePreferenceConformance(ctx)
+	checkLeasePreferenceConformance(ctx, false /* initial */)
 }
 
 type leasePreferencesResult struct {

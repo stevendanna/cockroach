@@ -462,16 +462,16 @@ vectorized: true
         │ render ?column?: "?column?"
         │
         └── • top-k
-            │ columns: (length, "?column?", column16)
+            │ columns: (length, "?column?", column12)
             │ estimated row count: 10 (missing stats)
-            │ order: +column16
+            │ order: +column12
             │ k: 10
             │
             └── • render
-                │ columns: (length, "?column?", column16)
+                │ columns: (length, "?column?", column12)
                 │ render length: length(k)
                 │ render ?column?: 2
-                │ render column16: k || v
+                │ render column12: k || v
                 │
                 └── • scan
                       columns: (k, v)
@@ -499,9 +499,7 @@ statement ok
 CREATE TABLE mutation(x INT, y INT NOT NULL DEFAULT(10)); INSERT INTO mutation VALUES (1, 1)
 
 statement ok
-BEGIN;
-SET LOCAL autocommit_before_ddl=off;
-ALTER TABLE mutation DROP COLUMN y
+BEGIN; ALTER TABLE mutation DROP COLUMN y
 
 # Ensure that default value is still inserted into y, since y is write-only.
 query T
@@ -526,9 +524,7 @@ statement ok
 ROLLBACK
 
 statement ok
-BEGIN;
-SET LOCAL autocommit_before_ddl=off;
-ALTER TABLE mutation ADD COLUMN z INT AS (x + y) STORED
+BEGIN; ALTER TABLE mutation ADD COLUMN z INT AS (x + y) STORED
 
 # Ensure that value is *not* inserted into z, since z is delete-only.
 query T
@@ -631,7 +627,7 @@ vectorized: true
 └── • subquery
     │ id: @S1
     │ original sql: INSERT INTO xyz SELECT a, b, c FROM abc RETURNING z
-    │ exec mode: discard all rows
+    │ exec mode: all rows
     │
     └── • buffer
         │ columns: (z)

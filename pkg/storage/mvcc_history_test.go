@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -43,8 +42,6 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/sstable"
-	"github.com/cockroachdb/pebble/sstable/block"
-	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
 )
@@ -55,10 +52,10 @@ var (
 	cmdDeleteRangeTombstoneKnownStats = metamorphic.ConstantWithTestBool(
 		"mvcc-histories-deleterange-tombstome-known-stats", false)
 	mvccHistoriesReader = metamorphic.ConstantWithTestChoice("mvcc-histories-reader",
-		"engine", "readonly", "batch", "snapshot", "efos")
+		"engine", "readonly", "batch", "snapshot", "efos").(string)
 	mvccHistoriesUseBatch   = metamorphic.ConstantWithTestBool("mvcc-histories-use-batch", false)
 	mvccHistoriesPeekBounds = metamorphic.ConstantWithTestChoice("mvcc-histories-peek-bounds",
-		"none", "left", "right", "both")
+		"none", "left", "right", "both").(string)
 	sstIterVerify           = metamorphic.ConstantWithTestBool("mvcc-histories-sst-iter-verify", false)
 	metamorphicIteratorSeed = metamorphic.ConstantWithTestRange("mvcc-metamorphic-iterator-seed", 0, 0, 100000) // 0 = disabled
 	separateEngineBlocks    = metamorphic.ConstantWithTestBool("mvcc-histories-separate-engine-blocks", false)
@@ -194,14 +191,12 @@ func TestMVCCHistories(t *testing.T) {
 		}
 
 		disableSeparateEngineBlocks := strings.Contains(path, "_disable_separate_engine_blocks")
-		storageConfigOpts := []storage.ConfigOption{
-			storage.CacheSize(1 << 20 /* 1 MiB */),
-			storage.If(separateEngineBlocks && !disableSeparateEngineBlocks, storage.BlockSize(1)),
-			storage.DiskWriteStatsCollector(vfs.NewDiskWriteStatsCollector()),
-		}
 
 		// We start from a clean slate in every test file.
-		engine, err := storage.Open(ctx, storage.InMemory(), st, storageConfigOpts...)
+		engine, err := storage.Open(ctx, storage.InMemory(), st,
+			storage.CacheSize(1<<20 /* 1 MiB */),
+			storage.If(separateEngineBlocks && !disableSeparateEngineBlocks, storage.BlockSize(1)),
+		)
 		require.NoError(t, err)
 		defer engine.Close()
 
@@ -210,7 +205,7 @@ func TestMVCCHistories(t *testing.T) {
 
 			for _, span := range spans {
 				err = engine.MVCCIterate(context.Background(), span.Key, span.EndKey, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypeRangesOnly,
-					fs.UnknownReadCategory,
+					storage.UnknownReadCategory,
 					func(_ storage.MVCCKeyValue, rangeKeys storage.MVCCRangeKeyStack) error {
 						hasData = true
 						buf.Printf("rangekey: %s/[", rangeKeys.Bounds)
@@ -230,7 +225,7 @@ func TestMVCCHistories(t *testing.T) {
 				}
 
 				err = engine.MVCCIterate(context.Background(), span.Key, span.EndKey, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
-					fs.UnknownReadCategory,
+					storage.UnknownReadCategory,
 					func(r storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 						hasData = true
 						if r.Key.Timestamp.IsEmpty() {
@@ -263,13 +258,11 @@ func TestMVCCHistories(t *testing.T) {
 		// SST iterator in order to accurately represent the raw SST data.
 		reportSSTEntries := func(buf *redact.StringBuilder, name string, sst []byte) error {
 			r, err := sstable.NewMemReader(sst, sstable.ReaderOptions{
-				Comparer:   &storage.EngineComparer,
-				KeySchemas: sstable.MakeKeySchemas(storage.KeySchemas...),
+				Comparer: storage.EngineComparer,
 			})
 			if err != nil {
 				return err
 			}
-			defer func() { _ = r.Close() }()
 			buf.Printf(">> %s:\n", name)
 
 			// Dump point keys.
@@ -278,15 +271,15 @@ func TestMVCCHistories(t *testing.T) {
 				return err
 			}
 			defer func() { _ = iter.Close() }()
-			for kv := iter.First(); kv != nil; kv = iter.Next() {
+			for k, lv := iter.SeekGE(nil, sstable.SeekGEFlags(0)); k != nil; k, lv = iter.Next() {
 				if err := iter.Error(); err != nil {
 					return err
 				}
-				key, err := storage.DecodeMVCCKey(kv.K.UserKey)
+				key, err := storage.DecodeMVCCKey(k.UserKey)
 				if err != nil {
 					return err
 				}
-				v, _, err := kv.Value(nil)
+				v, _, err := lv.Value(nil)
 				if err != nil {
 					return err
 				}
@@ -294,14 +287,14 @@ func TestMVCCHistories(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				buf.Printf("%s: %s -> %s\n", strings.ToLower(kv.Kind().String()), key, value)
+				buf.Printf("%s: %s -> %s\n", strings.ToLower(k.Kind().String()), key, value)
 			}
 
 			// Dump rangedels.
-			if rdIter, err := r.NewRawRangeDelIter(context.Background(), block.NoFragmentTransforms, block.NoReadEnv); err != nil {
+			if rdIter, err := r.NewRawRangeDelIter(sstable.NoTransforms); err != nil {
 				return err
 			} else if rdIter != nil {
-				defer rdIter.Close()
+				defer func() { _ = rdIter.Close() }()
 				s, err := rdIter.First()
 				for ; s != nil; s, err = rdIter.Next() {
 					start, err := storage.DecodeMVCCKey(s.Start)
@@ -323,10 +316,10 @@ func TestMVCCHistories(t *testing.T) {
 			}
 
 			// Dump range keys.
-			if rkIter, err := r.NewRawRangeKeyIter(context.Background(), block.NoFragmentTransforms, block.NoReadEnv); err != nil {
+			if rkIter, err := r.NewRawRangeKeyIter(sstable.NoTransforms); err != nil {
 				return err
 			} else if rkIter != nil {
-				defer rkIter.Close()
+				defer func() { _ = rkIter.Close() }()
 				s, err := rkIter.First()
 				for ; s != nil; s, err = rkIter.Next() {
 					start, err := storage.DecodeMVCCKey(s.Start)
@@ -340,7 +333,7 @@ func TestMVCCHistories(t *testing.T) {
 					for _, k := range s.Keys {
 						buf.Printf("%s: %s", strings.ToLower(k.Kind().String()),
 							roachpb.Span{Key: start.Key, EndKey: end.Key})
-						if len(k.Suffix) > 0 {
+						if k.Suffix != nil {
 							ts, err := storage.DecodeMVCCTimestampSuffix(k.Suffix)
 							if err != nil {
 								return err
@@ -1183,13 +1176,7 @@ func cmdAcquireLock(e *evalCtx) error {
 		str := e.getStrength()
 		maxLockConflicts := e.getMaxLockConflicts()
 		targetLockConflictBytes := e.getTargetLockConflictBytes()
-		var txnMeta *enginepb.TxnMeta
-		var ignoredSeq []enginepb.IgnoredSeqNumRange
-		if txn != nil {
-			txnMeta = &txn.TxnMeta
-			ignoredSeq = txn.IgnoredSeqNums
-		}
-		return storage.MVCCAcquireLock(e.ctx, rw, txnMeta, ignoredSeq, str, key, e.ms, maxLockConflicts, targetLockConflictBytes)
+		return storage.MVCCAcquireLock(e.ctx, rw, txn, str, key, e.ms, maxLockConflicts, targetLockConflictBytes)
 	})
 }
 
@@ -1305,27 +1292,17 @@ func cmdCPut(e *evalCtx) error {
 	if e.hasArg("allow_missing") {
 		behavior = storage.CPutAllowIfMissing
 	}
-
-	originTimestamp := hlc.Timestamp{}
-	if e.hasArg("origin_ts") {
-		originTimestamp = e.getTsWithName("origin_ts")
-	}
-
 	resolve, resolveStatus := e.getResolve()
 
 	return e.withWriter("cput", func(rw storage.ReadWriter) error {
-		opts := storage.ConditionalPutWriteOptions{
-			MVCCWriteOptions: storage.MVCCWriteOptions{
-				Txn:                            txn,
-				LocalTimestamp:                 localTs,
-				Stats:                          e.ms,
-				ReplayWriteTimestampProtection: e.getAmbiguousReplay(),
-				MaxLockConflicts:               e.getMaxLockConflicts(),
-			},
-			AllowIfDoesNotExist: behavior,
-			OriginTimestamp:     originTimestamp,
+		opts := storage.MVCCWriteOptions{
+			Txn:                            txn,
+			LocalTimestamp:                 localTs,
+			Stats:                          e.ms,
+			ReplayWriteTimestampProtection: e.getAmbiguousReplay(),
+			MaxLockConflicts:               e.getMaxLockConflicts(),
 		}
-		acq, err := storage.MVCCConditionalPut(e.ctx, rw, key, ts, val, expVal, opts)
+		acq, err := storage.MVCCConditionalPut(e.ctx, rw, key, ts, val, expVal, behavior, opts)
 		if err != nil {
 			return err
 		}
@@ -2738,9 +2715,6 @@ func (e *evalCtx) getValInternal(argName string) roachpb.Value {
 	if e.hasArg("raw") {
 		val.RawBytes = []byte(value)
 	} else {
-		if value == "<tombstone>" {
-			return val
-		}
 		val.SetString(value)
 	}
 	return val

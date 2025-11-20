@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -53,10 +54,9 @@ func verifyLiveness(t *testing.T, tc *testcluster.TestCluster) {
 		return nil
 	})
 }
-
 func verifyLivenessServer(s serverutils.TestServerInterface, numServers int64) error {
 	nl := s.NodeLiveness().(*liveness.NodeLiveness)
-	if !nl.GetNodeVitalityFromCache(s.NodeID()).IsLive(livenesspb.TestingIsAliveAndHasHeartbeated) {
+	if !nl.GetNodeVitalityFromCache(s.NodeID()).IsLive(livenesspb.IsAliveNotification) {
 		return errors.Errorf("node %d not live", s.NodeID())
 	}
 	if a, e := nl.Metrics().LiveNodes.Value(), numServers; a != e {
@@ -181,7 +181,7 @@ func TestNodeLivenessInitialIncrement(t *testing.T) {
 	nl, ok := tc.Servers[0].NodeLiveness().(*liveness.NodeLiveness).GetLiveness(tc.Servers[0].NodeID())
 	assert.True(t, ok)
 	if nl.Epoch != 1 {
-		t.Fatalf("expected epoch to be set to 1 initially; got %d; liveness %s", nl.Epoch, nl)
+		t.Errorf("expected epoch to be set to 1 initially; got %d", nl.Epoch)
 	}
 
 	// Restart the node and verify the epoch is incremented with initial heartbeat.
@@ -286,7 +286,7 @@ func TestNodeIsLiveCallback(t *testing.T) {
 
 	ctx := context.Background()
 	manualClock := hlc.NewHybridManualClock()
-	var started atomic.Bool
+	var started syncutil.AtomicBool
 	var cbMu syncutil.Mutex
 	cbs := map[roachpb.NodeID]struct{}{}
 	tc := testcluster.StartTestCluster(t, 3,
@@ -300,7 +300,7 @@ func TestNodeIsLiveCallback(t *testing.T) {
 					},
 					NodeLiveness: kvserver.NodeLivenessTestingKnobs{
 						IsLiveCallback: func(l livenesspb.Liveness) {
-							if started.Load() {
+							if started.Get() {
 								cbMu.Lock()
 								defer cbMu.Unlock()
 								cbs[l.NodeID] = struct{}{}
@@ -317,7 +317,7 @@ func TestNodeIsLiveCallback(t *testing.T) {
 	pauseNodeLivenessHeartbeatLoops(tc)
 	// Only record entires after we have paused the normal heartbeat loop to make
 	// sure they come from the Heartbeat below.
-	started.Store(true)
+	started.Set(true)
 
 	// Advance clock past the liveness threshold.
 	manualClock.Increment(tc.Servers[0].NodeLiveness().(*liveness.NodeLiveness).TestingGetLivenessThreshold().Nanoseconds() + 1)
@@ -1028,7 +1028,7 @@ func TestNodeLivenessRetryAmbiguousResultOnCreateError(t *testing.T) {
 		t.Run(tc.err.Error(), func(t *testing.T) {
 
 			// Keeps track of node IDs that have errored.
-			var errored syncutil.Set[roachpb.NodeID]
+			var errored sync.Map
 
 			testingEvalFilter := func(args kvserverbase.FilterArgs) *kvpb.Error {
 				if req, ok := args.Req.(*kvpb.ConditionalPutRequest); ok {
@@ -1037,7 +1037,7 @@ func TestNodeLivenessRetryAmbiguousResultOnCreateError(t *testing.T) {
 					}
 					var liveness livenesspb.Liveness
 					assert.NoError(t, req.Value.GetProto(&liveness))
-					if errored.Add(liveness.NodeID) {
+					if _, ok := errored.LoadOrStore(liveness.NodeID, true); !ok {
 						if liveness.NodeID != 1 {
 							// We expect this to come from the create code path on all nodes
 							// except the first. Make sure that is actually true.
@@ -1072,7 +1072,7 @@ func TestNodeLivenessRetryAmbiguousResultOnCreateError(t *testing.T) {
 				})
 				_, ok := s.NodeLiveness().(*liveness.NodeLiveness).Self()
 				require.True(t, ok)
-				ok = errored.Contains(s.NodeID())
+				_, ok = errored.Load(s.NodeID())
 				require.True(t, ok)
 			}
 		})
@@ -1125,17 +1125,13 @@ func TestNodeLivenessNoRetryOnAmbiguousResultCausedByCancellation(t *testing.T) 
 	defer s.Stopper().Stop(ctx)
 	nl := s.NodeLiveness().(*liveness.NodeLiveness)
 
-	testutils.SucceedsSoon(t, func() error {
-		return verifyLivenessServer(s, 1)
-	})
-
 	// We want to control the heartbeats.
 	nl.PauseHeartbeatLoopForTest()
 
 	sem = make(chan struct{})
 
 	l, ok := nl.Self()
-	require.True(t, ok)
+	assert.True(t, ok)
 
 	hbCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

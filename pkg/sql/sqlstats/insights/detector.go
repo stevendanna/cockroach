@@ -21,7 +21,7 @@ type detector interface {
 }
 
 var _ detector = &compositeDetector{}
-var _ detector = &AnomalyDetector{}
+var _ detector = &anomalyDetector{}
 var _ detector = &latencyThresholdDetector{}
 
 type compositeDetector struct {
@@ -49,7 +49,7 @@ func (d *compositeDetector) isSlow(statement *Statement) bool {
 
 var desiredQuantiles = map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001}
 
-type AnomalyDetector struct {
+type anomalyDetector struct {
 	settings *cluster.Settings
 	metrics  Metrics
 	store    *list.List
@@ -65,11 +65,11 @@ type latencySummaryEntry struct {
 	value *quantile.Stream
 }
 
-func (d *AnomalyDetector) enabled() bool {
+func (d *anomalyDetector) enabled() bool {
 	return AnomalyDetectionEnabled.Get(&d.settings.SV)
 }
 
-func (d *AnomalyDetector) isSlow(stmt *Statement) (decision bool) {
+func (d *anomalyDetector) isSlow(stmt *Statement) (decision bool) {
 	if !d.enabled() {
 		return
 	}
@@ -86,11 +86,12 @@ func (d *AnomalyDetector) isSlow(stmt *Statement) (decision bool) {
 	return
 }
 
-func (d *AnomalyDetector) GetPercentileValues(id appstatspb.StmtFingerprintID) PercentileValues {
-	// Ensure that Query doesn't flush which allows us to take the read lock.
-	const shouldFlush = false
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+func (d *anomalyDetector) GetPercentileValues(
+	id appstatspb.StmtFingerprintID, shouldFlush bool,
+) PercentileValues {
+	// latencySummary.Query might modify its own state (Stream.flush), so a read-write lock is necessary.
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	latencies := PercentileValues{}
 	if entry, ok := d.mu.index[id]; ok {
 		latencySummary := entry.Value.(latencySummaryEntry).value
@@ -103,7 +104,7 @@ func (d *AnomalyDetector) GetPercentileValues(id appstatspb.StmtFingerprintID) P
 	return latencies
 }
 
-func (d *AnomalyDetector) withFingerprintLatencySummary(
+func (d *anomalyDetector) withFingerprintLatencySummary(
 	stmt *Statement, consumer func(latencySummary *quantile.Stream),
 ) {
 	d.mu.Lock()
@@ -141,8 +142,8 @@ func (d *AnomalyDetector) withFingerprintLatencySummary(
 	}
 }
 
-func newAnomalyDetector(settings *cluster.Settings, metrics Metrics) *AnomalyDetector {
-	anomaly := &AnomalyDetector{
+func newAnomalyDetector(settings *cluster.Settings, metrics Metrics) *anomalyDetector {
+	anomaly := &anomalyDetector{
 		settings: settings,
 		metrics:  metrics,
 		store:    list.New(),

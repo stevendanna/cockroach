@@ -97,9 +97,8 @@ type joinReader struct {
 	// used by buffered rows in joinReaderOrderingStrategy. If the memory limit is
 	// exceeded, the joinReader will spill to disk. diskMonitor is used to monitor
 	// the disk utilization in this case.
-	limitedMemMonitor   *mon.BytesMonitor
-	unlimitedMemMonitor *mon.BytesMonitor
-	diskMonitor         *mon.BytesMonitor
+	limitedMemMonitor *mon.BytesMonitor
+	diskMonitor       *mon.BytesMonitor
 
 	fetchSpec      fetchpb.IndexFetchSpec
 	splitFamilyIDs []descpb.FamilyID
@@ -321,7 +320,7 @@ func newJoinReader(
 	case lookupJoinReaderType:
 		lookupCols = spec.LookupColumns
 	default:
-		return nil, errors.AssertionFailedf("unsupported joinReaderType")
+		return nil, errors.Errorf("unsupported joinReaderType")
 	}
 	// The joiner has a choice to make between getting DistSender-level
 	// parallelism for its lookup batches and setting row and memory limits (due
@@ -343,7 +342,7 @@ func newJoinReader(
 		// in order to ensure the lookups are ordered, so set shouldLimitBatches.
 		spec.MaintainOrdering, shouldLimitBatches = true, true
 	}
-	useStreamer, txn, err := flowCtx.UseStreamer(ctx)
+	useStreamer, txn, err := flowCtx.UseStreamer()
 	if err != nil {
 		return nil, err
 	}
@@ -395,11 +394,11 @@ func newJoinReader(
 	case lookupJoinReaderType:
 		leftTypes = input.OutputTypes()
 	default:
-		return nil, errors.AssertionFailedf("unsupported joinReaderType")
+		return nil, errors.Errorf("unsupported joinReaderType")
 	}
 	rightTypes := spec.FetchSpec.FetchedColumnTypes()
 
-	evalCtx, err := jr.joinerBase.init(
+	if err := jr.joinerBase.init(
 		ctx,
 		jr,
 		flowCtx,
@@ -421,29 +420,22 @@ func newJoinReader(
 				return trailingMeta
 			},
 		},
-	)
-	if err != nil {
+	); err != nil {
 		return nil, err
 	}
 
 	if !spec.LookupExpr.Empty() {
-		if evalCtx == flowCtx.EvalCtx {
-			// We haven't created a copy of the eval context yet (because it is
-			// only done in init if we have a non-empty ON expression), but we
-			// actually need a copy.
-			evalCtx = flowCtx.NewEvalCtx()
-		}
 		lookupExprTypes := make([]*types.T, 0, len(leftTypes)+len(rightTypes))
 		lookupExprTypes = append(lookupExprTypes, leftTypes...)
 		lookupExprTypes = append(lookupExprTypes, rightTypes...)
 
 		semaCtx := flowCtx.NewSemaContext(jr.txn)
-		if err := jr.lookupExpr.Init(ctx, spec.LookupExpr, lookupExprTypes, semaCtx, evalCtx); err != nil {
+		if err := jr.lookupExpr.Init(ctx, spec.LookupExpr, lookupExprTypes, semaCtx, jr.EvalCtx); err != nil {
 			return nil, err
 		}
 		if !spec.RemoteLookupExpr.Empty() {
 			if err := jr.remoteLookupExpr.Init(
-				ctx, spec.RemoteLookupExpr, lookupExprTypes, semaCtx, evalCtx,
+				ctx, spec.RemoteLookupExpr, lookupExprTypes, semaCtx, jr.EvalCtx,
 			); err != nil {
 				return nil, err
 			}
@@ -514,7 +506,7 @@ func newJoinReader(
 		// We need to use an unlimited monitor for the streamer's budget since
 		// the streamer itself is responsible for staying under the limit.
 		jr.streamerInfo.unlimitedMemMonitor = mon.NewMonitorInheritWithLimit(
-			"joinreader-streamer-unlimited" /* name */, math.MaxInt64, flowCtx.Mon, false, /* longLiving */
+			"joinreader-streamer-unlimited" /* name */, math.MaxInt64, flowCtx.Mon,
 		)
 		jr.streamerInfo.unlimitedMemMonitor.StartNoReserved(ctx, flowCtx.Mon)
 		jr.streamerInfo.budgetAcc = jr.streamerInfo.unlimitedMemMonitor.MakeBoundAccount()
@@ -546,21 +538,19 @@ func newJoinReader(
 
 		var diskBuffer kvstreamer.ResultDiskBuffer
 		if jr.streamerInfo.maintainOrdering {
-			diskBufferMemAcc := jr.streamerInfo.unlimitedMemMonitor.MakeBoundAccount()
 			jr.streamerInfo.diskMonitor = execinfra.NewMonitor(
 				ctx, jr.FlowCtx.DiskMonitor, "streamer-disk", /* name */
 			)
 			diskBuffer = rowcontainer.NewKVStreamerResultDiskBuffer(
-				jr.FlowCtx.Cfg.TempStorage, diskBufferMemAcc, jr.streamerInfo.diskMonitor, spec.ReverseScans,
+				jr.FlowCtx.Cfg.TempStorage, jr.streamerInfo.diskMonitor,
 			)
 		}
 		singleRowLookup := readerType == indexJoinReaderType || spec.LookupColumnsAreKey
 		streamingKVFetcher = row.NewStreamingKVFetcher(
 			flowCtx.Cfg.DistSender,
-			flowCtx.Cfg.KVStreamerMetrics,
 			flowCtx.Stopper(),
 			jr.txn,
-			flowCtx.Cfg.Settings,
+			flowCtx.EvalCtx.Settings,
 			flowCtx.EvalCtx.SessionData(),
 			spec.LockingWaitPolicy,
 			spec.LockingStrength,
@@ -570,11 +560,8 @@ func newJoinReader(
 			jr.streamerInfo.maintainOrdering,
 			singleRowLookup,
 			int(spec.FetchSpec.MaxKeysPerRow),
-			spec.ReverseScans,
 			diskBuffer,
 			&jr.streamerInfo.txnKVStreamerMemAcc,
-			spec.FetchSpec.External,
-			row.FetchSpecRequiresRawMVCCValues(spec.FetchSpec),
 		)
 	} else {
 		// When not using the Streamer API, we want to limit the batch size hint
@@ -592,12 +579,10 @@ func newJoinReader(
 		row.FetcherInitArgs{
 			StreamingKVFetcher:         streamingKVFetcher,
 			Txn:                        jr.txn,
-			Reverse:                    spec.ReverseScans,
 			LockStrength:               spec.LockingStrength,
 			LockWaitPolicy:             spec.LockingWaitPolicy,
 			LockDurability:             spec.LockingDurability,
 			LockTimeout:                flowCtx.EvalCtx.SessionData().LockTimeout,
-			DeadlockTimeout:            flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 			Alloc:                      &jr.alloc,
 			MemMonitor:                 flowCtx.Mon,
 			Spec:                       &spec.FetchSpec,
@@ -731,15 +716,13 @@ func (jr *joinReader) initJoinReaderStrategy(
 	// disk, it releases all of the memory reservations, so we make the
 	// corresponding memory monitor not hold on to any bytes.
 	jr.limitedMemMonitor.RelinquishAllOnReleaseBytes()
-	jr.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon, "joinreader-unlimited")
 	jr.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, "joinreader-disk")
 	drc := rowcontainer.NewDiskBackedNumberedRowContainer(
 		false, /* deDup */
 		typs,
-		jr.FlowCtx.EvalCtx,
+		jr.EvalCtx,
 		jr.FlowCtx.Cfg.TempStorage,
 		jr.limitedMemMonitor,
-		jr.unlimitedMemMonitor,
 		jr.diskMonitor,
 	)
 	if limit < mon.DefaultPoolAllocationSize {
@@ -869,7 +852,7 @@ func (jr *joinReader) getBatchBytesLimit() rowinfra.BytesLimit {
 	}
 	bytesLimit := jr.lookupBatchBytesLimit
 	if bytesLimit == 0 {
-		bytesLimit = rowinfra.GetDefaultBatchBytesLimit(jr.FlowCtx.EvalCtx.TestingKnobs.ForceProductionValues)
+		bytesLimit = rowinfra.GetDefaultBatchBytesLimit(jr.EvalCtx.TestingKnobs.ForceProductionValues)
 	}
 	return bytesLimit
 }
@@ -1233,9 +1216,6 @@ func (jr *joinReader) close() {
 		if jr.MemMonitor != nil {
 			jr.MemMonitor.Stop(jr.Ctx())
 		}
-		if jr.unlimitedMemMonitor != nil {
-			jr.unlimitedMemMonitor.Stop(jr.Ctx())
-		}
 		if jr.diskMonitor != nil {
 			jr.diskMonitor.Stop(jr.Ctx())
 		}
@@ -1270,9 +1250,6 @@ func (jr *joinReader) execStatsForTrace() *execinfrapb.ComponentStats {
 	// Note that there is no need to include the maximum bytes of
 	// jr.limitedMemMonitor because it is a child of jr.MemMonitor.
 	ret.Exec.MaxAllocatedMem.Add(jr.MemMonitor.MaximumBytes())
-	if jr.unlimitedMemMonitor != nil {
-		ret.Exec.MaxAllocatedMem.Add(jr.unlimitedMemMonitor.MaximumBytes())
-	}
 	if jr.diskMonitor != nil {
 		ret.Exec.MaxAllocatedDisk.Add(jr.diskMonitor.MaximumBytes())
 	}

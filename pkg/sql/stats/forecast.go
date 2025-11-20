@@ -327,7 +327,7 @@ func forecastColumnStatistics(
 		// Now adjust for consistency. We don't use any session data for operations
 		// on upper bounds, so a nil *eval.Context works as our tree.CompareContext.
 		var compareCtx *eval.Context
-		hist.adjustCounts(ctx, compareCtx, observed[0].HistogramData.ColumnType, nonNullRowCount, nonNullDistinctCount)
+		hist.adjustCounts(compareCtx, observed[0].HistogramData.ColumnType, nonNullRowCount, nonNullDistinctCount)
 
 		// Finally, convert back to HistogramData.
 		histData, err := hist.toHistogramData(ctx, observed[0].HistogramData.ColumnType, st)
@@ -467,5 +467,5 @@ func predictHistogram(
 	}
 
 	// Finally, convert the predicted quantile function back to a histogram.
-	return yₙ.toHistogram(ctx, colType, nonNullRowCount)
+	return yₙ.toHistogram(colType, nonNullRowCount)
 }

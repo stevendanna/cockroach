@@ -18,10 +18,10 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/sql/inverted"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
-	"github.com/cockroachdb/cockroach/pkg/util/deduplicate"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/unique"
 	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
 )
@@ -1572,8 +1572,8 @@ func TestEncodeJSONInvertedIndex(t *testing.T) {
 		// Make sure that the expected encoding slice is sorted, as well as the
 		// output of the function under test, because the function under test can
 		// reorder the keys it's returning if there are arrays inside.
-		enc = deduplicate.ByteSlices(enc)
-		c.expEnc = deduplicate.ByteSlices(c.expEnc)
+		enc = unique.UniquifyByteSlices(enc)
+		c.expEnc = unique.UniquifyByteSlices(c.expEnc)
 		for j, path := range enc {
 			if !bytes.Equal(path, c.expEnc[j]) {
 				t.Errorf("unexpected encoding mismatch for %v. expected [%#v], got [%#v]",
@@ -2821,107 +2821,6 @@ func TestToDecimal(t *testing.T) {
 			dec, ok := json.AsDecimal()
 			if dec != nil || ok {
 				t.Fatalf("%v should not be a valid decimal", json)
-			}
-		})
-	}
-}
-
-func TestAllPaths(t *testing.T) {
-	cases := []struct {
-		json     string
-		expected []string
-	}{
-		{`{}`, []string{`{}`}},
-		{`[]`, []string{`[]`}},
-		{`[1, 2, 3]`, []string{`[1]`, `[2]`, `[3]`}},
-		{`{"foo": {"bar": [1, 2, 3]}}`, []string{`{"foo": {"bar": [1]}}`, `{"foo": {"bar": [2]}}`, `{"foo": {"bar": [3]}}`}},
-		{
-			`{"a": [1, 2, true, false], "b": {"ba": 0, "bb": null}, "c": {}}`,
-			[]string{`{"a": [1]}`, `{"a": [2]}`, `{"a": [true]}`, `{"a": [false]}`, `{"b": {"ba": 0}}`, `{"b": {"bb": null}}`, `{"c": {}}`},
-		},
-	}
-
-	for i, tc := range cases {
-		t.Run(fmt.Sprintf("all paths - %d", i), func(t *testing.T) {
-			j := parseJSON(t, tc.json)
-			paths, err := AllPaths(j)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(paths) != len(tc.expected) {
-				t.Fatalf("expected %d paths, got %d", len(tc.expected), len(paths))
-			}
-			for k, p := range paths {
-				cmp, err := p.Compare(parseJSON(t, tc.expected[k]))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if cmp != 0 {
-					t.Fatalf("expected %s, got %s", tc.expected[k], p.String())
-				}
-			}
-		})
-	}
-}
-
-func TestAllPathsWithDepth(t *testing.T) {
-	cases := []struct {
-		json            string
-		depthToExpected map[int][]string
-	}{
-		{`{}`, map[int][]string{
-			-1: {`{}`},
-			0:  {`{}`},
-			1:  {`{}`},
-			2:  {`{}`},
-		}},
-		{`[]`, map[int][]string{
-			-1: {`[]`},
-			0:  {`[]`},
-			1:  {`[]`},
-			2:  {`[]`},
-		}},
-		{`[1, 2, 3]`, map[int][]string{
-			-1: {`[1]`, `[2]`, `[3]`},
-			0:  {`[1, 2, 3]`},
-			1:  {`[1]`, `[2]`, `[3]`},
-			2:  {`[1]`, `[2]`, `[3]`},
-		}},
-		{`{"foo": {"bar": [1, 2, 3]}}`, map[int][]string{
-			-1: {`{"foo": {"bar": [1]}}`, `{"foo": {"bar": [2]}}`, `{"foo": {"bar": [3]}}`},
-			0:  {`{"foo": {"bar": [1, 2, 3]}}`},
-			1:  {`{"foo": {"bar": [1, 2, 3]}}`},
-			2:  {`{"foo": {"bar": [1, 2, 3]}}`},
-			3:  {`{"foo": {"bar": [1]}}`, `{"foo": {"bar": [2]}}`, `{"foo": {"bar": [3]}}`},
-		}},
-		{`{"a": [1, 2, true, false], "b": {"ba": 0, "bb": null}, "c": {}}`, map[int][]string{
-			-1: {`{"a": [1]}`, `{"a": [2]}`, `{"a": [true]}`, `{"a": [false]}`, `{"b": {"ba": 0}}`, `{"b": {"bb": null}}`, `{"c": {}}`},
-			0:  {`{"a": [1, 2, true, false], "b": {"ba": 0, "bb": null}, "c": {}}`},
-			1:  {`{"a": [1, 2, true, false]}`, `{"b": {"ba": 0, "bb": null}}`, `{"c": {}}`},
-			2:  {`{"a": [1]}`, `{"a": [2]}`, `{"a": [true]}`, `{"a": [false]}`, `{"b": {"ba": 0}}`, `{"b": {"bb": null}}`, `{"c": {}}`},
-		}},
-	}
-
-	for i, tc := range cases {
-		t.Run(fmt.Sprintf("all paths with depth - %d", i), func(t *testing.T) {
-			j := parseJSON(t, tc.json)
-			for depth, expected := range tc.depthToExpected {
-				paths, err := AllPathsWithDepth(j, depth)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(paths) != len(expected) {
-					t.Fatalf("expected %d paths, got %d", len(expected), len(paths))
-				}
-				for k, p := range paths {
-					cmp, err := p.Compare(parseJSON(t, expected[k]))
-					if err != nil {
-						t.Fatal(err)
-					}
-					if cmp != 0 {
-						t.Fatalf("expected %s, got %s", expected[k], p.String())
-					}
-				}
 			}
 		})
 	}

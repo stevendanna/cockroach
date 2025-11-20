@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
 )
@@ -36,11 +35,6 @@ var DirectScansEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"sql.distsql.direct_columnar_scans.enabled",
 	"set to true to enable the 'direct' columnar scans in the KV layer",
-	directScansEnabledDefault,
-)
-
-var directScansEnabledDefault = metamorphic.ConstantWithTestBool(
-	"direct-scans-enabled",
 	false,
 )
 
@@ -169,7 +163,7 @@ func (c *cFetcherWrapper) Close(ctx context.Context) {
 		c.detachedFetcherMon = nil
 	}
 	if c.converter != nil {
-		c.converter.Close(ctx)
+		c.converter.Release(ctx)
 		c.converter = nil
 	}
 	c.buf = bytes.Buffer{}
@@ -245,7 +239,7 @@ func newCFetcherWrapper(
 	// the cFetcherWrapper is responsible for performing the correct accounting
 	// against the memory account provided by the caller.
 	detachedFetcherMon := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeMonitorName("cfetcher-wrapper-detached-monitor"),
+		Name:     "cfetcher-wrapper-detached-monitor",
 		Settings: st,
 	})
 	detachedFetcherMon.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(math.MaxInt64))
@@ -291,8 +285,8 @@ func deserializeColumnarBatchesFromArrow(
 		ctx,
 		// This allocator is not connected to the memory accounting system since
 		// the accounting for these batches will be done by the SQL client, so
-		// we pass a standalone unlimited account here.
-		mon.NewStandaloneUnlimitedAccount(), /* unlimitedAcc */
+		// we pass nil here.
+		nil, /* unlimitedAcc */
 		// It'll be the responsibility of the SQL client to update the
 		// datum-backed vectors with the eval context, so we use the factory
 		// with no eval context.

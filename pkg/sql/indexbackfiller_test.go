@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -51,7 +50,7 @@ func TestIndexBackfiller(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 
 	moveToTDelete := make(chan bool)
 	moveToTWrite := make(chan bool)
@@ -256,7 +255,7 @@ INSERT INTO foo VALUES (1, 2), (2, 3), (3, 4);
 					KeySuffixColumnIDs: []descpb.ColumnID{
 						mut.Columns[0].ID,
 					},
-					Type:         idxtype.FORWARD,
+					Type:         descpb.IndexDescriptor_FORWARD,
 					EncodingType: catenumpb.SecondaryIndexEncoding,
 				}
 				mut.NextIndexID++
@@ -340,7 +339,7 @@ INSERT INTO foo VALUES (1), (10), (100);
 						columnWithDefault.ID,
 						computedColumnNotInPrimaryIndex.ID,
 					},
-					Type:         idxtype.FORWARD,
+					Type:         descpb.IndexDescriptor_FORWARD,
 					EncodingType: catenumpb.PrimaryIndexEncoding,
 				}
 				mut.NextIndexID++

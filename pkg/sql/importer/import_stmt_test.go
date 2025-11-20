@@ -62,7 +62,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -2090,9 +2089,8 @@ func TestFailedImportGC(t *testing.T) {
 	dbID := sqlutils.QueryDatabaseID(t, sqlDB.DB, "failedimport")
 	tableID := descpb.ID(dbID + 2)
 	var td catalog.TableDescriptor
-	execCfg := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig)
-	if err := sql.DescsTxn(ctx, &execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
-		td, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, tableID)
+	if err := sql.TestingDescsTxn(ctx, tc.Server(0), func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
+		td, err = col.ByID(txn.KV()).Get().Table(ctx, tableID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -2106,7 +2104,7 @@ func TestFailedImportGC(t *testing.T) {
 	// Ensure that a GC job was created, and wait for it to finish.
 	doneGCQuery := fmt.Sprintf(
 		"SELECT count(*) FROM crdb_internal.jobs WHERE job_type = '%s' AND running_status = '%s' AND created > %s",
-		"SCHEMA CHANGE GC", sql.StatusWaitingForMVCCGC, beforeImport.String(),
+		"SCHEMA CHANGE GC", sql.RunningStatusWaitingForMVCCGC, beforeImport.String(),
 	)
 	sqlDB.CheckQueryResultsRetry(t, doneGCQuery, [][]string{{"1"}})
 	// Expect there are no more KVs for this span.
@@ -2441,7 +2439,7 @@ func TestImportCSVStmt(t *testing.T) {
 			sqlDB.QueryRow(t, `SELECT id FROM system.namespace WHERE "parentID" = $1 AND "parentSchemaID" = $2`,
 				intodbID, publicSchemaID).Scan(&tableID)
 
-			if err := jobutils.VerifySystemJob(t, sqlDB, testNum, jobspb.TypeImport, jobs.StateSucceeded, jobs.Record{
+			if err := jobutils.VerifySystemJob(t, sqlDB, testNum, jobspb.TypeImport, jobs.StatusSucceeded, jobs.Record{
 				Username:      username.RootUserName(),
 				Description:   fmt.Sprintf(jobPrefix+` CSV DATA (%s)`+tc.jobOpts, strings.ReplaceAll(strings.Join(tc.files, ", "), "?AWS_SESSION_TOKEN=secrets", "?AWS_SESSION_TOKEN=redacted")),
 				DescriptorIDs: []descpb.ID{descpb.ID(tableID)},
@@ -2538,7 +2536,7 @@ func TestImportCSVStmt(t *testing.T) {
 	t.Run("RBAC-SuperUser", func(t *testing.T) {
 		sqlDB.Exec(t, `CREATE USER testuser`)
 		sqlDB.Exec(t, `GRANT admin TO testuser`)
-		pgURL, cleanupFunc := pgurlutils.PGUrl(
+		pgURL, cleanupFunc := sqlutils.PGUrl(
 			t, tc.ApplicationLayer(0).AdvSQLAddr(), "TestImportPrivileges-testuser",
 			url.User("testuser"),
 		)
@@ -2782,7 +2780,7 @@ func TestImportObjectLevelRBAC(t *testing.T) {
 	rootDB := sqlutils.MakeSQLRunner(conn)
 
 	rootDB.Exec(t, `CREATE USER testuser`)
-	pgURL, cleanupFunc := pgurlutils.PGUrl(
+	pgURL, cleanupFunc := sqlutils.PGUrl(
 		t, tc.ApplicationLayer(0).AdvSQLAddr(), "TestImportPrivileges-testuser",
 		url.User("testuser"),
 	)
@@ -3046,7 +3044,7 @@ func TestImportIntoCSV(t *testing.T) {
 				r := sqlDB.QueryRow(t, "SELECT status FROM [SHOW JOBS] WHERE job_id = $1", jobID)
 				var status string
 				r.Scan(&status)
-				if status == string(jobs.StatePauseRequested) {
+				if status == string(jobs.StatusPauseRequested) {
 					return errors.New("still has pause-requested status")
 				}
 				return nil
@@ -3266,7 +3264,7 @@ func TestImportIntoCSV(t *testing.T) {
 			)
 
 			jobPrefix := `IMPORT INTO defaultdb.public.t(a, b)`
-			if err := jobutils.VerifySystemJob(t, sqlDB, testNum, jobspb.TypeImport, jobs.StateSucceeded, jobs.Record{
+			if err := jobutils.VerifySystemJob(t, sqlDB, testNum, jobspb.TypeImport, jobs.StatusSucceeded, jobs.Record{
 				Username:      username.RootUserName(),
 				Description:   fmt.Sprintf(jobPrefix+` CSV DATA (%s)`+tc.jobOpts, strings.ReplaceAll(strings.Join(tc.files, ", "), "?AWS_SESSION_TOKEN=secrets", "?AWS_SESSION_TOKEN=redacted")),
 				DescriptorIDs: []descpb.ID{descpb.ID(tableID)},
@@ -3429,7 +3427,7 @@ func TestImportIntoCSV(t *testing.T) {
 		if err := g.Wait(); err != nil {
 			t.Fatal(err)
 		}
-		waitForJobResult(t, tc, jobspb.JobID(jobID), jobs.StateSucceeded)
+		waitForJobResult(t, tc, jobspb.JobID(jobID), jobs.StatusSucceeded)
 
 		// Expect it to succeed on re-attempt.
 		sqlDB.QueryRow(t, `SELECT 1 FROM t`).Scan(&unused)
@@ -4062,7 +4060,7 @@ func BenchmarkCSVConvertRecord(b *testing.B) {
 
 	create := stmt.AST.(*tree.CreateTable)
 	st := cluster.MakeTestingClusterSettings()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	evalCtx := eval.MakeTestingEvalContext(st)
 
 	tableDesc, err := MakeTestingSimpleTableDescriptor(ctx, &semaCtx, st, create, descpb.ID(100), keys.PublicSchemaIDForBackup, descpb.ID(100), NoFKs, 1)
@@ -4770,7 +4768,7 @@ func TestImportDefaultWithResume(t *testing.T) {
 
 			// Get number of sequence value chunks which have been reserved.
 			js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool {
-				return jobs.StatePaused == js.status
+				return jobs.StatusPaused == js.status
 			})
 			// We expect two chunk entries since our breakpoint is at 7*batchSize.
 			// [1, 10] and [11, 100]
@@ -4794,7 +4792,7 @@ func TestImportDefaultWithResume(t *testing.T) {
 			if err := registry.Unpause(ctx, nil, jobID); err != nil {
 				t.Fatal(err)
 			}
-			js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StateSucceeded == js.status })
+			js = queryJobUntil(t, sqlDB.DB, jobID, func(js jobState) bool { return jobs.StatusSucceeded == js.status })
 			// No additional chunks should have been allocated on job resumption since
 			// we already have enough chunks of the sequence values to cover all the
 			// rows.
@@ -5017,7 +5015,7 @@ func BenchmarkDelimitedConvertRecord(b *testing.B) {
 	}
 	create := stmt.AST.(*tree.CreateTable)
 	st := cluster.MakeTestingClusterSettings()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	evalCtx := eval.MakeTestingEvalContext(st)
 
 	tableDesc, err := MakeTestingSimpleTableDescriptor(ctx, &semaCtx, st, create, descpb.ID(100), keys.PublicSchemaIDForBackup, descpb.ID(100), NoFKs, 1)
@@ -5119,7 +5117,7 @@ func BenchmarkPgCopyConvertRecord(b *testing.B) {
 		b.Fatal(err)
 	}
 	create := stmt.AST.(*tree.CreateTable)
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.MakeTestingEvalContext(st)
 
@@ -5214,7 +5212,7 @@ func TestImportControlJobRBAC(t *testing.T) {
 	// Create non-root user.
 	rootDB.Exec(t, `CREATE USER testuser`)
 	rootDB.Exec(t, `ALTER ROLE testuser CONTROLJOB`)
-	pgURL, cleanupFunc := pgurlutils.PGUrl(
+	pgURL, cleanupFunc := sqlutils.PGUrl(
 		t, tc.ApplicationLayer(0).AdvSQLAddr(), "TestImportPrivileges-testuser",
 		url.User("testuser"),
 	)
@@ -5228,7 +5226,7 @@ func TestImportControlJobRBAC(t *testing.T) {
 	done := make(chan struct{})
 	defer close(done)
 
-	defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(_ *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+	jobs.RegisterConstructor(jobspb.TypeImport, func(_ *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 		return fakeResumer{
 			OnResume: func(ctx context.Context) error {
 				<-done
@@ -5239,7 +5237,7 @@ func TestImportControlJobRBAC(t *testing.T) {
 				return nil
 			},
 		}
-	}, jobs.UsesTenantCostControl)()
+	}, jobs.UsesTenantCostControl)
 
 	startLeasedJob := func(t *testing.T, record jobs.Record) *jobs.StartableJob {
 		job, err := jobs.TestingCreateAndStartJob(
@@ -5960,6 +5958,8 @@ func TestImportPgDumpIgnoredStmts(t *testing.T) {
 
 	data := `
 				-- Statements that CRDB cannot parse.
+				CREATE TRIGGER conditions_set_updated_at BEFORE UPDATE ON conditions FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
+
 				REVOKE ALL ON SEQUENCE knex_migrations_id_seq FROM PUBLIC;
 				REVOKE ALL ON SEQUENCE knex_migrations_id_seq FROM database;
 
@@ -5996,7 +5996,6 @@ func TestImportPgDumpIgnoredStmts(t *testing.T) {
 				COMMENT ON TABLE t IS 'This should be skipped';
 				COMMENT ON DATABASE t IS 'This should be skipped';
 				COMMENT ON COLUMN t IS 'This should be skipped';
-				CREATE TRIGGER conditions_set_updated_at BEFORE UPDATE ON conditions FOR EACH ROW EXECUTE PROCEDURE set_updated_at();
 
 
 				-- Statements that CRDB can parse, but IMPORT does not support.
@@ -6021,7 +6020,7 @@ func TestImportPgDumpIgnoredStmts(t *testing.T) {
 
 	t.Run("dont-ignore-unsupported", func(t *testing.T) {
 		sqlDB.Exec(t, "CREATE DATABASE foo1; USE foo1;")
-		sqlDB.ExpectErr(t, "unsupported", "IMPORT PGDUMP ($1)", srv.URL)
+		sqlDB.ExpectErr(t, "syntax error", "IMPORT PGDUMP ($1)", srv.URL)
 	})
 
 	t.Run("require-both-unsupported-options", func(t *testing.T) {
@@ -6078,7 +6077,8 @@ func TestImportPgDumpIgnoredStmts(t *testing.T) {
 			}
 		}
 
-		schemaFileContents := []string{`
+		schemaFileContents := []string{
+			`create trigger: could not be parsed
 revoke privileges on sequence: could not be parsed
 revoke privileges on sequence: could not be parsed
 grant privileges on sequence: could not be parsed
@@ -6088,7 +6088,6 @@ comment on function: could not be parsed
 create extension if not exists with: could not be parsed
 alter aggregate: could not be parsed
 alter domain: could not be parsed
-create trigger: unsupported by IMPORT
 `,
 			`create function: could not be parsed
 alter function: could not be parsed
@@ -6129,10 +6128,8 @@ func TestImportPgDumpGeo(t *testing.T) {
 		tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{ServerArgs: args})
 		defer tc.Stopper().Stop(ctx)
 		conn := tc.ServerConn(0)
-		conn.SetMaxOpenConns(1)
 		sqlDB := sqlutils.MakeSQLRunner(conn)
 
-		sqlDB.Exec(t, "SET autocommit_before_ddl = false")
 		sqlDB.Exec(t, `CREATE DATABASE importdb; SET DATABASE = importdb`)
 		sqlDB.Exec(t, "IMPORT PGDUMP 'nodelocal://1/geo_shp2pgsql.sql' WITH ignore_unsupported_statements")
 
@@ -6174,10 +6171,8 @@ func TestImportPgDumpGeo(t *testing.T) {
 		tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{ServerArgs: args})
 		defer tc.Stopper().Stop(ctx)
 		conn := tc.ServerConn(0)
-		conn.SetMaxOpenConns(1)
 		sqlDB := sqlutils.MakeSQLRunner(conn)
 
-		sqlDB.Exec(t, "SET autocommit_before_ddl = false")
 		sqlDB.Exec(t, `CREATE DATABASE importdb; SET DATABASE = importdb`)
 		sqlDB.Exec(t, "IMPORT PGDUMP 'nodelocal://1/geo_ogr2ogr.sql' WITH ignore_unsupported_statements")
 
@@ -6405,7 +6400,6 @@ func TestImportPgDumpSchemas(t *testing.T) {
 		tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{ServerArgs: args})
 		defer tc.Stopper().Stop(ctx)
 		conn := tc.ServerConn(0)
-		execCfg := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig)
 		sqlDB := sqlutils.MakeSQLRunner(conn)
 
 		beforeImport, err := tree.MakeDTimestampTZ(tc.Server(0).Clock().Now().GoTime(), time.Millisecond)
@@ -6456,16 +6450,16 @@ func TestImportPgDumpSchemas(t *testing.T) {
 		// Ensure that a GC job was created, and wait for it to finish.
 		doneGCQuery := fmt.Sprintf(
 			"SELECT count(*) FROM crdb_internal.jobs WHERE job_type = '%s' AND running_status = '%s' AND created > %s",
-			"SCHEMA CHANGE GC", sql.StatusWaitingForMVCCGC, beforeImport.String(),
+			"SCHEMA CHANGE GC", sql.RunningStatusWaitingForMVCCGC, beforeImport.String(),
 		)
 
 		doneSchemaDropQuery := fmt.Sprintf(
 			"SELECT count(*) FROM crdb_internal.jobs WHERE job_type = '%s' AND status = '%s' AND description"+
-				" LIKE '%s'", "SCHEMA CHANGE", jobs.StateSucceeded, "dropping schemas%")
+				" LIKE '%s'", "SCHEMA CHANGE", jobs.StatusSucceeded, "dropping schemas%")
 
 		doneDatabaseUpdateQuery := fmt.Sprintf(
 			"SELECT count(*) FROM crdb_internal.jobs WHERE job_type = '%s' AND status = '%s' AND description"+
-				" LIKE '%s'", "SCHEMA CHANGE", jobs.StateSucceeded, "updating parent database%")
+				" LIKE '%s'", "SCHEMA CHANGE", jobs.StatusSucceeded, "updating parent database%")
 
 		sqlDB.CheckQueryResultsRetry(t, doneGCQuery, [][]string{{"1"}})
 		sqlDB.CheckQueryResultsRetry(t, doneSchemaDropQuery, [][]string{{"1"}})
@@ -6473,8 +6467,8 @@ func TestImportPgDumpSchemas(t *testing.T) {
 
 		for _, schemaID := range schemaIDs {
 			// Expect that the schema descriptor is deleted.
-			if err := sql.DescsTxn(ctx, &execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
-				_, err := col.ByIDWithoutLeased(txn.KV()).Get().Schema(ctx, schemaID)
+			if err := sql.TestingDescsTxn(ctx, tc.Server(0), func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+				_, err := col.ByID(txn.KV()).Get().Schema(ctx, schemaID)
 				if pgerror.GetPGCode(err) == pgcode.InvalidSchemaName {
 					return nil
 				}
@@ -6489,8 +6483,8 @@ func TestImportPgDumpSchemas(t *testing.T) {
 
 		for _, tableID := range tableIDs {
 			// Expect that the table descriptor is deleted.
-			if err := sql.DescsTxn(ctx, &execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
-				_, err := col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, tableID)
+			if err := sql.TestingDescsTxn(ctx, tc.Server(0), func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+				_, err := col.ByID(txn.KV()).Get().Table(ctx, tableID)
 				if !testutils.IsError(err, "descriptor not found") {
 					return err
 				}
@@ -6923,7 +6917,7 @@ func TestDisallowsInvalidFormatOptions(t *testing.T) {
 }
 
 func waitForJobResult(
-	t *testing.T, tc serverutils.TestClusterInterface, id jobspb.JobID, expected jobs.State,
+	t *testing.T, tc serverutils.TestClusterInterface, id jobspb.JobID, expected jobs.Status,
 ) {
 	// Force newly created job to be adopted and verify its result.
 	tc.Server(0).JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
@@ -6961,7 +6955,7 @@ func TestDetachedImport(t *testing.T) {
 	// DETACHED import w/out transaction is okay.
 	var jobID jobspb.JobID
 	sqlDB.QueryRow(t, importIntoQueryDetached, simpleOcf).Scan(&jobID)
-	waitForJobResult(t, tc, jobID, jobs.StateSucceeded)
+	waitForJobResult(t, tc, jobID, jobs.StatusSucceeded)
 
 	sqlDB.Exec(t, "DROP table simple")
 	sqlDB.Exec(t, "CREATE TABLE simple (i INT8 PRIMARY KEY, s text, b bytea)")
@@ -6980,25 +6974,25 @@ func TestDetachedImport(t *testing.T) {
 	}
 	err = crdb.ExecuteTx(ctx, connDB, nil, importWithDetached)
 	require.NoError(t, err)
-	waitForJobResult(t, tc, jobID, jobs.StateSucceeded)
+	waitForJobResult(t, tc, jobID, jobs.StatusSucceeded)
 
 	sqlDB.Exec(t, "DROP table simple")
 	sqlDB.Exec(t, "CREATE TABLE simple (i INT8 PRIMARY KEY, s text, b bytea)")
 
 	// Detached import should fail when the table already exists.
 	sqlDB.QueryRow(t, importIntoQueryDetached, simpleOcf).Scan(&jobID)
-	waitForJobResult(t, tc, jobID, jobs.StateSucceeded)
+	waitForJobResult(t, tc, jobID, jobs.StatusSucceeded)
 	sqlDB.QueryRow(t, importIntoQueryDetached, simpleOcf).Scan(&jobID)
-	waitForJobResult(t, tc, jobID, jobs.StateFailed)
+	waitForJobResult(t, tc, jobID, jobs.StatusFailed)
 
 	sqlDB.Exec(t, "DROP table simple")
 	sqlDB.Exec(t, "CREATE TABLE simple (i INT8 PRIMARY KEY, s text, b bytea)")
 
 	// Detached import into should fail when there are key collisions.
 	sqlDB.QueryRow(t, importIntoQueryDetached, simpleOcf).Scan(&jobID)
-	waitForJobResult(t, tc, jobID, jobs.StateSucceeded)
+	waitForJobResult(t, tc, jobID, jobs.StatusSucceeded)
 	sqlDB.QueryRow(t, importIntoQueryDetached, simpleOcf).Scan(&jobID)
-	waitForJobResult(t, tc, jobID, jobs.StateFailed)
+	waitForJobResult(t, tc, jobID, jobs.StatusFailed)
 }
 
 func TestImportRowErrorLargeRows(t *testing.T) {
@@ -7089,7 +7083,7 @@ func TestImportJobEventLogging(t *testing.T) {
 	sqlDB.QueryRow(t, importQuery, simpleOcf).Scan(&jobID, &unused, &unused, &unused, &unused,
 		&unused)
 
-	expectedStatus := []string{string(jobs.StateSucceeded), string(jobs.StateRunning)}
+	expectedStatus := []string{string(jobs.StatusSucceeded), string(jobs.StatusRunning)}
 	expectedRecoveryEvent := eventpb.RecoveryEvent{
 		RecoveryType: importJobRecoveryEventType,
 		NumRows:      int64(1000),
@@ -7108,8 +7102,8 @@ func TestImportJobEventLogging(t *testing.T) {
 	row.Scan(&jobID)
 
 	expectedStatus = []string{
-		string(jobs.StateFailed), string(jobs.StateReverting),
-		string(jobs.StateRunning),
+		string(jobs.StatusFailed), string(jobs.StatusReverting),
+		string(jobs.StatusRunning),
 	}
 	expectedRecoveryEvent = eventpb.RecoveryEvent{
 		RecoveryType: importJobRecoveryEventType,

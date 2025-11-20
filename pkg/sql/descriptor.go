@@ -58,7 +58,7 @@ func (p *planner) createDatabase(
 	if dbID, err := p.Descriptors().LookupDatabaseID(ctx, p.txn, dbName); err == nil && dbID != descpb.InvalidID {
 		if database.IfNotExists {
 			// Check if the database is in a dropping state
-			desc, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Database(ctx, dbID)
+			desc, err := p.Descriptors().ByID(p.txn).Get().Database(ctx, dbID)
 			if err != nil {
 				return nil, false, err
 			}
@@ -188,6 +188,10 @@ func (p *planner) createDatabase(
 
 	}
 
+	if err := p.maybeUpdateSystemDBSurvivalGoal(ctx); err != nil {
+		return nil, false, err
+	}
+
 	return db, true, nil
 }
 
@@ -282,11 +286,7 @@ func (p *planner) checkRegionIsCurrentlyActive(
 ) error {
 	var liveRegions LiveClusterRegions
 	if !p.execCfg.Codec.ForSystemTenant() && isSystemDatabase {
-		provider := p.regionsProvider()
-		if provider == nil {
-			return errors.AssertionFailedf("no regions provider available")
-		}
-		systemRegions, err := provider.GetSystemRegions(ctx)
+		systemRegions, err := p.regionsProvider().GetSystemRegions(ctx)
 		if err != nil {
 			return err
 		}

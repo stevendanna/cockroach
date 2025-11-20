@@ -3,13 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
 import d3 from "d3";
 import React from "react";
 
-import { BACKGROUND_BLUE, MAIN_BLUE } from "src/views/shared/colors";
+import { util } from "@cockroachlabs/cluster-ui";
 import { MetricsDataComponentProps } from "src/views/shared/components/metricQuery";
 import createChartComponent from "src/views/shared/util/d3-react";
+import { BACKGROUND_BLUE, MAIN_BLUE } from "src/views/shared/colors";
 
 interface SparklineConfig {
   width: number;

@@ -16,7 +16,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/keys",
+        "//pkg/clusterversion",
         "//pkg/kv",
         "//pkg/kv/kvpb",
         "//pkg/kv/kvserver/concurrency/isolation",
@@ -33,11 +33,9 @@ go_library(
         "//pkg/storage/enginepb",
         "//pkg/util/buildutil",
         "//pkg/util/container/list",
-        "//pkg/util/debugutil",
         "//pkg/util/hlc",
         "//pkg/util/humanizeutil",
         "//pkg/util/log",
-        "//pkg/util/metamorphic",
         "//pkg/util/metric",
         "//pkg/util/stop",
         "//pkg/util/syncutil",
@@ -65,6 +63,7 @@ go_test(
     exec_properties = {"test.Pool": "heavy"},
     shard_count = 16,
     deps = [
+        "//pkg/clusterversion",
         "//pkg/keys",
         "//pkg/kv/kvpb",
         "//pkg/kv/kvserver/batcheval",

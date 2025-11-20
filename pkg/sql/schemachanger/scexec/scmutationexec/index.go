@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/errors"
 )
 
@@ -61,6 +60,11 @@ func addNewIndexMutation(
 		tbl.NextConstraintID = opIndex.ConstraintID + 1
 	}
 
+	// Set up the index descriptor type.
+	indexType := descpb.IndexDescriptor_FORWARD
+	if opIndex.IsInverted {
+		indexType = descpb.IndexDescriptor_INVERTED
+	}
 	// Set up the encoding type.
 	encodingType := catenumpb.PrimaryIndexEncoding
 	indexVersion := descpb.LatestIndexDescriptorVersion
@@ -75,7 +79,7 @@ func addNewIndexMutation(
 		NotVisible:                  opIndex.IsNotVisible,
 		Invisibility:                opIndex.Invisibility,
 		Version:                     indexVersion,
-		Type:                        opIndex.Type,
+		Type:                        indexType,
 		CreatedExplicitly:           true,
 		EncodingType:                encodingType,
 		ConstraintID:                opIndex.ConstraintID,
@@ -90,9 +94,6 @@ func addNewIndexMutation(
 	}
 	if opIndex.GeoConfig != nil {
 		idx.GeoConfig = *opIndex.GeoConfig
-	}
-	if opIndex.VecConfig != nil {
-		idx.VecConfig = *opIndex.VecConfig
 	}
 	return enqueueIndexMutation(tbl, idx, state, descpb.DescriptorMutation_ADD)
 }
@@ -407,7 +408,7 @@ func (i *immediateVisitor) AddColumnToIndex(ctx context.Context, op scop.AddColu
 		})
 	}
 	// If this is an inverted column, note that.
-	if indexDesc.Type == idxtype.INVERTED && op.ColumnID == indexDesc.InvertedColumnID() {
+	if indexDesc.Type == descpb.IndexDescriptor_INVERTED && op.ColumnID == indexDesc.InvertedColumnID() {
 		indexDesc.InvertedColumnKinds = []catpb.InvertedIndexColumnKind{op.InvertedKind}
 	}
 	return nil
@@ -446,7 +447,7 @@ func (i *immediateVisitor) RemoveColumnFromIndex(
 			idx.KeyColumnNames = idx.KeyColumnNames[:i]
 			idx.KeyColumnIDs = idx.KeyColumnIDs[:i]
 			idx.KeyColumnDirections = idx.KeyColumnDirections[:i]
-			if idx.Type == idxtype.INVERTED && i == len(idx.KeyColumnIDs)-1 {
+			if idx.Type == descpb.IndexDescriptor_INVERTED && i == len(idx.KeyColumnIDs)-1 {
 				idx.InvertedColumnKinds = nil
 			}
 		}
@@ -490,19 +491,5 @@ func (m *deferredVisitor) MaybeAddSplitForIndex(
 	_ context.Context, op scop.MaybeAddSplitForIndex,
 ) error {
 	m.AddIndexForMaybeSplitAndScatter(op.TableID, op.IndexID)
-	return nil
-}
-
-func (i *immediateVisitor) AddIndexZoneConfig(_ context.Context, op scop.AddIndexZoneConfig) error {
-	i.ImmediateMutationStateUpdater.UpdateSubzoneConfig(
-		op.TableID, op.Subzone, op.SubzoneSpans, op.SubzoneIndexToDelete)
-	return nil
-}
-
-func (i *immediateVisitor) AddPartitionZoneConfig(
-	_ context.Context, op scop.AddPartitionZoneConfig,
-) error {
-	i.ImmediateMutationStateUpdater.UpdateSubzoneConfig(
-		op.TableID, op.Subzone, op.SubzoneSpans, op.SubzoneIndexToDelete)
 	return nil
 }

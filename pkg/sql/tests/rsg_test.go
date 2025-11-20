@@ -414,7 +414,9 @@ func TestRandomSyntaxFunctions(t *testing.T) {
 					"crdb_internal.request_statement_bundle",
 					"crdb_internal.reset_activity_tables",
 					"crdb_internal.revalidate_unique_constraints_in_all_tables",
-					"crdb_internal.validate_ttl_scheduled_jobs":
+					"crdb_internal.scan_storage_internal_keys",
+					"crdb_internal.validate_ttl_scheduled_jobs",
+					"crdb_internal.fingerprint":
 					// Skipped due to long execution time.
 					continue
 				}
@@ -810,7 +812,7 @@ func TestRandomDatumRoundtrip(t *testing.T) {
 		}
 		serializedGen := tree.Serialize(generated)
 
-		sema := tree.MakeSemaContext(nil /* resolver */)
+		sema := tree.MakeSemaContext()
 		// We don't care about errors below because they are often
 		// caused by sqlsmith generating bogus queries. We're just
 		// looking for datums that don't match.
@@ -845,9 +847,7 @@ func TestRandomDatumRoundtrip(t *testing.T) {
 		if serialized1 != serialized2 {
 			panic(errors.Errorf("serialized didn't match:\nexpr: %s\nfirst: %s\nsecond: %s", generated, serialized1, serialized2))
 		}
-		if cmp, err := datum1.Compare(ctx, &ec, datum2); err != nil {
-			panic(err)
-		} else if cmp != 0 {
+		if datum1.Compare(&ec, datum2) != 0 {
 			panic(errors.Errorf("%s [%[1]T] != %s [%[2]T] (original expr: %s)", serialized1, serialized2, serializedGen))
 		}
 		return nil

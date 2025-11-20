@@ -5,13 +5,13 @@
 
 import React from "react";
 
-import { cockroach } from "src/js/protos";
 import { LocalityTree } from "src/redux/localities";
-import { LivenessStatus } from "src/redux/nodes";
 import { getChildLocalities } from "src/util/localities";
 
 import { LocalityView } from "./localityView";
 import { NodeView } from "./nodeView";
+import { LivenessStatus } from "src/redux/nodes";
+import { cockroach } from "src/js/protos";
 
 type Liveness = cockroach.kv.kvserver.liveness.livenesspb.ILiveness;
 

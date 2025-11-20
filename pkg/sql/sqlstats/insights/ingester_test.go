@@ -74,10 +74,10 @@ func TestIngester(t *testing.T) {
 				newRegistry(st, &fakeDetector{
 					stubEnabled: true,
 					stubIsSlow:  true,
-				}, store, nil),
+				}, store),
 			)
 
-			ingester.Start(ctx, stopper, WithFlushInterval(10))
+			ingester.Start(ctx, stopper)
 			for _, e := range tc.observations {
 				if e.statementID != 0 {
 					ingester.ObserveStatement(e.SessionID(), &Statement{ID: e.StatementID()})
@@ -93,7 +93,7 @@ func TestIngester(t *testing.T) {
 					numInsights++
 				})
 				return numInsights == tc.totalTxnInsights
-			}, 1*time.Second, 10*time.Millisecond)
+			}, 1*time.Second, 50*time.Millisecond)
 
 			// See that the insights we were expecting are the ones that
 			// arrived. We allow the provider to do whatever it needs to, so
@@ -129,7 +129,7 @@ func TestIngester_Clear(t *testing.T) {
 		newRegistry(settings, &fakeDetector{
 			stubEnabled: true,
 			stubIsSlow:  true,
-		}, store, nil))
+		}, store))
 
 	// Fill the ingester's buffer with some data. This sets us up to
 	// call Clear() with guaranteed data in the buffer, so we can assert
@@ -176,7 +176,7 @@ func TestIngester_Disabled(t *testing.T) {
 	// the underlying registry is currently disabled.
 	st := cluster.MakeTestingClusterSettings()
 
-	ingester := newConcurrentBufferIngester(newRegistry(st, &fakeDetector{}, newStore(st), nil))
+	ingester := newConcurrentBufferIngester(newRegistry(st, &fakeDetector{}, newStore(st)))
 	ingester.ObserveStatement(clusterunique.ID{}, &Statement{})
 	ingester.ObserveTransaction(clusterunique.ID{}, &Transaction{})
 	require.Equal(t, event{}, ingester.guard.eventBuffer[0])
@@ -195,7 +195,7 @@ func TestIngester_DoesNotBlockWhenReceivingManyObservationsAfterShutdown(t *test
 	defer stopper.Stop(ctx)
 
 	st := cluster.MakeTestingClusterSettings()
-	registry := newRegistry(st, &fakeDetector{stubEnabled: true}, newStore(st), nil)
+	registry := newRegistry(st, &fakeDetector{stubEnabled: true}, newStore(st))
 	ingester := newConcurrentBufferIngester(registry)
 	ingester.Start(ctx, stopper)
 
@@ -254,7 +254,7 @@ func TestIngesterBlockedForceSync(t *testing.T) {
 	defer stopper.Stop(ctx)
 
 	st := cluster.MakeTestingClusterSettings()
-	registry := newRegistry(st, &fakeDetector{stubEnabled: true}, newStore(st), nil)
+	registry := newRegistry(st, &fakeDetector{stubEnabled: true}, newStore(st))
 	ingester := newConcurrentBufferIngester(registry)
 
 	// We queue up a bunch of sync operations because it's unclear how

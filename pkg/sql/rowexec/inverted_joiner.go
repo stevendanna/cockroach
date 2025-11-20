@@ -62,9 +62,8 @@ type invertedJoiner struct {
 
 	fetchSpec fetchpb.IndexFetchSpec
 
-	runningState        invertedJoinerState
-	unlimitedMemMonitor *mon.BytesMonitor
-	diskMonitor         *mon.BytesMonitor
+	runningState invertedJoinerState
+	diskMonitor  *mon.BytesMonitor
 
 	// prefixEqualityCols are the ordinals of the columns from the join input
 	// that represent join values for the non-inverted prefix columns of
@@ -230,10 +229,8 @@ func newInvertedJoiner(
 		}
 	}
 
-	// Always make a copy of the eval context since it might be mutated later.
-	evalCtx := flowCtx.NewEvalCtx()
-	if err := ij.ProcessorBase.InitWithEvalCtx(
-		ctx, ij, post, outputColTypes, flowCtx, evalCtx, processorID, nil, /* memMonitor */
+	if err := ij.ProcessorBase.Init(
+		ctx, ij, post, outputColTypes, flowCtx, processorID, nil, /* memMonitor */
 		execinfra.ProcStateOpts{
 			InputsToDrain: []execinfra.RowSource{ij.input},
 			TrailingMetaCallback: func() []execinfrapb.ProducerMetadata {
@@ -261,7 +258,7 @@ func newInvertedJoiner(
 	// execbuilder.Builder.buildInvertedJoin.
 	onExprColTypes[len(ij.inputTypes)+ij.invertedFetchedColOrdinal] = spec.InvertedColumnOriginalType
 
-	if err := ij.onExprHelper.Init(ctx, spec.OnExpr, onExprColTypes, semaCtx, evalCtx); err != nil {
+	if err := ij.onExprHelper.Init(ctx, spec.OnExpr, onExprColTypes, semaCtx, ij.EvalCtx); err != nil {
 		return nil, err
 	}
 	combinedRowLen := len(onExprColTypes)
@@ -272,11 +269,11 @@ func newInvertedJoiner(
 
 	if ij.datumsToInvertedExpr == nil {
 		var invertedExprHelper execinfrapb.ExprHelper
-		if err := invertedExprHelper.Init(ctx, spec.InvertedExpr, onExprColTypes, semaCtx, evalCtx); err != nil {
+		if err := invertedExprHelper.Init(ctx, spec.InvertedExpr, onExprColTypes, semaCtx, ij.EvalCtx); err != nil {
 			return nil, err
 		}
 		ij.datumsToInvertedExpr, err = invertedidx.NewDatumsToInvertedExpr(
-			ctx, evalCtx, onExprColTypes, invertedExprHelper.Expr(), ij.fetchSpec.GeoConfig,
+			ctx, ij.EvalCtx, onExprColTypes, invertedExprHelper.Expr(), ij.fetchSpec.GeoConfig,
 		)
 		if err != nil {
 			return nil, err
@@ -296,7 +293,6 @@ func newInvertedJoiner(
 			LockWaitPolicy:             spec.LockingWaitPolicy,
 			LockDurability:             spec.LockingDurability,
 			LockTimeout:                flowCtx.EvalCtx.SessionData().LockTimeout,
-			DeadlockTimeout:            flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 			Alloc:                      &ij.alloc,
 			MemMonitor:                 flowCtx.Mon,
 			Spec:                       &spec.FetchSpec,
@@ -319,15 +315,13 @@ func newInvertedJoiner(
 
 	// Initialize memory monitors and row container for index rows.
 	ij.MemMonitor = execinfra.NewLimitedMonitor(ctx, flowCtx.Mon, flowCtx, "invertedjoiner-limited")
-	ij.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon, "invertedjoiner-unlimited")
 	ij.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, "invertedjoiner-disk")
 	ij.indexRows = rowcontainer.NewDiskBackedNumberedRowContainer(
 		true, /* deDup */
 		rightColTypes,
-		ij.FlowCtx.EvalCtx,
+		ij.EvalCtx,
 		ij.FlowCtx.Cfg.TempStorage,
 		ij.MemMonitor,
-		ij.unlimitedMemMonitor,
 		ij.diskMonitor,
 	)
 
@@ -492,7 +486,7 @@ func (ij *invertedJoiner) readInput() (invertedJoinerState, *execinfrapb.Produce
 	}
 	// NB: spans is already sorted, and that sorting is preserved when
 	// generating ij.indexSpans.
-	ij.indexSpans, err = ij.spanBuilder.SpansFromInvertedSpans(ij.Ctx(), spans, nil /* constraint */, ij.indexSpans)
+	ij.indexSpans, err = ij.spanBuilder.SpansFromInvertedSpans(spans, nil /* constraint */, ij.indexSpans)
 	if err != nil {
 		ij.MoveToDraining(err)
 		return ijStateUnknown, ij.DrainHelper()
@@ -752,9 +746,6 @@ func (ij *invertedJoiner) close() {
 			ij.indexRows.Close(ij.Ctx())
 		}
 		ij.MemMonitor.Stop(ij.Ctx())
-		if ij.unlimitedMemMonitor != nil {
-			ij.unlimitedMemMonitor.Stop(ij.Ctx())
-		}
 		if ij.diskMonitor != nil {
 			ij.diskMonitor.Stop(ij.Ctx())
 		}
@@ -783,7 +774,7 @@ func (ij *invertedJoiner) execStatsForTrace() *execinfrapb.ComponentStats {
 			KVCPUTime:           optional.MakeTimeValue(fis.kvCPUTime),
 		},
 		Exec: execinfrapb.ExecStats{
-			MaxAllocatedMem:  optional.MakeUint(uint64(ij.MemMonitor.MaximumBytes() + ij.unlimitedMemMonitor.MaximumBytes())),
+			MaxAllocatedMem:  optional.MakeUint(uint64(ij.MemMonitor.MaximumBytes())),
 			MaxAllocatedDisk: optional.MakeUint(uint64(ij.diskMonitor.MaximumBytes())),
 		},
 		Output: ij.OutputHelper.Stats(),

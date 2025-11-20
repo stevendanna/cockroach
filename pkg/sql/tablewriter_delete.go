@@ -26,28 +26,25 @@ type tableDeleter struct {
 	alloc *tree.DatumAlloc
 }
 
-// init initializes the tableDeleter with a Txn.
+var _ tableWriter = &tableDeleter{}
+
+// desc is part of the tableWriter interface.
+func (*tableDeleter) desc() string { return "deleter" }
+
+// walkExprs is part of the tableWriter interface.
+func (td *tableDeleter) walkExprs(_ func(desc string, index int, expr tree.TypedExpr)) {}
+
+// init is part of the tableWriter interface.
 func (td *tableDeleter) init(_ context.Context, txn *kv.Txn, evalCtx *eval.Context) error {
 	return td.tableWriterBase.init(txn, td.tableDesc(), evalCtx)
 }
 
-// row performs a delete.
-//
-// The passed Datums is not used after `row` returns.
-//
-// The PartialIndexUpdateHelper is used to determine which partial indexes
-// to avoid updating when performing row modification. This is necessary
-// because not all rows are indexed by partial indexes.
-//
-// The traceKV parameter determines whether the individual K/V operations
-// should be logged to the context. We use a separate argument here instead
-// of a Value field on the context because Value access in context.Context
-// is rather expensive.
+// row is part of the tableWriter interface.
 func (td *tableDeleter) row(
 	ctx context.Context, values tree.Datums, pm row.PartialIndexUpdateHelper, traceKV bool,
 ) error {
 	td.currentBatchSize++
-	return td.rd.DeleteRow(ctx, td.b, values, pm, nil, traceKV)
+	return td.rd.DeleteRow(ctx, td.b, values, pm, traceKV)
 }
 
 // deleteIndex runs the kv operations necessary to delete all kv entries in the
@@ -80,8 +77,6 @@ func (td *tableDeleter) deleteIndex(
 	return td.b.Results[0].ResumeSpanAsValue(), nil
 }
 
-// tableDesc returns the TableDescriptor for the table that the tableDeleter
-// will modify.
 func (td *tableDeleter) tableDesc() catalog.TableDescriptor {
 	return td.rd.Helper.TableDesc
 }

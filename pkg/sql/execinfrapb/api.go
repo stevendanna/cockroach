@@ -42,15 +42,19 @@ func (f FlowID) IsUnset() bool {
 	return f.UUID.Equal(uuid.Nil)
 }
 
+// DistSQLVersion identifies DistSQL engine versions.
+type DistSQLVersion uint32
+
 // MakeEvalContext serializes some of the fields of a eval.Context into a
 // execinfrapb.EvalContext proto.
 func MakeEvalContext(evalCtx *eval.Context) EvalContext {
 	sessionDataProto := evalCtx.SessionData().SessionData
 	sessiondata.MarshalNonLocal(evalCtx.SessionData(), &sessionDataProto)
 	return EvalContext{
-		SessionData:        sessionDataProto,
-		StmtTimestampNanos: evalCtx.StmtTimestamp.UnixNano(),
-		TxnTimestampNanos:  evalCtx.TxnTimestamp.UnixNano(),
+		SessionData:                       sessionDataProto,
+		StmtTimestampNanos:                evalCtx.StmtTimestamp.UnixNano(),
+		TxnTimestampNanos:                 evalCtx.TxnTimestamp.UnixNano(),
+		TestingKnobsForceProductionValues: evalCtx.TestingKnobs.ForceProductionValues,
 	}
 }
 

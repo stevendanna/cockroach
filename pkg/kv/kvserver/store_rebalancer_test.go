@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	rload "github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -496,32 +495,32 @@ func loadRanges(rr *ReplicaRankings, s *Store, ranges []testRange) {
 	for i, r := range ranges {
 		rangeID := roachpb.RangeID(i + 1)
 		repl := &Replica{store: s, RangeID: rangeID}
-		repl.shMu.state.Desc = &roachpb.RangeDescriptor{RangeID: rangeID}
+		repl.mu.state.Desc = &roachpb.RangeDescriptor{RangeID: rangeID}
 		repl.mu.conf = s.cfg.DefaultSpanConfig
 		for _, storeID := range r.voters {
-			repl.shMu.state.Desc.InternalReplicas = append(repl.shMu.state.Desc.InternalReplicas, roachpb.ReplicaDescriptor{
+			repl.mu.state.Desc.InternalReplicas = append(repl.mu.state.Desc.InternalReplicas, roachpb.ReplicaDescriptor{
 				NodeID:    roachpb.NodeID(storeID),
 				StoreID:   storeID,
 				ReplicaID: roachpb.ReplicaID(storeID),
 				Type:      roachpb.VOTER_FULL,
 			})
 		}
-		repl.shMu.state.Lease = &roachpb.Lease{
+		repl.mu.state.Lease = &roachpb.Lease{
 			Expiration: &hlc.MaxTimestamp,
-			Replica:    repl.shMu.state.Desc.InternalReplicas[0],
+			Replica:    repl.mu.state.Desc.InternalReplicas[0],
 		}
 		// NB: We set the index to 2 corresponding to the match in
 		// TestingRaftStatusFn. Matches that are 0 are considered behind.
-		repl.shMu.raftTruncState = kvserverpb.RaftTruncatedState{Index: 2}
+		repl.mu.state.TruncatedState = &kvserverpb.RaftTruncatedState{Index: 2}
 		for _, storeID := range r.nonVoters {
-			repl.shMu.state.Desc.InternalReplicas = append(repl.shMu.state.Desc.InternalReplicas, roachpb.ReplicaDescriptor{
+			repl.mu.state.Desc.InternalReplicas = append(repl.mu.state.Desc.InternalReplicas, roachpb.ReplicaDescriptor{
 				NodeID:    roachpb.NodeID(storeID),
 				StoreID:   storeID,
 				ReplicaID: roachpb.ReplicaID(storeID),
 				Type:      roachpb.NON_VOTER,
 			})
 		}
-		repl.shMu.state.Stats = &enginepb.MVCCStats{}
+		repl.mu.state.Stats = &enginepb.MVCCStats{}
 		repl.loadStats = rload.NewReplicaLoad(s.Clock(), nil)
 		repl.loadStats.TestingSetStat(rload.Queries, r.qps)
 		repl.loadStats.TestingSetStat(rload.ReqCPUNanos, r.reqCPU)
@@ -1556,20 +1555,20 @@ func TestNoLeaseTransferToBehindReplicas(t *testing.T) {
 		storeID roachpb.StoreID,
 	) *raft.Status {
 		status := &raft.Status{
-			Progress: make(map[raftpb.PeerID]tracker.Progress),
+			Progress: make(map[uint64]tracker.Progress),
 		}
 		replDesc, ok := desc.GetReplicaDescriptor(storeID)
 		require.True(t, ok, "Could not find replica descriptor for replica on store with id %d", storeID)
 
-		status.Lead = raftpb.PeerID(replDesc.ReplicaID)
-		status.RaftState = raftpb.StateLeader
+		status.Lead = uint64(replDesc.ReplicaID)
+		status.RaftState = raft.StateLeader
 		status.Commit = 2
 		for _, replica := range desc.InternalReplicas {
 			match := uint64(2)
 			if replica.StoreID == roachpb.StoreID(5) {
 				match = 0
 			}
-			status.Progress[raftpb.PeerID(replica.ReplicaID)] = tracker.Progress{
+			status.Progress[uint64(replica.ReplicaID)] = tracker.Progress{
 				Match: match,
 				State: tracker.StateReplicate,
 			}
@@ -1842,18 +1841,18 @@ func TestStoreRebalancerHotRangesLogging(t *testing.T) {
 // testing.
 func TestingRaftStatusFn(desc *roachpb.RangeDescriptor, storeID roachpb.StoreID) *raft.Status {
 	status := &raft.Status{
-		Progress: make(map[raftpb.PeerID]tracker.Progress),
+		Progress: make(map[uint64]tracker.Progress),
 	}
 	replDesc, ok := desc.GetReplicaDescriptor(storeID)
 	if !ok {
 		return status
 	}
 
-	status.Lead = raftpb.PeerID(replDesc.ReplicaID)
-	status.RaftState = raftpb.StateLeader
+	status.Lead = uint64(replDesc.ReplicaID)
+	status.RaftState = raft.StateLeader
 	status.Commit = 2
 	for _, replica := range desc.InternalReplicas {
-		status.Progress[raftpb.PeerID(replica.ReplicaID)] = tracker.Progress{
+		status.Progress[uint64(replica.ReplicaID)] = tracker.Progress{
 			Match: 2,
 			State: tracker.StateReplicate,
 		}

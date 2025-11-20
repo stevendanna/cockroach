@@ -16,6 +16,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
+	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq"
@@ -244,6 +245,24 @@ func (sr *SQLRunner) ExpectErrWithTimeout(
 	}
 }
 
+// ExpectErrWithRetry wraps ExpectErr with a timeout and retry on a specific error.
+func (sr *SQLRunner) ExpectErrWithRetry(
+	t Fataler, errRE string, query string, retryableErrorRE string, args ...interface{},
+) {
+	helperOrNoop(t)()
+	var err error
+
+	retryOpts := retry.Options{MaxRetries: 5}
+	err = retryOpts.DoWithRetryable(context.Background(), func(ctx context.Context) (bool, error) {
+		_, err = sr.DB.ExecContext(context.Background(), query, args...)
+		if testutils.IsError(err, retryableErrorRE) {
+			return true, err
+		}
+		return false, err
+	})
+	sr.expectErr(t, query, err, errRE)
+}
+
 // Query is a wrapper around gosql.Query that kills the test on error.
 func (sr *SQLRunner) Query(t Fataler, query string, args ...interface{}) *gosql.Rows {
 	helperOrNoop(t)()
@@ -274,28 +293,16 @@ func (sr *SQLRunner) QueryRow(t Fataler, query string, args ...interface{}) *Row
 	return &Row{t, sr.DB.QueryRowContext(context.Background(), query, args...)}
 }
 
-// QueryStrMeta runs a Query and converts the result using RowsToStrMatrix. Kills
-// the test on errors, including meta string in error message.
-func (sr *SQLRunner) QueryStrMeta(
-	t Fataler, meta string, query string, args ...interface{},
-) [][]string {
+// QueryStr runs a Query and converts the result using RowsToStrMatrix. Kills
+// the test on errors.
+func (sr *SQLRunner) QueryStr(t Fataler, query string, args ...interface{}) [][]string {
 	helperOrNoop(t)()
 	rows := sr.Query(t, query, args...)
 	r, err := RowsToStrMatrix(rows)
 	if err != nil {
-		if meta == "" {
-			t.Fatalf("%v", err)
-		} else {
-			t.Fatalf("%s: %v", meta, err)
-		}
+		t.Fatalf("%v", err)
 	}
 	return r
-}
-
-// QueryStr runs a Query and converts the result using RowsToStrMatrix. Kills
-// the test on errors.
-func (sr *SQLRunner) QueryStr(t Fataler, query string, args ...interface{}) [][]string {
-	return sr.QueryStrMeta(t, "", query, args...)
 }
 
 // RowsToStrMatrix converts the given result rows to a string matrix; nulls are

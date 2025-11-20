@@ -31,9 +31,6 @@ type Metrics struct {
 	// implementation of job specific metrics.
 	JobSpecificMetrics [jobspb.NumJobTypes]metric.Struct
 
-	// ResolvedMetrics are the per job type metrics for resolved timestamps.
-	ResolvedMetrics [jobspb.NumJobTypes]*metric.Gauge
-
 	// RunningNonIdleJobs is the total number of running jobs that are not idle.
 	RunningNonIdleJobs *metric.Gauge
 
@@ -286,13 +283,8 @@ func (m *Metrics) init(histogramWindowInterval time.Duration, lookup *cidr.Looku
 			ExpiredPTS:             metric.NewCounter(makeMetaExpiredPTS(typeStr)),
 			ProtectedAge:           metric.NewGauge(makeMetaProtectedAge(typeStr)),
 		}
-		if opts, ok := getRegisterOptions(jt); ok {
-			if opts.metrics != nil {
-				m.JobSpecificMetrics[jt] = opts.metrics
-			}
-			if opts.resolvedMetric != nil {
-				m.ResolvedMetrics[jt] = opts.resolvedMetric
-			}
+		if opts, ok := getRegisterOptions(jt); ok && opts.metrics != nil {
+			m.JobSpecificMetrics[jt] = opts.metrics
 		}
 	}
 }
@@ -300,10 +292,6 @@ func (m *Metrics) init(histogramWindowInterval time.Duration, lookup *cidr.Looku
 // MakeChangefeedMetricsHook allows for registration of changefeed metrics from
 // ccl code.
 var MakeChangefeedMetricsHook func(time.Duration, *cidr.Lookup) metric.Struct
-
-// MakeChangefeedMemoryMetricsHook allows for registration of changefeed memory
-// metrics from ccl code.
-var MakeChangefeedMemoryMetricsHook func(time.Duration) (curCount *metric.Gauge, maxHist metric.IHistogram)
 
 // MakeStreamIngestMetricsHook allows for registration of streaming metrics from
 // ccl code.

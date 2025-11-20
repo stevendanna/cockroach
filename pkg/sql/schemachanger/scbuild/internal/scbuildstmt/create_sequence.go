@@ -7,6 +7,7 @@ package scbuildstmt
 
 import (
 	"github.com/cockroachdb/cockroach/pkg/build"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -25,12 +26,6 @@ import (
 )
 
 func CreateSequence(b BuildCtx, n *tree.CreateSequence) {
-	doCreateSequence(b, n)
-}
-
-// doCreateSequence creates a sequence and returns the sequence element that
-// has been created.
-func doCreateSequence(b BuildCtx, n *tree.CreateSequence) *scpb.Sequence {
 	dbElts, scElts := b.ResolveTargetObject(n.Name.ToUnresolvedObjectName(), privilege.CREATE)
 	_, _, schemaElem := scpb.FindSchema(scElts)
 	_, _, dbElem := scpb.FindDatabase(dbElts)
@@ -52,7 +47,7 @@ func doCreateSequence(b BuildCtx, n *tree.CreateSequence) *scpb.Sequence {
 		})
 	if ers != nil && !ers.IsEmpty() {
 		if n.IfNotExists {
-			return nil
+			return
 		}
 		panic(sqlerrors.NewRelationAlreadyExistsError(n.Name.FQString()))
 	}
@@ -73,9 +68,9 @@ func doCreateSequence(b BuildCtx, n *tree.CreateSequence) *scpb.Sequence {
 				"sql.schema.temp_tables_disabled",
 			))
 		}
-		// Resolve the temporary schema element.
-		scElts = MaybeCreateOrResolveTemporarySchema(b)
-		schemaElem = scElts.FilterSchema().MustGetOneElement()
+
+		panic(scerrors.NotImplementedErrorf(n, "temporary sequences are not yet "+
+			"implemented in the declarative schema changer"))
 	}
 
 	// Sanity check for duplication options on the sequence.
@@ -93,6 +88,10 @@ func doCreateSequence(b BuildCtx, n *tree.CreateSequence) *scpb.Sequence {
 		}
 		if opt.Name == tree.SeqOptRestart {
 			restartWith = opt.IntVal
+		}
+		if opt.Name == tree.SeqOptCacheNode && !b.EvalCtx().Settings.Version.IsActive(b, clusterversion.V24_1) {
+			panic(scerrors.NotImplementedErrorf(n, "node-level sequence caching unsupported"+
+				"before V24.1"))
 		}
 	}
 	// If the database is multi-region then CREATE SEQUENCE will fallback.
@@ -119,7 +118,7 @@ func doCreateSequence(b BuildCtx, n *tree.CreateSequence) *scpb.Sequence {
 	sequenceID := b.GenerateUniqueDescID()
 	sequenceElem := &scpb.Sequence{
 		SequenceID:  sequenceID,
-		IsTemporary: n.Persistence.IsTemporary(),
+		IsTemporary: false,
 	}
 	if restartWith != nil {
 		sequenceElem.RestartWith = *restartWith
@@ -163,8 +162,8 @@ func doCreateSequence(b BuildCtx, n *tree.CreateSequence) *scpb.Sequence {
 	b.Add(&scpb.ColumnType{
 		TableID:                 sequenceID,
 		ColumnID:                tabledesc.SequenceColumnID,
-		TypeT:                   newTypeT(types.Int),
-		ElementCreationMetadata: scdecomp.NewElementCreationMetadata(b.EvalCtx().Settings.Version.ActiveVersion(b)),
+		TypeT:                   scpb.TypeT{Type: types.Int},
+		ElementCreationMetadata: &scpb.ElementCreationMetadata{In_23_1OrLater: true},
 	})
 	b.Add(&scpb.ColumnNotNull{
 		TableID:  sequenceID,
@@ -205,7 +204,6 @@ func doCreateSequence(b BuildCtx, n *tree.CreateSequence) *scpb.Sequence {
 	}
 	// Log the creation of this sequence.
 	b.LogEventForExistingTarget(sequenceElem)
-	return sequenceElem
 }
 
 func maybeAssignSequenceOwner(b BuildCtx, sequence *scpb.Namespace, owner *tree.ColumnItem) {

@@ -25,7 +25,7 @@ import (
 	"github.com/dustin/go-humanize"
 )
 
-//go:generate mockgen -package=kvpbmock -destination=kvpbmock/mocks_generated.go . InternalClient,Internal_MuxRangeFeedClient
+//go:generate mockgen -package=kvpbmock -destination=kvpbmock/mocks_generated.go . InternalClient,Internal_RangeFeedClient,Internal_MuxRangeFeedClient
 
 // SupportsBatch determines whether the methods in the provided batch
 // are supported by the ReadConsistencyType, returning an error if not.
@@ -1649,19 +1649,6 @@ func NewPutInline(key roachpb.Key, value roachpb.Value) Request {
 	}
 }
 
-// NewPutMustAcquireExclusiveLock returns a Request initialized to put the value
-// at key. It also sets the MustAcquireExclusiveLock flag.
-func NewPutMustAcquireExclusiveLock(key roachpb.Key, value roachpb.Value) Request {
-	value.InitChecksum(key)
-	return &PutRequest{
-		RequestHeader: RequestHeader{
-			Key: key,
-		},
-		Value:                    value,
-		MustAcquireExclusiveLock: true,
-	}
-}
-
 // NewConditionalPut returns a Request initialized to put value at key if the
 // existing value at key equals expValue.
 //
@@ -1703,13 +1690,28 @@ func NewConditionalPutInline(
 	}
 }
 
+// NewInitPut returns a Request initialized to put the value at key, as long as
+// the key doesn't exist, returning a ConditionFailedError if the key exists and
+// the existing value is different from value. If failOnTombstones is set to
+// true, tombstones count as mismatched values and will cause a
+// ConditionFailedError.
+func NewInitPut(key roachpb.Key, value roachpb.Value, failOnTombstones bool) Request {
+	value.InitChecksum(key)
+	return &InitPutRequest{
+		RequestHeader: RequestHeader{
+			Key: key,
+		},
+		Value:            value,
+		FailOnTombstones: failOnTombstones,
+	}
+}
+
 // NewDelete returns a Request initialized to delete the value at key.
-func NewDelete(key roachpb.Key, mustAcquireExclusiveLock bool) Request {
+func NewDelete(key roachpb.Key) Request {
 	return &DeleteRequest{
 		RequestHeader: RequestHeader{
 			Key: key,
 		},
-		MustAcquireExclusiveLock: mustAcquireExclusiveLock,
 	}
 }
 
@@ -2111,7 +2113,7 @@ func (r *RefreshRangeRequest) flags() flag {
 	return isRead | isTxn | isRange | updatesTSCache
 }
 
-func (*SubsumeRequest) flags() flag    { return isWrite | isAlone | updatesTSCache }
+func (*SubsumeRequest) flags() flag    { return isRead | isAlone | updatesTSCache }
 func (*RangeStatsRequest) flags() flag { return isRead }
 func (*QueryResolvedTimestampRequest) flags() flag {
 	return isRead | isRange | requiresClosedTSOlderThanStorageSnapshot
@@ -2142,6 +2144,8 @@ func BulkOpSummaryID(tableID, indexID uint64) uint64 {
 func (b *BulkOpSummary) Add(other BulkOpSummary) {
 	b.DataSize += other.DataSize
 	b.SSTDataSize += other.SSTDataSize
+	b.DeprecatedRows += other.DeprecatedRows
+	b.DeprecatedIndexEntries += other.DeprecatedIndexEntries
 
 	if other.EntryCounts != nil && b.EntryCounts == nil {
 		b.EntryCounts = make(map[uint64]int64, len(other.EntryCounts))
@@ -2382,7 +2386,6 @@ func (c *TenantConsumption) Add(other *TenantConsumption) {
 	c.ExternalIOIngressBytes += other.ExternalIOIngressBytes
 	c.ExternalIOEgressBytes += other.ExternalIOEgressBytes
 	c.CrossRegionNetworkRU += other.CrossRegionNetworkRU
-	c.EstimatedCPUSeconds += other.EstimatedCPUSeconds
 }
 
 // Sub subtracts consumption, making sure no fields become negative.
@@ -2464,12 +2467,6 @@ func (c *TenantConsumption) Sub(other *TenantConsumption) {
 	} else {
 		c.CrossRegionNetworkRU -= other.CrossRegionNetworkRU
 	}
-
-	if c.EstimatedCPUSeconds < other.EstimatedCPUSeconds {
-		c.EstimatedCPUSeconds = 0
-	} else {
-		c.EstimatedCPUSeconds -= other.EstimatedCPUSeconds
-	}
 }
 
 func humanizeCount(n uint64) redact.SafeString {
@@ -2479,12 +2476,11 @@ func humanizeCount(n uint64) redact.SafeString {
 
 // SafeFormat implements redact.SafeFormatter.
 func (s *ScanStats) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("n%d scan stats: stepped %s times (%s internal); seeked %s times (%s internal); "+
+	w.Printf("scan stats: stepped %s times (%s internal); seeked %s times (%s internal); "+
 		"block-bytes: (total %s, cached %s, duration %v); "+
 		"points: (count %s, key-bytes %s, value-bytes %s, tombstoned: %s) "+
 		"ranges: (count %s), (contained-points %s, skipped-points %s) "+
 		"evaluated requests: %s gets, %s scans, %s reverse scans",
-		s.NodeID,
 		humanizeCount(s.NumInterfaceSteps),
 		humanizeCount(s.NumInternalSteps),
 		humanizeCount(s.NumInterfaceSeeks),
@@ -2518,13 +2514,8 @@ func (s *ScanStats) String() string {
 
 // RangeFeedEventSink is an interface for sending a single rangefeed event.
 type RangeFeedEventSink interface {
-	// SendUnbuffered blocks until it sends the RangeFeedEvent, the stream is
-	// done, or the stream breaks. Send must be safe to call on the same stream in
-	// different goroutines.
-	SendUnbuffered(*RangeFeedEvent) error
-	// SendUnbufferedIsThreadSafe is a no-op declaration method. It is a contract
-	// that the interface has a thread-safe Send method.
-	SendUnbufferedIsThreadSafe()
+	Context() context.Context
+	Send(*RangeFeedEvent) error
 }
 
 // RangeFeedEventProducer is an adapter for receiving rangefeed events with either
@@ -2537,26 +2528,3 @@ type RangeFeedEventProducer interface {
 
 // SafeValue implements the redact.SafeValue interface.
 func (PushTxnType) SafeValue() {}
-
-func (writeOptions *WriteOptions) GetOriginID() uint32 {
-	if writeOptions == nil {
-		return 0
-	}
-	return writeOptions.OriginID
-}
-
-func (writeOptions *WriteOptions) GetOriginTimestamp() hlc.Timestamp {
-	if writeOptions == nil {
-		return hlc.Timestamp{}
-	}
-	return writeOptions.OriginTimestamp
-}
-
-func (r *ConditionalPutRequest) Validate() error {
-	if !r.OriginTimestamp.IsEmpty() {
-		if r.AllowIfDoesNotExist {
-			return errors.AssertionFailedf("invalid ConditionalPutRequest: AllowIfDoesNotExist and non-empty OriginTimestamp are incompatible")
-		}
-	}
-	return nil
-}

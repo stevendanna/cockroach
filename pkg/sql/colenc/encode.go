@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/valueside"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -83,7 +82,7 @@ func MakeEncoder(
 	partialIndexes map[descpb.IndexID][]bool,
 	memoryUsageCheck func() error,
 ) BatchEncoder {
-	rh := row.NewRowHelper(codec, desc, desc.WritableNonPrimaryIndexes(), nil /* uniqueWithTombstoneIndexes */, sv, false /*internal*/, metrics)
+	rh := row.NewRowHelper(codec, desc, desc.WritableNonPrimaryIndexes(), sv, false /*internal*/, metrics)
 	rh.Init()
 	colMap := row.ColIDtoRowIndexFromCols(insCols)
 	return BatchEncoder{rh: &rh, b: b, colMap: colMap,
@@ -428,7 +427,7 @@ func (b *BatchEncoder) encodeSecondaryIndex(ctx context.Context, ind catalog.Ind
 
 	// Store nulls we encounter so we can properly make the key unique below.
 	var nulls coldata.Nulls
-	if ind.GetType() == idxtype.INVERTED {
+	if ind.GetType() == descpb.IndexDescriptor_INVERTED {
 		// Since the inverted indexes generate multiple keys per row just handle them
 		// separately.
 		return b.encodeInvertedSecondaryIndex(ctx, ind, kys, b.extraKeys)
@@ -495,7 +494,7 @@ func (b *BatchEncoder) encodeSecondaryIndexNoFamilies(ind catalog.Index, kys []r
 	if err := b.writeColumnValues(kys, values, ind, cols); err != nil {
 		return err
 	}
-	b.p.CPutBytesEmpty(kys, values)
+	b.p.InitPutBytes(kys, values)
 	return nil
 }
 
@@ -557,9 +556,9 @@ func (b *BatchEncoder) encodeSecondaryIndexWithFamilies(
 		// include encoded primary key columns. For other families,
 		// use the tuple encoding for the value.
 		if familyID == 0 {
-			b.p.CPutBytesEmpty(kys, values)
+			b.p.InitPutBytes(kys, values)
 		} else {
-			b.p.CPutTuplesEmpty(kys, values)
+			b.p.InitPutTuples(kys, values)
 		}
 		if err := b.checkMemory(); err != nil {
 			return err
@@ -612,12 +611,12 @@ func encodeColumns[T []byte | roachpb.Key](
 	directions rowenc.Directions,
 	colMap catalog.TableColMap,
 	start, end int,
-	vecs []*coldata.Vec,
+	vecs []coldata.Vec,
 	keys []T,
 ) error {
 	var err error
 	for colIdx, id := range columnIDs {
-		var vec *coldata.Vec
+		var vec coldata.Vec
 		i, ok := colMap.Get(id)
 		if ok {
 			vec = vecs[i]
@@ -699,7 +698,7 @@ func (b *BatchEncoder) checkMemory() error {
 }
 
 func (b *BatchEncoder) skipColumnNotInPrimaryIndexValue(
-	colID catid.ColumnID, vec *coldata.Vec, row int,
+	colID catid.ColumnID, vec coldata.Vec, row int,
 ) bool {
 	// Reuse this function but fake out the value and handle composites here.
 	if skip, _ := b.rh.SkipColumnNotInPrimaryIndexValue(colID, tree.DNull); skip {
@@ -711,7 +710,7 @@ func (b *BatchEncoder) skipColumnNotInPrimaryIndexValue(
 	return false
 }
 
-func isComposite(vec *coldata.Vec, row int) bool {
+func isComposite(vec coldata.Vec, row int) bool {
 	switch vec.CanonicalTypeFamily() {
 	case types.FloatFamily:
 		f := tree.DFloat(vec.Float64()[row])

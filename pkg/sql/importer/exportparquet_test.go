@@ -31,8 +31,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/parquet"
+	crlparquet "github.com/cockroachdb/cockroach/pkg/util/parquet"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
+	"github.com/fraugster/parquet-go/parquet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,6 +62,10 @@ type parquetTest struct {
 
 	// cols provides the expected column name and type
 	cols colinfo.ResultColumns
+
+	// colFieldRepType provides the expected parquet repetition type of each column in
+	// the parquet file.
+	colFieldRepType []parquet.FieldRepetitionType
 
 	// datums provides the expected values of the parquet file.
 	datums []tree.Datums
@@ -102,7 +107,7 @@ func validateParquetFile(
 		test.datums = make([]tree.Datums, 0)
 	}
 
-	meta, readDatums, err := parquet.ReadFile(paths[0])
+	meta, readDatums, err := crlparquet.ReadFile(paths[0])
 	require.NoError(t, err)
 
 	require.Equal(t, len(test.cols), meta.NumCols)
@@ -198,9 +203,10 @@ func TestRandomParquetExports(t *testing.T) {
 			numTables   = 20
 		)
 
-		stmts := randgen.RandCreateTables(
-			ctx, rng, tablePrefix, numTables, randgen.TableOptNone,
-			randgen.PartialIndexMutator, randgen.ForeignKeyMutator,
+		stmts := randgen.RandCreateTables(rng, tablePrefix, numTables,
+			false, /* isMultiRegion */
+			randgen.PartialIndexMutator,
+			randgen.ForeignKeyMutator,
 		)
 
 		var sb strings.Builder
@@ -231,7 +237,7 @@ func TestRandomParquetExports(t *testing.T) {
 					for _, col := range cols {
 						// TODO(#104278): don't call this function to check if a type is supported.
 						// We should explicitly use the ones supported by  util/parquet).
-						_, err := parquet.NewSchema([]string{"test"}, []*types.T{col.Typ})
+						_, err := importer.NewParquetColumn(col.Typ, "", false)
 						if err != nil {
 							_, err = sqlDB.DB.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN %s`, tree.NameString(tableName), tree.NameString(col.Name)))
 							if err != nil {
@@ -308,10 +314,17 @@ INDEX (y))`)
 			stmt: `EXPORT INTO PARQUET 'nodelocal://1/colname' FROM SELECT avg(z), min(y) AS baz
 							FROM foo`,
 		},
+		// TODO(#104279): when the underlying library supports repetition type required,
+		// update this test.
 		{
 			filePrefix: "nullable",
 			stmt: `EXPORT INTO PARQUET 'nodelocal://1/nullable' FROM SELECT y,z,x
 							FROM foo`,
+			colFieldRepType: []parquet.FieldRepetitionType{
+				parquet.FieldRepetitionType_OPTIONAL,
+				parquet.FieldRepetitionType_OPTIONAL,
+				parquet.FieldRepetitionType_OPTIONAL,
+			},
 		},
 		{
 			// TODO (mb): switch one of the values in the array to NULL once the
@@ -367,6 +380,15 @@ INDEX (y))`)
 			stmt: `EXPORT INTO PARQUET 'nodelocal://1/uncompress'
 							FROM SELECT * FROM foo `,
 		},
+		{
+			filePrefix: "null_vals_with_index",
+			prep: []string{
+				`CREATE TABLE null_vals_with_index (a STRING PRIMARY KEY, b STRING, INDEX b_idx (b ASC))`,
+				`INSERT INTO null_vals_with_index VALUES ('a', NULL)`,
+			},
+			stmt: `EXPORT INTO PARQUET 'nodelocal://1/null_vals_with_index'
+							FROM SELECT * FROM null_vals_with_index@b_idx`,
+		},
 	}
 
 	for _, test := range tests {
@@ -392,7 +414,7 @@ func TestMemoryMonitor(t *testing.T) {
 	// Arrange for a small memory budget.
 	budget := int64(4096)
 	mm := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeMonitorName("test-mm"),
+		Name:      "test-mm",
 		Limit:     budget,
 		Increment: 128, /* small allocation increment */
 		Settings:  cluster.MakeTestingClusterSettings(),

@@ -15,14 +15,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftlogger"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/redact"
 )
 
 // maxRaftMsgType is the maximum value in the raft.MessageType enum.
-const maxRaftMsgType = raftpb.MsgDeFortifyLeader
+const maxRaftMsgType = raftpb.MsgForgetLeader
 
 func init() {
 	for v := range raftpb.MessageType_name {
@@ -36,7 +35,7 @@ func init() {
 // init installs an adapter to use clog for log messages from raft which
 // don't belong to any range.
 func init() {
-	raftlogger.SetLogger(&raftLogger{ctx: context.Background()})
+	raft.SetLogger(&raftLogger{ctx: context.Background()})
 }
 
 // *clogLogger implements the raft.Logger interface. Note that all methods
@@ -177,9 +176,38 @@ func logRaftReady(ctx context.Context, ready raft.Ready) {
 	}
 	for i, m := range ready.Messages {
 		fmt.Fprintf(&buf, "  Outgoing Message[%d]: %.200s\n",
-			i, raft.DescribeMessage(m, raftEntryFormatter))
+			i, raftDescribeMessage(m, raftEntryFormatter))
 	}
 	log.Infof(ctx, "raft ready (must-sync=%t)\n%s", ready.MustSync, buf.String())
+}
+
+// This is a fork of raft.DescribeMessage with a tweak to avoid logging
+// snapshot data.
+func raftDescribeMessage(m raftpb.Message, f raft.EntryFormatter) string {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "%x->%x %v Term:%d Log:%d/%d", m.From, m.To, m.Type, m.Term, m.LogTerm, m.Index)
+	if m.Reject {
+		fmt.Fprintf(&buf, " Rejected (Hint: %d)", m.RejectHint)
+	}
+	if m.Commit != 0 {
+		fmt.Fprintf(&buf, " Commit:%d", m.Commit)
+	}
+	if len(m.Entries) > 0 {
+		fmt.Fprintf(&buf, " Entries:[")
+		for i, e := range m.Entries {
+			if i != 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(raft.DescribeEntry(e, f))
+		}
+		fmt.Fprintf(&buf, "]")
+	}
+	if m.Snapshot != nil {
+		snap := *m.Snapshot
+		snap.Data = nil
+		fmt.Fprintf(&buf, " Snapshot:%v", snap)
+	}
+	return buf.String()
 }
 
 func raftEntryFormatter(data []byte) string {
@@ -236,7 +264,7 @@ func (r *Replica) traceMessageSends(msgs []raftpb.Message, event string) {
 // in ents to ids and returns the result.
 func extractIDs(ids []kvserverbase.CmdIDKey, ents []raftpb.Entry) []kvserverbase.CmdIDKey {
 	for _, e := range ents {
-		typ, _, err := raftlog.EncodingOf(e)
+		typ, err := raftlog.EncodingOf(e)
 		if err != nil {
 			continue
 		}
@@ -267,7 +295,7 @@ func traceProposals(r *Replica, ids []kvserverbase.CmdIDKey, event string) {
 	r.mu.RLock()
 	for _, id := range ids {
 		if prop, ok := r.mu.proposals[id]; ok {
-			ctxs = append(ctxs, prop.Context())
+			ctxs = append(ctxs, prop.ctx)
 		}
 	}
 	r.mu.RUnlock()

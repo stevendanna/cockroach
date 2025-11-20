@@ -245,7 +245,7 @@ func fromReplicaIsTooOldRLocked(toReplica *Replica, fromReplica *roachpb.Replica
 	if fromReplica == nil {
 		return false
 	}
-	desc := toReplica.shMu.state.Desc
+	desc := toReplica.mu.state.Desc
 	_, found := desc.GetReplicaDescriptorByID(fromReplica.ReplicaID)
 	return !found && fromReplica.ReplicaID < desc.NextReplicaID
 }
@@ -294,7 +294,8 @@ func (s *Store) addToReplicasByRangeIDLocked(repl *Replica) error {
 	// It's ok for the replica to exist in the replicas map as long as it is the
 	// same replica object. This does not happen, to the best of our knowledge.
 	// TODO(pavelkalinnikov): consider asserting that existing == nil.
-	if existing, loaded := s.mu.replicasByRangeID.LoadOrStore(repl.RangeID, repl); loaded && existing != repl {
+	if existing, loaded := s.mu.replicasByRangeID.LoadOrStore(
+		repl.RangeID, repl); loaded && existing != repl {
 		return errors.Errorf("%s: replica already exists", repl)
 	}
 	return nil

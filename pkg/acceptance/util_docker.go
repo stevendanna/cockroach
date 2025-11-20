@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -63,7 +62,7 @@ func testDockerSuccess(ctx context.Context, t *testing.T, name string, cmd []str
 const (
 	// Iterating against a locally built version of the docker image can be done
 	// by changing acceptanceImage to the hash of the container.
-	acceptanceImage = "us-east1-docker.pkg.dev/crl-ci-images/cockroach/acceptance:20221005-223354"
+	acceptanceImage = "us-east1-docker.pkg.dev/crl-ci-images/cockroach/acceptance:20250612-132728"
 )
 
 func testDocker(
@@ -171,7 +170,7 @@ func testDocker(
 // so the files can be used inside a docker container. The caller function is responsible for cleaning up.
 // This function doesn't copy the original file permissions and uses 755 for directories and files.
 func copyRunfiles(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, dirEntry fs.DirEntry, walkErr error) error {
+	return filepath.WalkDir(source, func(path string, dirEntry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

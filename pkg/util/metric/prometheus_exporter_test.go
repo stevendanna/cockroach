@@ -37,14 +37,6 @@ func TestPrometheusExporter(t *testing.T) {
 	c2Dup := NewCounter(c2MetaDup)
 	r2.AddMetric(c2Dup)
 
-	multilineHelp := `This is a multiline
-      help message. With a second 
-      sentence.`
-	r1.AddMetric(NewGauge(Metadata{
-		Name: "help.multiline",
-		Help: multilineHelp,
-	}))
-
 	pe := MakePrometheusExporter()
 	const includeChildMetrics = false
 	pe.ScrapeRegistry(r1, includeChildMetrics)
@@ -74,9 +66,6 @@ func TestPrometheusExporter(t *testing.T) {
 		}},
 		"shared_counter_dup": {[]metricLabels{
 			{"counter": "two", "registry": "two"},
-		}},
-		"help_multiline": {[]metricLabels{
-			{},
 		}},
 	}
 
@@ -164,11 +153,7 @@ func TestPrometheusExporter(t *testing.T) {
 	require.Regexp(t, "one_gauge 0", output)
 	require.Regexp(t, "one_gauge_dup 0", output)
 	require.Regexp(t, "shared_counter{counter=\"one\"}", output)
-
-	require.Regexp(t, "This is a multiline help message", output)
-	require.NotRegexp(t, multilineHelp, output)
-
-	require.Len(t, strings.Split(output, "\n"), 13)
+	require.Len(t, strings.Split(output, "\n"), 10)
 
 	buf.Reset()
 	r1.RemoveMetric(g1Dup)
@@ -179,7 +164,7 @@ func TestPrometheusExporter(t *testing.T) {
 	output = buf.String()
 	require.Regexp(t, "one_gauge 0", output)
 	require.NotRegexp(t, "one_gauge_dup 0", output)
-	require.Len(t, strings.Split(output, "\n"), 10)
+	require.Len(t, strings.Split(output, "\n"), 7)
 }
 
 func TestPrometheusExporterNativeHistogram(t *testing.T) {

@@ -125,15 +125,12 @@ func (s *Store) removeInitializedReplicaRaftMuLocked(
 
 		// Now we know that the Store's Replica is identical to the passed-in
 		// Replica.
-		desc := rep.shMu.state.Desc
+		desc := rep.mu.state.Desc
 		if repDesc, ok := desc.GetReplicaDescriptor(s.StoreID()); ok && repDesc.ReplicaID >= nextReplicaID {
 			// The ReplicaID of a Replica is immutable.
 			return nil, errors.AssertionFailedf("replica descriptor's ID has changed (%s >= %s)",
 				repDesc.ReplicaID, nextReplicaID)
 		}
-
-		// Remove the replica from the quiescence data structures.
-		rep.maybeRemoveAsleepReplicaFromQuiescenceStateReplicaMuLocked()
 
 		// Sanity checks passed. Mark the replica as removed before deleting data.
 		rep.mu.destroyStatus.Set(kvpb.NewRangeNotFoundError(rep.RangeID, rep.StoreID()),
@@ -300,9 +297,9 @@ func (s *Store) removeUninitializedReplicaRaftMuLocked(
 // store.mu must be held.
 func (s *Store) unlinkReplicaByRangeIDLocked(ctx context.Context, rangeID roachpb.RangeID) {
 	s.mu.AssertHeld()
-	s.quiescence.Lock()
-	delete(s.quiescence.unquiescedOrAwake, rangeID)
-	s.quiescence.Unlock()
+	s.unquiescedReplicas.Lock()
+	delete(s.unquiescedReplicas.m, rangeID)
+	s.unquiescedReplicas.Unlock()
 	delete(s.mu.uninitReplicas, rangeID)
 	s.mu.replicasByRangeID.Delete(rangeID)
 	s.unregisterLeaseholderByID(ctx, rangeID)

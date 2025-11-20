@@ -24,7 +24,7 @@ func TestDeserializeExpr(t *testing.T) {
 
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.MakeTestingEvalContext(st)
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	expr, err := DeserializeExpr(
 		context.Background(),
 		e,
@@ -83,7 +83,7 @@ func TestDeserializeExpressionConstantEval(t *testing.T) {
 
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.MakeTestingEvalContext(st)
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	expr, err := DeserializeExpr(
 		context.Background(),
 		e,

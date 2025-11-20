@@ -9,6 +9,7 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -127,19 +128,8 @@ func registerImportTPCC(r registry.Registry) {
 		m := c.NewMonitor(ctx)
 		dul := roachtestutil.NewDiskUsageLogger(t, c)
 		m.Go(dul.Runner)
-		var hc *roachtestutil.HealthChecker
-		if !c.Spec().Geo {
-			// We skip the health checker in the geo config since it is prone to
-			// network errors, and we don't want to fail the test if the health
-			// check fails.
-			hc = roachtestutil.NewHealthChecker(t, c, c.All())
-			m.Go(hc.Runner)
-		}
 
-		exporter := roachtestutil.CreateWorkloadHistogramExporter(t, c)
-		tick, perfBuf := initBulkJobPerfArtifacts(timeout, t, exporter)
-		defer roachtestutil.CloseExporter(ctx, exporter, t, c, perfBuf, c.Node(1), "")
-
+		tick, perfBuf := initBulkJobPerfArtifacts(testName, timeout)
 		workloadStr := `./cockroach workload fixtures import tpcc --warehouses=%d --csv-server='http://localhost:8081' {pgurl:1}`
 		m.Go(func(ctx context.Context) error {
 			defer dul.Done()
@@ -147,8 +137,6 @@ func registerImportTPCC(r registry.Registry) {
 				// Increase the retry duration in the geo config to harden the
 				// test.
 				c.Run(ctx, option.WithNodes(c.Node(1)), `./cockroach sql -e "SET CLUSTER SETTING bulkio.import.retry_duration = '20m';" --url={pgurl:1}`)
-			} else {
-				defer hc.Done()
 			}
 			cmd := fmt.Sprintf(workloadStr, warehouses)
 			// Tick once before starting the import, and once after to capture the
@@ -157,6 +145,16 @@ func registerImportTPCC(r registry.Registry) {
 			tick()
 			c.Run(ctx, option.WithNodes(c.Node(1)), cmd)
 			tick()
+
+			// Upload the perf artifacts to any one of the nodes so that the test
+			// runner copies it into an appropriate directory path.
+			dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
+			if err := c.RunE(ctx, option.WithNodes(c.Node(1)), "mkdir -p "+filepath.Dir(dest)); err != nil {
+				t.L().ErrorfCtx(ctx, "failed to create perf dir: %+v", err)
+			}
+			if err := c.PutString(ctx, perfBuf.String(), dest, 0755, c.Node(1)); err != nil {
+				t.L().ErrorfCtx(ctx, "failed to upload perf artifacts to node: %s", err.Error())
+			}
 			return nil
 		})
 		m.Wait()
@@ -175,25 +173,6 @@ func registerImportTPCC(r registry.Registry) {
 			Suites:            registry.Suites(registry.Nightly),
 			Timeout:           timeout,
 			EncryptionSupport: registry.EncryptionMetamorphic,
-			PostProcessPerfMetrics: func(test string, histograms *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
-				metricName := fmt.Sprintf("%s_elapsed", test)
-				totalElapsed := histograms.Elapsed
-
-				gb := int64(1 << 30)
-				mb := int64(1 << 20)
-				dataSizeInMB := (56 * gb) / mb
-				backupDuration := int64(totalElapsed / 1000)
-				avgRatePerNode := roachtestutil.MetricPoint(float64(dataSizeInMB) / float64(int64(numNodes)*backupDuration))
-
-				return roachtestutil.AggregatedPerfMetrics{
-					{
-						Name:           metricName,
-						Value:          avgRatePerNode,
-						Unit:           "MB/s/node",
-						IsHigherBetter: false,
-					},
-				}, nil
-			},
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				runImportTPCC(ctx, t, c, testName, timeout, warehouses)
 			},
@@ -249,9 +228,7 @@ func registerImportTPCH(r registry.Registry) {
 			EncryptionSupport: registry.EncryptionMetamorphic,
 			Leases:            registry.MetamorphicLeases,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-				exporter := roachtestutil.CreateWorkloadHistogramExporter(t, c)
-				tick, perfBuf := initBulkJobPerfArtifacts(item.timeout, t, exporter)
-				defer roachtestutil.CloseExporter(ctx, exporter, t, c, perfBuf, c.Node(1), "")
+				tick, perfBuf := initBulkJobPerfArtifacts(t.Name(), item.timeout)
 
 				c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
 				conn := c.Conn(ctx, t.L(), 1)
@@ -283,8 +260,6 @@ func registerImportTPCH(r registry.Registry) {
 				m := c.NewMonitor(ctx)
 				dul := roachtestutil.NewDiskUsageLogger(t, c)
 				m.Go(dul.Runner)
-				hc := roachtestutil.NewHealthChecker(t, c, c.All())
-				m.Go(hc.Runner)
 
 				// TODO(peter): This currently causes the test to fail because we see a
 				// flurry of valid merges when the import finishes.
@@ -299,7 +274,6 @@ func registerImportTPCH(r registry.Registry) {
 
 				m.Go(func(ctx context.Context) error {
 					defer dul.Done()
-					defer hc.Done()
 					t.WorkerStatus(`running import`)
 					defer t.WorkerStatus()
 
@@ -335,6 +309,16 @@ func registerImportTPCH(r registry.Registry) {
 						return errors.Wrap(err, "import failed")
 					}
 					tick()
+
+					// Upload the perf artifacts to any one of the nodes so that the test
+					// runner copies it into an appropriate directory path.
+					dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
+					if err := c.RunE(ctx, option.WithNodes(c.Node(1)), "mkdir -p "+filepath.Dir(dest)); err != nil {
+						t.L().ErrorfCtx(ctx, "failed to create perf dir: %+v", err)
+					}
+					if err := c.PutString(ctx, perfBuf.String(), dest, 0755, c.Node(1)); err != nil {
+						t.L().ErrorfCtx(ctx, "failed to upload perf artifacts to node: %s", err.Error())
+					}
 					return nil
 				})
 

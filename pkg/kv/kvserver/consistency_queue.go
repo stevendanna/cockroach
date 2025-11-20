@@ -41,16 +41,6 @@ var consistencyCheckRate = settings.RegisterByteSizeSetting(
 	settings.PositiveInt,
 	settings.WithPublic)
 
-// skipConsitencyQueueForExternalBytes is a setting that controls whether
-// replicas with external bytes should be processed by the consitency
-// queue.
-var skipConsitencyQueueForExternalBytes = settings.RegisterBoolSetting(
-	settings.SystemOnly,
-	"server.consistency_check.skip_external_bytes.enabled",
-	"skip the consistency queue for external bytes",
-	true,
-)
-
 // consistencyCheckRateBurstFactor we use this to set the burst parameter on the
 // quotapool.RateLimiter. It seems overkill to provide a user setting for this,
 // so we use a factor to scale the burst setting based on the rate defined above.
@@ -98,17 +88,17 @@ func newConsistencyQueue(store *Store) *consistencyQueue {
 	q.baseQueue = newBaseQueue(
 		"consistencyChecker", q, store,
 		queueConfig{
-			maxSize:                             defaultQueueMaxSize,
-			needsLease:                          true,
-			needsSpanConfigs:                    false,
-			acceptsUnsplitRanges:                true,
-			successes:                           store.metrics.ConsistencyQueueSuccesses,
-			failures:                            store.metrics.ConsistencyQueueFailures,
-			pending:                             store.metrics.ConsistencyQueuePending,
-			processingNanos:                     store.metrics.ConsistencyQueueProcessingNanos,
-			processTimeoutFunc:                  makeRateLimitedTimeoutFunc(consistencyCheckRate),
-			disabledConfig:                      kvserverbase.ConsistencyQueueEnabled,
-			skipIfReplicaHasExternalFilesConfig: skipConsitencyQueueForExternalBytes,
+			maxSize:              defaultQueueMaxSize,
+			needsLease:           true,
+			needsSpanConfigs:     false,
+			acceptsUnsplitRanges: true,
+			successes:            store.metrics.ConsistencyQueueSuccesses,
+			failures:             store.metrics.ConsistencyQueueFailures,
+			storeFailures:        store.metrics.StoreFailures,
+			pending:              store.metrics.ConsistencyQueuePending,
+			processingNanos:      store.metrics.ConsistencyQueueProcessingNanos,
+			processTimeoutFunc:   makeRateLimitedTimeoutFunc(consistencyCheckRate),
+			disabledConfig:       kvserverbase.ConsistencyQueueEnabled,
 		},
 	)
 	return q

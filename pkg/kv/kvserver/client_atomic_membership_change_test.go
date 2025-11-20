@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/raft/confchange"
-	"github.com/cockroachdb/cockroach/pkg/raft/quorum"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -82,13 +81,9 @@ func TestAtomicReplicationChange(t *testing.T) {
 				// Check that conf state is up to date. This can fail even though
 				// the descriptor already matches since the descriptor is updated
 				// a hair earlier.
-				cfg := quorum.MakeEmptyConfig()
-				cfg, _, err = confchange.Restore(confchange.Changer{
-					ProgressMap:      tracker.MakeEmptyProgressMap(),
-					Config:           cfg,
-					MaxInflight:      1,
-					MaxInflightBytes: 0,
-					LastIndex:        1,
+				cfg, _, err := confchange.Restore(confchange.Changer{
+					Tracker:   tracker.MakeProgressTracker(1, 0),
+					LastIndex: 1,
 				}, desc.Replicas().ConfState())
 				require.NoError(t, err)
 				act := r.RaftStatus().Config.Voters

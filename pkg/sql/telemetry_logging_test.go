@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -398,8 +399,11 @@ func TestTelemetryLogging(t *testing.T) {
 				KVBatchRequestsIssued:              9223372036854775807,
 				KVTime:                             9223372036854775807,
 				Regions:                            []string{"9223372036854775807EastUS9223372036854775807/z^&*&#()(!@%&^61%^7'\\\\&*@#$%"},
-				SQLInstanceIDs:                     []int32{-2147483648, 0, 2147483647},
-				KVNodeIDs:                          []int32{-2147483648, 0, 2147483647},
+				SqlInstanceIds: map[base.SQLInstanceID]struct{}{
+					base.SQLInstanceID(-2147483648): {},
+					base.SQLInstanceID(0):           {},
+					base.SQLInstanceID(2147483647):  {},
+				},
 			},
 			enableTracing: true,
 		},
@@ -488,7 +492,7 @@ func TestTelemetryLogging(t *testing.T) {
 
 					logCount++
 
-					costRe := regexp.MustCompile("\"CostEstimate\":[0-9]*\\.?[0-9]*")
+					costRe := regexp.MustCompile("\"CostEstimate\":[0-9]*\\.[0-9]*")
 					if !costRe.MatchString(e.Message) {
 						t.Errorf("expected to find CostEstimate but none was found")
 					}
@@ -587,8 +591,17 @@ func TestTelemetryLogging(t *testing.T) {
 					require.Equal(t, tc.queryLevelStats.KVBatchRequestsIssued, sampledQueryFromLog.KvGrpcCalls)
 					require.Equal(t, tc.queryLevelStats.KVTime.Nanoseconds(), sampledQueryFromLog.KvTimeNanos)
 					require.Equal(t, tc.queryLevelStats.Regions, sampledQueryFromLog.Regions)
-					require.Equal(t, tc.queryLevelStats.SQLInstanceIDs, sampledQueryFromLog.SQLInstanceIDs)
-					require.Equal(t, tc.queryLevelStats.KVNodeIDs, sampledQueryFromLog.KVNodeIDs)
+					if len(tc.queryLevelStats.SqlInstanceIds) > 0 {
+						arr := make([]int32, 0, len(tc.queryLevelStats.SqlInstanceIds))
+						for id := range tc.queryLevelStats.SqlInstanceIds {
+							arr = append(arr, int32(id))
+						}
+						sort.Slice(arr, func(i, j int) bool {
+							return arr[i] < arr[j]
+						})
+						require.Equal(t, arr, sampledQueryFromLog.SQLInstanceIDs, "stmt: %s", sampledQueryFromLog.Statement)
+					}
+
 					require.Equal(t, tc.queryLevelStats.CPUTime.Nanoseconds(), sampledQueryFromLog.CpuTimeNanos)
 					require.Greater(t, sampledQueryFromLog.PlanLatencyNanos, int64(0))
 					require.Greater(t, sampledQueryFromLog.RunLatencyNanos, int64(0))
@@ -819,7 +832,6 @@ func TestTelemetryLoggingInternalConsoleEnabled(t *testing.T) {
 	st.SetTime(stubTime)
 	defer s.Stopper().Stop(context.Background())
 
-	sqlDB.SetMaxOpenConns(1)
 	db := sqlutils.MakeSQLRunner(sqlDB)
 	db.Exec(t, `SET CLUSTER SETTING sql.telemetry.query_sampling.enabled = true;`)
 	// Set query internal to `false` to guarantee that if an entry qith `internal-console` is showing
@@ -854,7 +866,7 @@ func TestTelemetryLoggingInternalConsoleEnabled(t *testing.T) {
 		},
 	}
 
-	query := `SELECT count(*) FROM defaultdb.crdb_internal.statement_statistics`
+	query := `SELECT count(*) FROM crdb_internal.statement_statistics`
 	for _, tc := range testData {
 		db.Exec(t, `SET application_name = $1`, tc.appName)
 		db.Exec(t, `SET CLUSTER SETTING sql.telemetry.query_sampling.internal_console.enabled = $1;`, tc.logInternalConsole)
@@ -884,7 +896,7 @@ func TestTelemetryLoggingInternalConsoleEnabled(t *testing.T) {
 		}
 
 		if found != tc.logInternalConsole {
-			t.Error(tc.errorMessage)
+			t.Errorf(tc.errorMessage)
 		}
 	}
 }

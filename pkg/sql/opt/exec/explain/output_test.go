@@ -9,14 +9,16 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec/explain"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
@@ -153,6 +155,7 @@ func TestCPUTimeEndToEnd(t *testing.T) {
 
 	skip.UnderStress(t, "multinode cluster setup times out under stress")
 	skip.UnderRace(t, "multinode cluster setup times out under race")
+	skip.UnderDeadlock(t, "lock verification can timeout")
 
 	if !grunning.Supported() {
 		return
@@ -163,9 +166,13 @@ func TestCPUTimeEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	defer tc.Stopper().Stop(ctx)
 
-	if tc.DefaultTenantDeploymentMode().IsExternal() {
-		tc.GrantTenantCapabilities(ctx, t, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"})
+	if srv := tc.Server(0); srv.TenantController().StartedDefaultTestTenant() {
+		systemSqlDB := srv.SystemLayer().SQLConn(t, serverutils.DBName("system"))
+		_, err := systemSqlDB.Exec(`ALTER TENANT [$1] GRANT CAPABILITY can_admin_relocate_range=true`, serverutils.TestTenantID().ToUint64())
+		require.NoError(t, err)
+		serverutils.WaitForTenantCapabilities(t, srv, serverutils.TestTenantID(), map[tenantcapabilities.ID]string{
+			tenantcapabilities.CanAdminRelocateRange: "true",
+		}, "")
 	}
 
 	db := sqlutils.MakeSQLRunner(tc.Conns[0])
@@ -227,6 +234,8 @@ func TestCPUTimeEndToEnd(t *testing.T) {
 func TestContentionTimeOnWrites(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+
+	skip.UnderDuress(t, "see issue #153394")
 
 	ctx := context.Background()
 	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
@@ -340,4 +349,107 @@ func TestContentionTimeOnWrites(t *testing.T) {
 
 	// Meat of the test - verify that the contention was reported.
 	require.True(t, foundContention)
+}
+
+func TestRetryFields(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
+
+	sqlDB := sqlutils.MakeSQLRunner(conn)
+	sqlDB.Exec(t, "CREATE SEQUENCE s")
+
+	retryCountRE := regexp.MustCompile(`number of transaction retries: (\d+)`)
+	retryTimeRE := regexp.MustCompile(`time spent retrying the transaction: ([\d\.]+)[µsm]+`)
+
+	const query = "EXPLAIN ANALYZE SELECT IF(nextval('s')<=3, crdb_internal.force_retry('1h'::INTERVAL), 0)"
+	rows, err := conn.QueryContext(ctx, query)
+	assert.NoError(t, err)
+	var output strings.Builder
+	var foundCount, foundTime bool
+	for rows.Next() {
+		var res string
+		assert.NoError(t, rows.Scan(&res))
+		output.WriteString(res)
+		output.WriteString("\n")
+		if matches := retryCountRE.FindStringSubmatch(res); len(matches) > 0 {
+			foundCount = true
+		}
+		if matches := retryTimeRE.FindStringSubmatch(res); len(matches) > 0 {
+			foundTime = true
+		}
+	}
+	assert.Truef(t, foundCount, "expected to find transaction retries, full output:\n\n%s", output.String())
+	assert.Truef(t, foundTime, "expected to find time spent retrying, full output:\n\n%s", output.String())
+}
+
+// TestMaximumMemoryUsage verifies that "maximum memory usage" statistic is
+// reported correctly in distributed plans. It is a regression test for #143617.
+func TestMaximumMemoryUsage(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	skip.UnderStress(t, "multinode cluster setup times out under stress")
+	skip.UnderRace(t, "multinode cluster setup times out under race")
+
+	const numNodes = 3
+	tc := testcluster.StartTestCluster(t, numNodes, base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			Knobs: base.TestingKnobs{
+				SQLEvalContext: &eval.TestingKnobs{
+					// We disable the randomization of the batch sizes so that
+					// small number of gRPC calls is issued in the query below
+					// (with kv-batch-size=1 we would issue 10k of them which
+					// might result in dropping the ComponentStats proto that
+					// powers "maximum memory usage" from the trace, flaking the
+					// test).
+					ForceProductionValues: true,
+				},
+			},
+		},
+	})
+	ctx := context.Background()
+	defer tc.Stopper().Stop(ctx)
+
+	if srv := tc.Server(0); srv.TenantController().StartedDefaultTestTenant() {
+		systemSqlDB := srv.SystemLayer().SQLConn(t, serverutils.DBName("system"))
+		_, err := systemSqlDB.Exec(`ALTER TENANT [$1] GRANT CAPABILITY can_admin_relocate_range=true`, serverutils.TestTenantID().ToUint64())
+		require.NoError(t, err)
+		serverutils.WaitForTenantCapabilities(t, srv, serverutils.TestTenantID(), map[tenantcapabilities.ID]string{
+			tenantcapabilities.CanAdminRelocateRange: "true",
+		}, "")
+	}
+
+	// Set up such a distributed plan where memory-intensive aggregation occurs
+	// on the remote nodes whereas the gateway only merges streams of final
+	// results from remote nodes.
+	db := sqlutils.MakeSQLRunner(tc.Conns[0])
+	db.Query(t, "CREATE TABLE t (k INT PRIMARY KEY, bucket INT, v STRING);")
+	db.Query(t, "INSERT INTO t SELECT i, i % 4, repeat('a', 1000) FROM generate_series(1, 10000) AS g(i);")
+	db.Query(t, "ALTER TABLE t SPLIT AT VALUES (5001);")
+	testutils.SucceedsSoon(t, func() error {
+		// Wrap this query in a retry loop since it might hit expected errors
+		// for some time.
+		_, err := db.DB.ExecContext(ctx, "ALTER TABLE t EXPERIMENTAL_RELOCATE VALUES (ARRAY[2], 1), (ARRAY[3], 5001)")
+		return err
+	})
+
+	rows := db.QueryStr(t, "EXPLAIN ANALYZE SELECT max(v) FROM t GROUP BY bucket;")
+	var output strings.Builder
+	maxMemoryRE := regexp.MustCompile(`maximum memory usage: ([\d\.]+) MiB`)
+	var maxMemoryUsage float64
+	for _, row := range rows {
+		output.WriteString(row[0])
+		output.WriteString("\n")
+		s := strings.TrimSpace(row[0])
+		if matches := maxMemoryRE.FindStringSubmatch(s); len(matches) > 0 {
+			var err error
+			maxMemoryUsage, err = strconv.ParseFloat(matches[1], 64)
+			require.NoError(t, err)
+		}
+	}
+	require.Greaterf(t, maxMemoryUsage, 5.0, "expected maximum memory usage to be at least 5 MiB, full output:\n\n%s", output.String())
 }

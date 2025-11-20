@@ -3,23 +3,20 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { SessionsPageProps } from "./sessionsPage";
 import { createMemoryHistory } from "history";
+import { SessionInfo } from "./sessionsTable";
 import Long from "long";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+const Phase = cockroach.server.serverpb.ActiveQuery.Phase;
 import { util } from "protobufjs";
-
+import { defaultFilters, Filters } from "../queryFilter";
 import {
   CancelQueryRequestMessage,
   CancelSessionRequestMessage,
 } from "src/api/terminateQueryApi";
 
-import { defaultFilters, Filters } from "../queryFilter";
-
-import { SessionsPageProps } from "./sessionsPage";
-import { SessionInfo } from "./sessionsTable";
-
 const Status = cockroach.server.serverpb.Session.Status;
-const Phase = cockroach.server.serverpb.ActiveQuery.Phase;
 
 const history = createMemoryHistory({ initialEntries: ["/sessions"] });
 

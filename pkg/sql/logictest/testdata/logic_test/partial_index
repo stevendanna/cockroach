@@ -205,7 +205,7 @@ CREATE TABLE t8 (
 )
 
 # TODO(mgartner): Lift this restriction. See #96924.
-statement error cannot drop column "c" because it is referenced by partial index "t8_a_idx1"\nHINT: drop the partial index first, then drop the column
+statement error column "c" cannot be dropped because it is referenced by partial index "t8_a_idx1"
 ALTER TABLE t8 DROP COLUMN c
 
 query TT
@@ -1169,10 +1169,10 @@ SHOW CREATE TABLE enum_table_show
 ----
 enum_table_show  CREATE TABLE public.enum_table_show (
                    a INT8 NULL,
-                   b public.enum_type NULL,
+                   b test.public.enum_type NULL,
                    rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
                    CONSTRAINT enum_table_show_pkey PRIMARY KEY (rowid ASC),
-                   INDEX i (a ASC) WHERE b IN ('foo':::public.enum_type, 'bar':::public.enum_type),
+                   INDEX i (a ASC) WHERE b IN ('foo':::test.public.enum_type, 'bar':::test.public.enum_type),
                    FAMILY fam_0_a_b_rowid (a, b, rowid)
                  )
 
@@ -1359,41 +1359,6 @@ query IIII rowsort
 SELECT * FROM prune@idx WHERE c > 0
 ----
 1  2  3  7
-
-# Vector partial indexes.
-# TODO(andyk): Need more tests once insertion is possible.
-subtest vector
-
-statement ok
-CREATE TABLE vec (id INT PRIMARY KEY, v VECTOR(3), VECTOR INDEX (id, v) WHERE id > 0);
-DROP TABLE vec;
-
-statement ok
-CREATE TABLE vec (
-  id INT PRIMARY KEY,
-  v VECTOR(3),
-  VECTOR INDEX (id, v) WHERE v <-> '[3,1,2]' < 1,
-  FAMILY (id, v)
-);
-
-query TT
-SHOW CREATE TABLE vec
-----
-vec  CREATE TABLE public.vec (
-       id INT8 NOT NULL,
-       v VECTOR(3) NULL,
-       CONSTRAINT vec_pkey PRIMARY KEY (id ASC),
-       VECTOR INDEX vec_id_v_idx (id ASC, v) WHERE (v <-> '[3,1,2]':::VECTOR) < 1.0:::FLOAT8,
-       FAMILY fam_0_id_v (id, v)
-     )
-
-statement ok
-DROP TABLE vec;
-
-statement ok
-CREATE TABLE vec (id INT PRIMARY KEY, s STRING, v VECTOR(3));
-CREATE VECTOR INDEX ON vec (v) WHERE s IN ('foo', 'bar');
-DROP TABLE vec;
 
 # Tests for partial indexes with predicates that reference virtual computed
 # columns.
@@ -1853,7 +1818,7 @@ CREATE TABLE t61414_c (
   FAMILY (k, a, c)
 )
 
-skipif config #110873 weak-iso-level-configs
+skipif config local-read-committed 110873
 statement ok
 UPSERT INTO t61414_c (k, a, b, d) VALUES (1, 2, 3, 4)
 
@@ -1908,9 +1873,6 @@ SELECT k, (j->'b' = '1') IS NULL FROM t75907@t75907_partial_idx WHERE (j->'b' = 
 # Regression test for #79613 to disallow adding a partial index referencing a
 # a column added in the same transaction.
 subtest column_added_in_same_transaction
-
-statement ok
-SET autocommit_before_ddl = false
 
 statement ok
 CREATE TABLE t79613 (i INT PRIMARY KEY);
@@ -1990,9 +1952,6 @@ SELECT * FROM t79613;
 statement ok
 DROP TABLE t79613;
 
-statement ok
-RESET autocommit_before_ddl
-
 # Regression test for #96924 to disallow dropping a column that is referenced in
 # a partial index predicate.
 subtest column_dropped_referenced_in_partial_index
@@ -2025,7 +1984,7 @@ CREATE TABLE t96924 (
 statement ok
 ALTER TABLE t96924 DROP COLUMN a
 
-statement error pq: cannot drop column "b" because it is referenced by partial index "t96924_b_key"\nHINT: drop the partial index first, then drop the column
+statement error pq: column "b" cannot be dropped because it is referenced by partial index "t96924_b_key"
 ALTER TABLE t96924 DROP COLUMN b
 
 statement ok
@@ -2034,7 +1993,7 @@ DROP INDEX t96924_b_key CASCADE
 statement ok
 ALTER TABLE t96924 DROP COLUMN b
 
-statement error pq: cannot drop column "c" because it is referenced by partial index "t96924_c_key"\nHINT: drop the partial index first, then drop the column
+statement error pq: column "c" cannot be dropped because it is referenced by partial index "t96924_c_key"
 ALTER TABLE t96924 DROP COLUMN c
 
 statement ok
@@ -2043,7 +2002,7 @@ DROP INDEX t96924_c_key CASCADE
 statement ok
 ALTER TABLE t96924 DROP COLUMN c
 
-statement error pq: cannot drop column "d" because it is referenced by partial unique constraint "unique_d"\nHINT: drop the unique constraint first, then drop the column
+statement error pq: column "d" cannot be dropped because it is referenced by partial unique constraint "unique_d"
 ALTER TABLE t96924 DROP COLUMN d
 
 statement ok
@@ -2052,7 +2011,7 @@ ALTER TABLE t96924 DROP CONSTRAINT unique_d
 statement ok
 ALTER TABLE t96924 DROP COLUMN d
 
-statement error pq: cannot drop column "e" because it is referenced by partial index "t96924_e_f_idx"\nHINT: drop the partial index first, then drop the column
+statement error pq: column "e" cannot be dropped because it is referenced by partial index "t96924_e_f_idx"
 ALTER TABLE t96924 DROP COLUMN e
 
 statement ok
@@ -2068,7 +2027,7 @@ ALTER TABLE t96924 DROP COLUMN f
 
 # Column `h` is used in the predicate of another index that does not key on `h`,
 # we will prevent dropping column `h` as well.
-statement error pq: cannot drop column "h" because it is referenced by partial index "t96924_g_idx"\nHINT: drop the partial index first, then drop the column
+statement error pq: column "h" cannot be dropped because it is referenced by partial index "t96924_g_idx"
 ALTER TABLE t96924 DROP COLUMN h
 
 statement ok
@@ -2079,7 +2038,7 @@ ALTER TABLE t96924 DROP COLUMN h
 
 # Similarly, column `i` cannot be dropped since it's used in the predicate of
 # of a UWI constraint.
-statement error pq: cannot drop column "i" because it is referenced by partial unique constraint "unique_g"\nHINT: drop the unique constraint first, then drop the column
+statement error pq: column "i" cannot be dropped because it is referenced by partial unique constraint "unique_g"
 ALTER TABLE t96924 DROP COLUMN i
 
 statement ok
@@ -2104,7 +2063,7 @@ statement ok
 CREATE INDEX t96924_idx_1 ON t96924(a) WHERE (rowid > 0);
 
 skipif config local-legacy-schema-changer
-statement error cannot drop column "rowid" because it is referenced by partial index "t96924_idx_1"\nHINT: drop the partial index first, then drop the column
+statement error column "rowid" cannot be dropped because it is referenced by partial index "t96924_idx_1"
 ALTER TABLE t96924 ALTER PRIMARY KEY USING COLUMNS (a);
 
 statement ok

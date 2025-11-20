@@ -34,9 +34,9 @@ func (s *instance) TokenBucketRequest(
 			Error: errors.EncodeError(ctx, errors.Errorf("invalid instance ID %d", instanceID)),
 		}
 	}
-	if in.RequestedTokens < 0 {
+	if in.RequestedRU < 0 {
 		return &kvpb.TokenBucketResponse{
-			Error: errors.EncodeError(ctx, errors.Errorf("negative requested tokens")),
+			Error: errors.EncodeError(ctx, errors.Errorf("negative requested RUs")),
 		}
 	}
 
@@ -67,13 +67,11 @@ func (s *instance) TokenBucketRequest(
 				return err
 			}
 		}
-
 		now := s.timeSource.Now()
-		last := tenant.LastUpdate.Time
 		tenant.update(now)
 
 		if !instance.Present {
-			if err := h.accommodateNewInstance(txn, &tenant, &instance); err != nil {
+			if err := h.accomodateNewInstance(txn, &tenant, &instance); err != nil {
 				return err
 			}
 		}
@@ -94,22 +92,18 @@ func (s *instance) TokenBucketRequest(
 
 		// Only update consumption if we are sure this is not a duplicate request
 		// that we already counted. Note that if this is a duplicate request, it
-		// will still use tokens from the bucket (TokenCurrent); we rely on a higher
-		// level control loop that periodically reconfigures the token bucket to
-		// correct such errors.
+		// will still use RUs from the bucket (RUCurrent); we rely on a higher level
+		// control loop that periodically reconfigures the token bucket to correct
+		// such errors.
 		if instance.Seq == 0 || instance.Seq < in.SeqNum {
-			instance.Seq = in.SeqNum
 			tenant.Consumption.Add(&in.ConsumptionSinceLastRequest)
-
-			// Update consumption rates.
-			tenant.Rates.Update(now, last, &in.ConsumptionSinceLastRequest, in.ConsumptionPeriod)
+			instance.Seq = in.SeqNum
 		}
 
 		*result = tenant.Bucket.Request(ctx, in)
-		result.ConsumptionRates = *tenant.Rates.Current()
 
 		instance.LastUpdate.Time = now
-		if err := h.updateTenantAndInstanceState(txn, &tenant, &instance); err != nil {
+		if err := h.updateTenantAndInstanceState(txn, tenant, instance); err != nil {
 			return err
 		}
 

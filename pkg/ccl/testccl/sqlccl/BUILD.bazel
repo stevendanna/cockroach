@@ -12,13 +12,15 @@ go_test(
         "session_revival_test.go",
         "show_create_test.go",
         "show_transfer_state_test.go",
-        "standby_read_test.go",
         "temp_table_clean_test.go",
         "tenant_gc_test.go",
     ],
     data = [
         "//c-deps:libgeos",  # keep
     ],
+    exec_properties = select({
+        "//conditions:default": {"test.Pool": "large"},
+    }),
     shard_count = 16,
     deps = [
         "//pkg/base",
@@ -41,9 +43,6 @@ go_test(
         "//pkg/settings/cluster",
         "//pkg/spanconfig",
         "//pkg/sql",
-        "//pkg/sql/catalog/lease",
-        "//pkg/sql/catalog/replication",
-        "//pkg/sql/colexecerror",
         "//pkg/sql/gcjob",
         "//pkg/sql/isql",
         "//pkg/sql/lexbase",
@@ -52,7 +51,6 @@ go_test(
         "//pkg/sql/sqltestutils",
         "//pkg/sql/tests",
         "//pkg/testutils",
-        "//pkg/testutils/pgurlutils",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/skip",
         "//pkg/testutils/sqlutils",
@@ -72,6 +70,7 @@ go_test(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
         "@com_github_gogo_protobuf//types",
+        "@com_github_jackc_pgx_v4//:pgx",
         "@com_github_jackc_pgx_v5//:pgx",
         "@com_github_stretchr_testify//require",
     ],

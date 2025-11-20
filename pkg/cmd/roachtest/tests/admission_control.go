@@ -30,7 +30,6 @@ func registerAdmission(r registry.Registry) {
 	registerMultiStoreOverload(r)
 	registerMultiTenantFairness(r)
 	registerSnapshotOverload(r)
-	registerSnapshotOverloadIO(r)
 	registerTPCCOverload(r)
 	registerTPCCSevereOverload(r)
 	registerIndexOverload(r)
@@ -39,6 +38,4 @@ func registerAdmission(r registry.Registry) {
 	registerIntentResolutionOverload(r)
 	registerElasticIO(r)
 	registerDiskBandwidthOverload(r)
-	registerDiskIOPSOverload(r)
-	registerElasticWorkloadMixedVersion(r)
 }

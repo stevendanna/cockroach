@@ -345,23 +345,6 @@ func (b *SSTBatcher) AddMVCCKeyWithImportEpoch(
 	return b.AddMVCCKey(ctx, key, b.valueScratch)
 }
 
-func (b *SSTBatcher) AddMVCCKeyLDR(ctx context.Context, key storage.MVCCKey, value []byte) error {
-
-	mvccVal, err := storage.DecodeMVCCValue(value)
-	if err != nil {
-		return err
-	}
-	mvccVal.MVCCValueHeader.OriginTimestamp = key.Timestamp
-	mvccVal.OriginID = 1
-	// NOTE: since we are setting header values, EncodeMVCCValueToBuf will
-	// always use the sctarch buffer or return an error.
-	b.valueScratch, _, err = storage.EncodeMVCCValueToBuf(mvccVal, b.valueScratch[:0])
-	if err != nil {
-		return err
-	}
-	return b.AddMVCCKey(ctx, key, b.valueScratch)
-}
-
 // AddMVCCKey adds a key+timestamp/value pair to the batch (flushing if needed).
 // This is only for callers that want to control the timestamp on individual
 // keys -- like RESTORE where we want the restored data to look like the backup.
@@ -692,7 +675,17 @@ func (b *SSTBatcher) doFlush(ctx context.Context, reason int) error {
 	// the next one; if memory is not available we'll just block on the send
 	// and then move on to the next send after this SST is no longer being held
 	// in memory.
-	flushAsync := reason == rangeFlush
+	//
+	// TODO(jeffswenson): re-enable flush async after fixing performance and
+	// correctness issues.
+	//
+	// CORRECTNESS: Something has to surface the error from the async flush to
+	// the caller. Right now the error is logged by `Reset`.
+	// PERFORMANCE: The only caller that sets `rangeFlush` calls Reset immediatly
+	// after, which blocks on all in flight requests. So there is no performance
+	// benefit to the async flush.
+	//flushAsync := reason == rangeFlush
+	flushAsync := false
 
 	var reserved int64
 	if flushAsync {
@@ -866,6 +859,7 @@ func (b *SSTBatcher) addSSTable(
 				req := &kvpb.AddSSTableRequest{
 					RequestHeader:                          kvpb.RequestHeader{Key: item.start, EndKey: item.end},
 					Data:                                   item.sstBytes,
+					DisallowShadowing:                      !b.disallowShadowingBelow.IsEmpty(),
 					DisallowShadowingBelow:                 b.disallowShadowingBelow,
 					MVCCStats:                              &item.stats,
 					IngestAsWrites:                         ingestAsWriteBatch,

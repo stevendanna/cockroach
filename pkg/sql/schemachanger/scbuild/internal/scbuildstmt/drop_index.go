@@ -8,11 +8,13 @@ package scbuildstmt
 import (
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -36,8 +38,6 @@ import (
 // to search all tables in current db and in schemas in the search path till
 // we first find a table with an index of name `idx`).
 func DropIndex(b BuildCtx, n *tree.DropIndex) {
-	failIfSafeUpdates(b, n)
-
 	if n.Concurrently {
 		b.EvalCtx().ClientNoticeSender.BufferClientNotice(b,
 			pgnotice.Newf("CONCURRENTLY is not required as all indexes are dropped concurrently"))
@@ -45,7 +45,7 @@ func DropIndex(b BuildCtx, n *tree.DropIndex) {
 
 	var anyIndexesDropped bool
 	for _, index := range n.IndexList {
-		if droppedIndex := maybeDropIndex(b, index, n); droppedIndex != nil {
+		if droppedIndex := maybeDropIndex(b, index, n.IfExists, n.DropBehavior); droppedIndex != nil {
 			b.LogEventForExistingTarget(droppedIndex)
 			anyIndexesDropped = true
 		}
@@ -70,10 +70,10 @@ func DropIndex(b BuildCtx, n *tree.DropIndex) {
 // maybeDropIndex resolves `index` and mark its constituent elements as ToAbsent
 // in the builder state enclosed by `b`.
 func maybeDropIndex(
-	b BuildCtx, indexName *tree.TableIndexName, n *tree.DropIndex,
+	b BuildCtx, indexName *tree.TableIndexName, ifExists bool, dropBehavior tree.DropBehavior,
 ) (droppedIndex *scpb.SecondaryIndex) {
 	toBeDroppedIndexElms := b.ResolveIndexByName(indexName, ResolveParams{
-		IsExistenceOptional: n.IfExists,
+		IsExistenceOptional: ifExists,
 		RequiredPrivilege:   privilege.CREATE,
 	})
 	if toBeDroppedIndexElms == nil {
@@ -90,21 +90,24 @@ func maybeDropIndex(
 				"use DROP CONSTRAINT ... PRIMARY KEY followed by ADD CONSTRAINT ... PRIMARY KEY in a transaction",
 		))
 	}
+	// TODO (Xiang): Check if requires CCL binary for eventual zone config removal.
 	_, _, sie := scpb.FindSecondaryIndex(toBeDroppedIndexElms)
 	if sie == nil {
 		panic(errors.AssertionFailedf("programming error: cannot find secondary index element."))
 	}
-	panicIfRegionChangeUnderwayOnRBRTable(b, "DROP INDEX", sie.TableID)
-	panicIfSchemaChangeIsDisallowed(b.QueryByID(sie.TableID), n)
+	// We don't support handling zone config related properties for tables, so
+	// throw an unsupported error.
+	fallBackIfSubZoneConfigExists(b, nil, sie.TableID)
+	panicIfSchemaIsLocked(b.QueryByID(sie.TableID))
 	// Cannot drop the index if not CASCADE and a unique constraint depends on it.
-	if n.DropBehavior != tree.DropCascade && sie.IsUnique && !sie.IsCreatedExplicitly {
+	if dropBehavior != tree.DropCascade && sie.IsUnique && !sie.IsCreatedExplicitly {
 		panic(errors.WithHint(
 			pgerror.Newf(pgcode.DependentObjectsStillExist,
 				"index %q is in use as unique constraint", indexName.Index.String()),
 			"use CASCADE if you really want to drop it.",
 		))
 	}
-	dropSecondaryIndex(b, indexName, n.DropBehavior, sie)
+	dropSecondaryIndex(b, indexName, dropBehavior, sie)
 	return sie
 }
 
@@ -236,6 +239,12 @@ func maybeDropDependentFKConstraints(
 	// shouldDropFK returns true if it is a dependent FK and no uniqueness-providing
 	// replacement can be found.
 	shouldDropFK := func(fkReferencedColIDs []catid.ColumnID) bool {
+		// Until the appropriate version gate is hit, we still do not allow
+		// dropping foreign keys in any the context of secondary indexes.
+		if !b.ClusterSettings().Version.IsActive(b, clusterversion.V23_1) {
+			panic(scerrors.NotImplementedErrorf(nil, "dropping FK constraints"+
+				" as a result of `DROP INDEX CASCADE` is not supported yet."))
+		}
 		return canToBeDroppedConstraintServeFK(fkReferencedColIDs) &&
 			!hasColsUniquenessConstraintOtherThan(b, tableID, fkReferencedColIDs, toBeDroppedConstraintID)
 	}

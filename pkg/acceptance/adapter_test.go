@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
@@ -58,6 +59,21 @@ func TestDockerJava(t *testing.T) {
 	})
 }
 
+func TestDockerElixir(t *testing.T) {
+	skip.IgnoreLint(t, "Elixir requires network to run, which can flake. When attempting to update this (#52341), the new Elixir version does not work with CRDB/TLS.")
+
+	s := log.Scope(t)
+	defer s.Close(t)
+
+	ctx := context.Background()
+	t.Run("Success", func(t *testing.T) {
+		testDockerSuccess(ctx, t, "elixir", []string{"sh", "-c", "cd /mnt/data/elixir/test_crdb && mix local.hex --force && mix deps.get && psql -c 'CREATE DATABASE IF NOT EXISTS testdb' && mix test"})
+	})
+	t.Run("Fail", func(t *testing.T) {
+		testDockerFail(ctx, t, "elixir", []string{"sh", "-c", "cd /mnt/data/elixir/test_crdb && mix local.hex --force && mix deps.get && mix thisshouldfail"})
+	})
+}
+
 func TestDockerNodeJS(t *testing.T) {
 	s := log.Scope(t)
 	defer s.Close(t)
@@ -69,6 +85,7 @@ func TestDockerNodeJS(t *testing.T) {
 	export SHOULD_FAIL=%v
 	# Get access to globally installed node modules.
 	export NODE_PATH=$NODE_PATH:/usr/lib/node
+	export NODE_TLS_REJECT_UNAUTHORIZED=0
 	# Have a 10 second timeout on promises, in case the server is slow.
 	/usr/lib/node/.bin/mocha -t 10000 . 
 	`
@@ -110,9 +127,12 @@ func TestDockerPython(t *testing.T) {
 	ctx := context.Background()
 	t.Run("Success", func(t *testing.T) {
 		testDockerSuccess(ctx, t, "python", []string{"sh", "-c", "cd /mnt/data/python && python test.py 3"})
+		testDockerSuccess(ctx, t, "python", []string{"sh", "-c", "cd /mnt/data/python && python3 test_pyscopg3.py 3"})
+
 	})
 	t.Run("Fail", func(t *testing.T) {
 		testDockerFail(ctx, t, "python", []string{"sh", "-c", "cd /mnt/data/python && python test.py 2"})
+		testDockerFail(ctx, t, "python", []string{"sh", "-c", "cd /mnt/data/python && python3 test_pyscopg3.py 2"})
 	})
 }
 

@@ -3,6 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
+import { Link } from "react-router-dom";
+import { Tooltip } from "antd";
+import "antd/lib/tooltip/style";
 import {
   ColumnDescriptor,
   SortedTable,
@@ -11,26 +15,21 @@ import {
   SortSetting,
   Anchor,
   EmptyTable,
-  util,
 } from "@cockroachlabs/cluster-ui";
-import { Tooltip } from "antd";
 import classNames from "classnames/bind";
-import round from "lodash/round";
-import React, { useState } from "react";
-import { connect } from "react-redux";
-import { Link } from "react-router-dom";
-
-import emptyTableResultsImg from "assets/emptyState/empty-table-results.svg";
-import { sortSettingLocalSetting } from "oss/src/redux/hotRanges";
-import { AdminUIState } from "oss/src/redux/state";
+import { round } from "lodash";
+import styles from "./hotRanges.module.styl";
 import { cockroach } from "src/js/protos";
+import { util } from "@cockroachlabs/cluster-ui";
 import {
   performanceBestPracticesHotSpots,
   readsAndWritesOverviewPage,
   uiDebugPages,
 } from "src/util/docs";
-
-import styles from "./hotRanges.module.styl";
+import emptyTableResultsImg from "assets/emptyState/empty-table-results.svg";
+import { sortSettingLocalSetting } from "oss/src/redux/hotRanges";
+import { AdminUIState } from "oss/src/redux/state";
+import { connect } from "react-redux";
 
 const PAGE_SIZE = 50;
 const cx = classNames.bind(styles);
@@ -52,11 +51,7 @@ const HotRangesTable = ({
   sortSetting,
   onSortChange,
 }: HotRangesTableProps) => {
-  const [pagination, setPagination] = useState({
-    pageSize: PAGE_SIZE,
-    current: 1,
-  });
-
+  const [pagination, updatePagination] = util.usePagination(1, PAGE_SIZE);
   const columns: ColumnDescriptor<cockroach.server.serverpb.HotRangesResponseV2.IHotRange>[] =
     [
       {
@@ -231,8 +226,8 @@ const HotRangesTable = ({
             Database
           </Tooltip>
         ),
-        cell: val => <>{val.databases.join(", ")}</>,
-        sort: val => val.databases.join(", "),
+        cell: val => <>{val.database_name}</>,
+        sort: val => val.database_name,
       },
       {
         name: "table",
@@ -244,8 +239,23 @@ const HotRangesTable = ({
             Table
           </Tooltip>
         ),
-        cell: val => val.tables.join(", "),
-        sort: val => val.tables.join(", "),
+        cell: val =>
+          // A hot range may not necessarily back a SQL table. If we see a
+          // "table name" that starts with a slash, it is not a table name but
+          // instead the start key of the range, and we should not link it.
+          val.table_name.startsWith("/") ? (
+            val.table_name
+          ) : (
+            <Link
+              to={util.EncodeDatabaseTableUri(
+                val.database_name,
+                val.table_name,
+              )}
+            >
+              {val.table_name}
+            </Link>
+          ),
+        sort: val => val.table_name,
       },
       {
         name: "index",
@@ -257,8 +267,8 @@ const HotRangesTable = ({
             Index
           </Tooltip>
         ),
-        cell: val => <>{val.indexes.join(", ")}</>,
-        sort: val => val.indexes.join(", "),
+        cell: val => <>{val.index_name}</>,
+        sort: val => val.index_name,
       },
       {
         name: "locality",
@@ -312,15 +322,11 @@ const HotRangesTable = ({
         }
       />
       <Pagination
-        pageSize={PAGE_SIZE}
+        pageSize={pagination.pageSize}
         current={pagination.current}
         total={hotRangesList.length}
-        onChange={(page: number, pageSize?: number) =>
-          setPagination({
-            pageSize,
-            current: page,
-          })
-        }
+        onChange={updatePagination}
+        onShowSizeChange={updatePagination}
       />
     </div>
   );

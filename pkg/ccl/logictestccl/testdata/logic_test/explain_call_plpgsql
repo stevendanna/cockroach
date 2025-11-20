@@ -152,7 +152,7 @@ priority: normal
 quality of service: regular
 ·
 • call
-  sql nodes: <hidden>
+  nodes: <hidden>
   regions: <hidden>
   actual row count: 0
   estimated row count: 0
@@ -174,7 +174,7 @@ priority: normal
 quality of service: regular
 ·
 • call
-  sql nodes: <hidden>
+  nodes: <hidden>
   regions: <hidden>
   actual row count: 0
   estimated row count: 0

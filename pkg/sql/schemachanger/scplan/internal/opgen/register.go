@@ -16,7 +16,7 @@ import (
 
 // equiv defines the from status as being equivalent to the current status.
 func equiv(from scpb.Status) transitionSpec {
-	return transitionSpec{from: from, revertible: nil}
+	return transitionSpec{from: from, revertible: true}
 }
 
 func notImplemented(e scpb.Element) *scop.NotImplemented {

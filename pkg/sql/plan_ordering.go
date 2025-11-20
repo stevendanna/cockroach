@@ -18,18 +18,18 @@ type ReqOrdering = colinfo.ColumnOrdering
 func planReqOrdering(plan planNode) ReqOrdering {
 	switch n := plan.(type) {
 	case *limitNode:
-		return planReqOrdering(n.input)
+		return planReqOrdering(n.plan)
 	case *max1RowNode:
-		return planReqOrdering(n.input)
+		return planReqOrdering(n.plan)
 	case *spoolNode:
-		return planReqOrdering(n.input)
+		return planReqOrdering(n.source)
 	case *saveTableNode:
-		return planReqOrdering(n.input)
+		return planReqOrdering(n.source)
 	case *serializeNode:
 		return planReqOrdering(n.source)
 	case *deleteNode:
 		if n.run.rowsNeeded {
-			return planReqOrdering(n.input)
+			return planReqOrdering(n.source)
 		}
 
 	case *filterNode:
@@ -47,10 +47,6 @@ func planReqOrdering(plan planNode) ReqOrdering {
 	case *windowNode:
 		// TODO: window partitions can be ordered if the source is ordered
 		// appropriately.
-	case *vectorSearchNode:
-	case *vectorMutationSearchNode:
-		// TODO(drewk,mw5h): vector partition search could pass through the input
-		// ordering.
 	case *joinNode:
 		return n.reqOrdering
 	case *unionNode:

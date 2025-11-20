@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 )
 
 var upsertNodePool = sync.Pool{
@@ -23,7 +22,7 @@ var upsertNodePool = sync.Pool{
 }
 
 type upsertNode struct {
-	singleInputPlanNode
+	source planNode
 
 	// columns is set if this UPDATE is returning any rows, to be
 	// consumed by a renderNode upstream. This occurs when there is a
@@ -37,7 +36,7 @@ var _ mutationPlanNode = &upsertNode{}
 
 // upsertRun contains the run-time state of upsertNode during local execution.
 type upsertRun struct {
-	tw        tableUpserter
+	tw        optTableUpserter
 	checkOrds checkSet
 
 	// insertCols are the columns being inserted/upserted into.
@@ -85,7 +84,7 @@ func (n *upsertNode) BatchedNext(params runParams) (bool, error) {
 		}
 
 		// Advance one individual row.
-		if next, err := n.input.Next(params); !next {
+		if next, err := n.source.Next(params); !next {
 			lastBatch = true
 			if err != nil {
 				return false, err
@@ -93,9 +92,9 @@ func (n *upsertNode) BatchedNext(params runParams) (bool, error) {
 			break
 		}
 
-		// Process the insertion for the current input row, potentially
+		// Process the insertion for the current source row, potentially
 		// accumulating the result row for later.
-		if err := n.processSourceRow(params, n.input.Values()); err != nil {
+		if err := n.processSourceRow(params, n.source.Values()); err != nil {
 			return false, err
 		}
 
@@ -141,7 +140,7 @@ func (n *upsertNode) processSourceRow(params runParams, rowVals tree.Datums) err
 		// NOT NULL constraint violations.
 		offset := len(n.run.insertCols) + len(n.run.tw.fetchCols)
 		vals := rowVals[offset : offset+len(n.run.tw.updateCols)]
-		if err := enforceNotNullConstraints(vals, n.run.tw.updateCols); err != nil {
+		if err := enforceLocalColumnConstraints(vals, n.run.tw.updateCols); err != nil {
 			return err
 		}
 	} else {
@@ -151,7 +150,7 @@ func (n *upsertNode) processSourceRow(params runParams, rowVals tree.Datums) err
 		// is being inserted. In this case, check the insert columns for a NOT
 		// NULL constraint violation.
 		vals := rowVals[:len(n.run.insertCols)]
-		if err := enforceNotNullConstraints(vals, n.run.insertCols); err != nil {
+		if err := enforceLocalColumnConstraints(vals, n.run.insertCols); err != nil {
 			return err
 		}
 	}
@@ -177,33 +176,20 @@ func (n *upsertNode) processSourceRow(params runParams, rowVals tree.Datums) err
 		rowVals = rowVals[:offset]
 	}
 
-	upsertCols := len(n.run.insertCols) + len(n.run.tw.fetchCols) + len(n.run.tw.updateCols)
-	if n.run.tw.canaryOrdinal != -1 {
-		upsertCols++
-	}
-
 	// Verify the CHECK constraints by inspecting boolean columns from the input that
 	// contain the results of evaluation.
 	if !n.run.checkOrds.Empty() {
-		checkVals := rowVals[upsertCols:]
+		ord := len(n.run.insertCols) + len(n.run.tw.fetchCols) + len(n.run.tw.updateCols)
+		if n.run.tw.canaryOrdinal != -1 {
+			ord++
+		}
+		checkVals := rowVals[ord:]
 		if err := checkMutationInput(
-			params.ctx, params.p.EvalContext(), &params.p.semaCtx, params.p.SessionData(),
-			n.run.tw.tableDesc(), n.run.checkOrds, checkVals,
+			params.ctx, &params.p.semaCtx, params.p.SessionData(), n.run.tw.tableDesc(), n.run.checkOrds, checkVals,
 		); err != nil {
 			return err
 		}
-	}
-
-	if len(rowVals) > upsertCols {
-		// Remove extra columns for check constraints and AFTER triggers.
-		rowVals = rowVals[:upsertCols]
-	}
-
-	if buildutil.CrdbTestBuild {
-		// This testing knob allows us to suspend execution to force a race condition.
-		if fn := params.ExecCfg().TestingKnobs.AfterArbiterRead; fn != nil {
-			fn()
-		}
+		rowVals = rowVals[:ord]
 	}
 
 	// Process the row. This is also where the tableWriter will accumulate
@@ -218,7 +204,7 @@ func (n *upsertNode) BatchedCount() int { return n.run.tw.lastBatchSize }
 func (n *upsertNode) BatchedValues(rowIdx int) tree.Datums { return n.run.tw.rows.At(rowIdx) }
 
 func (n *upsertNode) Close(ctx context.Context) {
-	n.input.Close(ctx)
+	n.source.Close(ctx)
 	n.run.tw.close(ctx)
 	*n = upsertNode{}
 	upsertNodePool.Put(n)

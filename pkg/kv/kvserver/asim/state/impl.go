@@ -7,11 +7,9 @@ package state
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/workload"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -141,11 +138,11 @@ func (s *state) PrettyPrint() string {
 	builder := &strings.Builder{}
 	nStores := len(s.stores)
 	builder.WriteString(fmt.Sprintf("stores(%d)=[", nStores))
-	var storeIDs []StoreID
+	var storeIDs StoreIDSlice
 	for storeID := range s.stores {
 		storeIDs = append(storeIDs, storeID)
 	}
-	slices.Sort(storeIDs)
+	sort.Sort(storeIDs)
 
 	for i, storeID := range storeIDs {
 		store := s.stores[storeID]
@@ -175,11 +172,11 @@ func (s *state) String() string {
 
 	// Sort the unordered map storeIDs by its key to ensure deterministic
 	// printing.
-	var storeIDs []StoreID
+	var storeIDs StoreIDSlice
 	for storeID := range s.stores {
 		storeIDs = append(storeIDs, storeID)
 	}
-	slices.Sort(storeIDs)
+	sort.Sort(storeIDs)
 
 	for i, storeID := range storeIDs {
 		store := s.stores[storeID]
@@ -221,9 +218,7 @@ func (s *state) Stores() []Store {
 		store := s.stores[key]
 		stores = append(stores, store)
 	}
-	slices.SortFunc(stores, func(a, b Store) int {
-		return cmp.Compare(a.StoreID(), b.StoreID())
-	})
+	sort.Slice(stores, func(i, j int) bool { return stores[i].StoreID() < stores[j].StoreID() })
 	return stores
 }
 
@@ -312,9 +307,7 @@ func (s *state) Nodes() []Node {
 	for _, node := range s.nodes {
 		nodes = append(nodes, node)
 	}
-	slices.SortFunc(nodes, func(a, b Node) int {
-		return cmp.Compare(a.NodeID(), b.NodeID())
-	})
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].NodeID() < nodes[j].NodeID() })
 	return nodes
 }
 
@@ -350,13 +343,11 @@ func (s *state) rng(rangeID RangeID) (*rng, bool) {
 
 // Ranges returns all ranges that exist in this state.
 func (s *state) Ranges() []Range {
-	ranges := make([]Range, 0, len(s.ranges.rangeMap))
+	ranges := []Range{}
 	for _, r := range s.ranges.rangeMap {
 		ranges = append(ranges, r)
 	}
-	slices.SortFunc(ranges, func(a, b Range) int {
-		return cmp.Compare(a.RangeID(), b.RangeID())
-	})
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].RangeID() < ranges[j].RangeID() })
 	return ranges
 }
 
@@ -383,18 +374,18 @@ func (r replicaList) Less(i, j int) bool {
 
 // Replicas returns all replicas that exist on a store.
 func (s *state) Replicas(storeID StoreID) []Replica {
-	var replicas []Replica
+	replicas := []Replica{}
 	store, ok := s.stores[storeID]
 	if !ok {
 		return replicas
 	}
 
 	repls := make(replicaList, 0, len(store.replicas))
-	var rangeIDs []RangeID
+	var rangeIDs RangeIDSlice
 	for rangeID := range store.replicas {
 		rangeIDs = append(rangeIDs, rangeID)
 	}
-	slices.Sort(rangeIDs)
+	sort.Sort(rangeIDs)
 	for _, rangeID := range rangeIDs {
 		rng := s.ranges.rangeMap[rangeID]
 		if replica := rng.replicas[storeID]; replica != nil {
@@ -1188,7 +1179,7 @@ func (s *state) LoadSplitterFor(storeID StoreID) LoadSplitter {
 // with ID RangeID, on the store with ID StoreID.
 func (s *state) RaftStatus(rangeID RangeID, storeID StoreID) *raft.Status {
 	status := &raft.Status{
-		Progress: make(map[raftpb.PeerID]tracker.Progress),
+		Progress: make(map[uint64]tracker.Progress),
 	}
 
 	leader, ok := s.LeaseHolderReplica(rangeID)
@@ -1202,14 +1193,14 @@ func (s *state) RaftStatus(rangeID RangeID, storeID StoreID) *raft.Status {
 
 	// TODO(kvoli): The raft leader will always be the current leaseholder
 	// here. This should change to enable testing this scenario.
-	status.Lead = raftpb.PeerID(leader.ReplicaID())
-	status.RaftState = raftpb.StateLeader
+	status.Lead = uint64(leader.ReplicaID())
+	status.RaftState = raft.StateLeader
 	status.Commit = 2
 	// TODO(kvoli): A replica is never behind on their raft log, this should
 	// change to enable testing this scenario where replicas fall behind. e.g.
 	// FirstIndex on all replicas will return 2.
 	for _, replica := range rng.replicas {
-		status.Progress[raftpb.PeerID(replica.ReplicaID())] = tracker.Progress{
+		status.Progress[uint64(replica.ReplicaID())] = tracker.Progress{
 			Match: 2,
 			State: tracker.StateReplicate,
 		}
@@ -1372,11 +1363,11 @@ func (s *store) String() string {
 
 	// Sort the unordered map rangeIDs by its key to ensure deterministic
 	// printing.
-	var rangeIDs []RangeID
+	var rangeIDs RangeIDSlice
 	for rangeID := range s.replicas {
 		rangeIDs = append(rangeIDs, rangeID)
 	}
-	slices.Sort(rangeIDs)
+	sort.Sort(rangeIDs)
 
 	for i, rangeID := range rangeIDs {
 		replicaID := s.replicas[rangeID]
@@ -1439,11 +1430,11 @@ func (r *rng) String() string {
 
 	// Sort the unordered map storeIDs by its key to ensure deterministic
 	// printing.
-	var storeIDs []StoreID
+	var storeIDs StoreIDSlice
 	for storeID := range r.replicas {
 		storeIDs = append(storeIDs, storeID)
 	}
-	slices.Sort(storeIDs)
+	sort.Sort(storeIDs)
 
 	for i, storeID := range storeIDs {
 		replica := r.replicas[storeID]

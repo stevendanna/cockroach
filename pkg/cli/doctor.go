@@ -37,8 +37,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgtype"
 	"github.com/spf13/cobra"
 )
 
@@ -251,7 +251,7 @@ FROM system.descriptor ORDER BY id`
 		if vals[2] == nil {
 			row.ModTime = hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
 		} else if mt, ok := vals[2].(pgtype.Numeric); ok {
-			buf, err := mt.MarshalJSON()
+			buf, err := mt.EncodeText(nil, nil)
 			if err != nil {
 				return err
 			}
@@ -339,7 +339,7 @@ SELECT id, status, payload, progress FROM system.jobs
 	if err := selectRowsMap(sqlConn, stmt, make([]driver.Value, 4), func(vals []driver.Value) error {
 		md := jobs.JobMetadata{}
 		md.ID = jobspb.JobID(vals[0].(int64))
-		md.State = jobs.State(vals[1].(string))
+		md.Status = jobs.Status(vals[1].(string))
 		md.Payload = &jobspb.Payload{}
 		if err := protoutil.Unmarshal(vals[2].([]byte), md.Payload); err != nil {
 			return err
@@ -376,6 +376,9 @@ func fromZipDir(
 	if checkIfFileExists(zipDirPath, "system.descriptor.txt") {
 		if err := slurp(zipDirPath, "system.descriptor.txt", func(row string) error {
 			fields := strings.Fields(row)
+			if len(fields) != 2 {
+				return errors.Errorf("expected 2 fields, got %d in system.descriptors.txt", len(fields))
+			}
 			last := len(fields) - 1
 			i, err := strconv.Atoi(fields[0])
 			if err != nil {
@@ -432,6 +435,9 @@ func fromZipDir(
 	if checkIfFileExists(zipDirPath, namespaceFileName) {
 		if err := slurp(zipDirPath, namespaceFileName, func(row string) error {
 			fields := strings.Fields(row)
+			if len(fields) != 4 {
+				return errors.Errorf("expected 4 fields, got %d in system.namespace.txtq", len(fields))
+			}
 			parID, err := strconv.Atoi(fields[0])
 			if err != nil {
 				return errors.Wrapf(err, "failed to parse parent id %s", fields[0])
@@ -505,8 +511,11 @@ func fromZipDir(
 	if checkIfFileExists(zipDirPath, "crdb_internal.system_jobs.txt") {
 		if err := slurp(zipDirPath, "crdb_internal.system_jobs.txt", func(row string) error {
 			fields := strings.Fields(row)
+			if len(fields) < 6 {
+				return errors.Errorf("expected at least 6 fields, got %d in crdb_internal.system_jobs.txt", len(fields))
+			}
 			md := jobs.JobMetadata{}
-			md.State = jobs.State(fields[1])
+			md.Status = jobs.Status(fields[1])
 
 			id, err := strconv.Atoi(fields[0])
 			if err != nil {
@@ -554,7 +563,7 @@ func fromZipDir(
 		}
 		for _, job := range jobsTableJSON {
 			row := jobs.JobMetadata{
-				State: jobs.State(job.Status),
+				Status: jobs.Status(job.Status),
 			}
 			id, err := strconv.ParseInt(job.ID, 10, 64)
 			if len(job.ID) > 0 && err != nil {

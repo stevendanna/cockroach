@@ -13,13 +13,11 @@ import (
 	"encoding/base64"
 	gojson "encoding/json"
 	"fmt"
-	"io/fs"
 	"math/rand"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,7 +61,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"github.com/golang/mock/gomock"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/api/option"
@@ -442,29 +440,23 @@ func (f *jobFeed) status() (status string, err error) {
 	return
 }
 
-func (f *jobFeed) WaitDurationForState(
-	dur time.Duration, statusPred func(status jobs.State) bool,
-) error {
+func (f *jobFeed) WaitForStatus(statusPred func(status jobs.Status) bool) error {
 	if f.jobID == jobspb.InvalidJobID {
 		// Job may not have been started.
 		return nil
 	}
 	// Wait for the job status predicate to become true.
-	return testutils.SucceedsWithinError(func() error {
+	return testutils.SucceedsSoonError(func() error {
 		var status string
 		var err error
 		if status, err = f.status(); err != nil {
 			return err
 		}
-		if statusPred(jobs.State(status)) {
+		if statusPred(jobs.Status(status)) {
 			return nil
 		}
 		return errors.Newf("still waiting for job status; current %s", status)
-	}, dur)
-}
-
-func (f *jobFeed) WaitForState(statusPred func(status jobs.State) bool) error {
-	return f.WaitDurationForState(testutils.SucceedsSoonDuration(), statusPred)
+	})
 }
 
 // Pause implements the TestFeed interface.
@@ -473,7 +465,7 @@ func (f *jobFeed) Pause() error {
 	if err != nil {
 		return err
 	}
-	return f.WaitForState(func(s jobs.State) bool { return s == jobs.StatePaused })
+	return f.WaitForStatus(func(s jobs.Status) bool { return s == jobs.StatusPaused })
 }
 
 // Resume implements the TestFeed interface.
@@ -482,7 +474,7 @@ func (f *jobFeed) Resume() error {
 	if err != nil {
 		return err
 	}
-	return f.WaitForState(func(s jobs.State) bool { return s == jobs.StateRunning })
+	return f.WaitForStatus(func(s jobs.Status) bool { return s == jobs.StatusRunning })
 }
 
 // Details implements FeedJob interface.
@@ -529,8 +521,8 @@ func (f *jobFeed) HighWaterMark() (hlc.Timestamp, error) {
 	return hwm, nil
 }
 
-// TickHighWaterMark implements the TestFeed interface.
-func (f *jobFeed) TickHighWaterMark(minHWM hlc.Timestamp) error {
+// WaitForHighWaterMark implements the TestFeed interface.
+func (f *jobFeed) WaitForHighWaterMark(minHWM hlc.Timestamp) error {
 	return testutils.SucceedsWithinError(func() error {
 		current, err := f.HighWaterMark()
 		if err != nil {
@@ -540,7 +532,7 @@ func (f *jobFeed) TickHighWaterMark(minHWM hlc.Timestamp) error {
 			return nil
 		}
 		return errors.Newf("waiting to tick: current=%s min=%s", current, minHWM)
-	}, 10*time.Second)
+	}, timeout())
 }
 
 // FetchTerminalJobErr retrieves the error message from changefeed job.
@@ -560,14 +552,14 @@ func (f *jobFeed) FetchTerminalJobErr() error {
 	return nil
 }
 
-// FetchStatus retrieves running status from changefeed job.
-func (f *jobFeed) FetchStatusMessage() (statusStr string, err error) {
+// FetchRunningStatus retrieves running status from changefeed job.
+func (f *jobFeed) FetchRunningStatus() (runningStatusStr string, err error) {
 	if err = f.db.QueryRow(
 		`SELECT running_status FROM [SHOW JOBS] WHERE job_id=$1`, f.jobID,
-	).Scan(&statusStr); err != nil {
-		return "", errors.Wrapf(err, "FetchStatusMessage for job %d", f.jobID)
+	).Scan(&runningStatusStr); err != nil {
+		return "", errors.Wrapf(err, "FetchRunningStatus for job %d", f.jobID)
 	}
-	return statusStr, err
+	return runningStatusStr, err
 }
 
 // Close closes job feed.
@@ -587,14 +579,14 @@ func (f *jobFeed) Close() error {
 		if err != nil {
 			return err
 		}
-		if status == string(jobs.StateSucceeded) {
+		if status == string(jobs.StatusSucceeded) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.mu.terminalErr = errors.New("changefeed completed")
 			close(f.shutdown)
 			return nil
 		}
-		if status == string(jobs.StateFailed) {
+		if status == string(jobs.StatusFailed) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.mu.terminalErr = errors.New("changefeed failed")
@@ -604,7 +596,7 @@ func (f *jobFeed) Close() error {
 		if _, err := f.db.Exec(`CANCEL JOB $1`, f.jobID); err != nil {
 			log.Infof(context.Background(), `could not cancel feed %d: %v`, f.jobID, err)
 		} else {
-			return f.WaitForState(func(s jobs.State) bool { return s == jobs.StateCanceled })
+			return f.WaitForStatus(func(s jobs.Status) bool { return s == jobs.StatusCanceled })
 		}
 	}
 
@@ -1220,7 +1212,7 @@ func reformatJSON(j interface{}) ([]byte, error) {
 }
 
 func extractFieldFromJSONValue(
-	fieldName string, envelopeType changefeedbase.EnvelopeType, wrapped []byte,
+	fieldName string, isBare bool, wrapped []byte,
 ) (field gojson.RawMessage, value []byte, err error) {
 	parsed := make(map[string]gojson.RawMessage)
 
@@ -1228,8 +1220,7 @@ func extractFieldFromJSONValue(
 		return nil, nil, errors.Wrapf(err, "unmarshalling json '%s'", wrapped)
 	}
 
-	switch envelopeType {
-	case changefeedbase.OptEnvelopeBare:
+	if isBare {
 		meta := make(map[string]gojson.RawMessage)
 		if metaVal, haveMeta := parsed[metaSentinel]; haveMeta {
 			if err := gojson.Unmarshal(metaVal, &meta); err != nil {
@@ -1246,29 +1237,9 @@ func extractFieldFromJSONValue(
 				parsed[metaSentinel] = metaVal
 			}
 		}
-	case changefeedbase.OptEnvelopeWrapped:
+	} else {
 		field = parsed[fieldName]
 		delete(parsed, fieldName)
-	case changefeedbase.OptEnvelopeEnriched:
-		// Enriched messages are wrapped in a "payload" field if format=json and schema is included.
-		if _, ok := parsed["payload"]; !ok {
-			field = parsed[fieldName]
-			delete(parsed, fieldName)
-		} else {
-			var payload map[string]gojson.RawMessage
-			if err := gojson.Unmarshal(parsed["payload"], &payload); err != nil {
-				return nil, nil, errors.Wrapf(err, "unmarshalling json %v", parsed["payload"])
-			}
-			field = payload[fieldName]
-			delete(payload, fieldName)
-			payloadVal, err := reformatJSON(payload)
-			if err != nil {
-				return nil, nil, err
-			}
-			parsed["payload"] = payloadVal
-		}
-	default:
-		return nil, nil, errors.AssertionFailedf("unknown envelope type %s", envelopeType)
 	}
 
 	if value, err = reformatJSON(parsed); err != nil {
@@ -1279,11 +1250,9 @@ func extractFieldFromJSONValue(
 
 // extractKeyFromJSONValue extracts the `WITH key_in_value` key from a `WITH
 // format=json, envelope=wrapped` value.
-func extractKeyFromJSONValue(
-	envelopeType changefeedbase.EnvelopeType, wrapped []byte,
-) (key []byte, value []byte, err error) {
+func extractKeyFromJSONValue(isBare bool, wrapped []byte) (key []byte, value []byte, err error) {
 	var keyParsed gojson.RawMessage
-	keyParsed, value, err = extractFieldFromJSONValue("key", envelopeType, wrapped)
+	keyParsed, value, err = extractFieldFromJSONValue("key", isBare, wrapped)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "extracting key from json payload %s", wrapped)
 	}
@@ -1518,13 +1487,13 @@ func (c *cloudFeed) Next() (*cdctest.TestFeedMessage, error) {
 			return nil, err
 		}
 
-		if err := filepath.WalkDir(c.dir, c.walkDir); err != nil {
+		if err := filepath.Walk(c.dir, c.walkDir); err != nil {
 			return nil, err
 		}
 	}
 }
 
-func (c *cloudFeed) walkDir(path string, d fs.DirEntry, err error) error {
+func (c *cloudFeed) walkDir(path string, info os.FileInfo, err error) error {
 	if strings.HasSuffix(path, `.tmp`) {
 		// File in the process of being written by ExternalStorage. Ignore.
 		return nil
@@ -1545,7 +1514,7 @@ func (c *cloudFeed) walkDir(path string, d fs.DirEntry, err error) error {
 		return err
 	}
 
-	if d.IsDir() {
+	if info.IsDir() {
 		// Nothing to do for directories.
 		return nil
 	}
@@ -1628,11 +1597,7 @@ func (c *cloudFeed) walkDir(path string, d fs.DirEntry, err error) error {
 			//
 			// TODO(dan): Leave the key in the value if the TestFeed user
 			// specifically requested it.
-			envelopeType := changefeedbase.OptEnvelopeWrapped
-			if c.isBare {
-				envelopeType = changefeedbase.OptEnvelopeBare
-			}
-			if m.Key, m.Value, err = extractKeyFromJSONValue(envelopeType, m.Value); err != nil {
+			if m.Key, m.Value, err = extractKeyFromJSONValue(c.isBare, m.Value); err != nil {
 				return err
 			}
 			if isNew := c.markSeen(m); !isNew {
@@ -1848,21 +1813,15 @@ func (s *fakeKafkaSinkV2) Dial() error {
 			if m.Key != nil {
 				key = sarama.ByteEncoder(m.Key)
 			}
-
-			var headers []sarama.RecordHeader
-			for _, h := range m.Headers {
-				headers = append(headers, sarama.RecordHeader{
-					Key:   []byte(h.Key),
-					Value: h.Value,
-				})
-			}
-
-			s.feedCh <- &sarama.ProducerMessage{
+			select {
+			case <-ctx.Done():
+				return kgo.ProduceResults{kgo.ProduceResult{Err: ctx.Err()}}
+			case s.feedCh <- &sarama.ProducerMessage{
 				Topic:     m.Topic,
 				Key:       key,
 				Value:     sarama.ByteEncoder(m.Value),
 				Partition: m.Partition,
-				Headers:   headers,
+			}:
 			}
 		}
 		return nil
@@ -1929,7 +1888,7 @@ func makeKafkaFeedFactory(
 
 func exprAsString(expr tree.Expr) (string, error) {
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	te, err := expr.TypeCheck(context.Background(), &semaCtx, types.String)
 	if err != nil {
 		return "", err
@@ -2102,11 +2061,6 @@ func (k *kafkaFeed) Next() (*cdctest.TestFeedMessage, error) {
 			return nil, err
 		}
 
-		for _, h := range msg.Headers {
-			fm.Headers = append(fm.Headers, cdctest.Header{K: string(h.Key), V: h.Value})
-		}
-		slices.SortFunc(fm.Headers, func(a, b cdctest.Header) int { return strings.Compare(a.K, b.K) })
-
 		if isNew := k.markSeen(fm); isNew {
 			return fm, nil
 		}
@@ -2230,18 +2184,10 @@ func (f *webhookFeedFactory) Feed(create string, args ...interface{}) (cdctest.T
 		return &notifyFlushSink{Sink: s, sync: ss}
 	}
 
-	envelopeType := changefeedbase.OptEnvelopeWrapped
-	if createStmt.Select != nil {
-		envelopeType = changefeedbase.OptEnvelopeBare
-	}
-
+	explicitEnvelope := false
 	for _, opt := range createStmt.Options {
 		if string(opt.Key) == changefeedbase.OptEnvelope {
-			envelopeTypeStr, err := exprAsString(opt.Value)
-			if err != nil {
-				return nil, err
-			}
-			envelopeType = changefeedbase.EnvelopeType(envelopeTypeStr)
+			explicitEnvelope = true
 		}
 	}
 
@@ -2249,7 +2195,7 @@ func (f *webhookFeedFactory) Feed(create string, args ...interface{}) (cdctest.T
 		jobFeed:        newJobFeed(f.jobsTableConn(), wrapSink),
 		seenTrackerMap: make(map[string]struct{}),
 		ss:             ss,
-		envelopeType:   envelopeType,
+		isBare:         createStmt.Select != nil && !explicitEnvelope,
 		mockSink:       sinkDest,
 	}
 	if err := f.startFeedJob(c.jobFeed, tree.AsStringWithFlags(createStmt, tree.FmtShowPasswords), args...); err != nil {
@@ -2266,9 +2212,9 @@ func (f *webhookFeedFactory) Server() serverutils.ApplicationLayerInterface {
 type webhookFeed struct {
 	*jobFeed
 	seenTrackerMap
-	ss           *sinkSynchronizer
-	envelopeType changefeedbase.EnvelopeType
-	mockSink     *cdctest.MockWebhookSink
+	ss       *sinkSynchronizer
+	isBare   bool
+	mockSink *cdctest.MockWebhookSink
 }
 
 var _ cdctest.TestFeed = (*webhookFeed)(nil)
@@ -2291,16 +2237,12 @@ func isResolvedTimestamp(message []byte) (bool, error) {
 // extractTopicFromJSONValue extracts the `WITH topic_in_value` topic from a `WITH
 // format=json, envelope=wrapped` value.
 func extractTopicFromJSONValue(
-	envelopeType changefeedbase.EnvelopeType, wrapped []byte,
+	isBare bool, wrapped []byte,
 ) (topic string, value []byte, err error) {
 	var topicRaw gojson.RawMessage
-	topicRaw, value, err = extractFieldFromJSONValue("topic", envelopeType, wrapped)
+	topicRaw, value, err = extractFieldFromJSONValue("topic", isBare, wrapped)
 	if err != nil {
 		return "", nil, err
-	}
-	// TODO: this, or skip this method for enriched
-	if topicRaw == nil {
-		return "", value, nil
 	}
 	if err := gojson.Unmarshal(topicRaw, &topic); err != nil {
 		return "", nil, err
@@ -2361,10 +2303,10 @@ func (f *webhookFeed) Next() (*cdctest.TestFeedMessage, error) {
 						if err != nil {
 							return nil, err
 						}
-						if m.Key, m.Value, err = extractKeyFromJSONValue(f.envelopeType, wrappedValue); err != nil {
+						if m.Key, m.Value, err = extractKeyFromJSONValue(f.isBare, wrappedValue); err != nil {
 							return nil, err
 						}
-						if m.Topic, m.Value, err = extractTopicFromJSONValue(f.envelopeType, m.Value); err != nil {
+						if m.Topic, m.Value, err = extractTopicFromJSONValue(f.isBare, m.Value); err != nil {
 							return nil, err
 						}
 						if isNew := f.markSeen(m); !isNew {
@@ -2414,9 +2356,87 @@ func (f *webhookFeed) Close() error {
 }
 
 type mockPubsubMessage struct {
-	data       string
+	data string
+	// attributes are only populated for the non-deprecated pubsub sink.
 	attributes map[string]string
-	topic      string
+	// topic is only populated for the non-deprecated pubsub sink.
+	topic string
+}
+
+type deprecatedMockPubsubMessageBuffer struct {
+	mu   syncutil.Mutex
+	rows []mockPubsubMessage
+}
+
+func (p *deprecatedMockPubsubMessageBuffer) pop() *mockPubsubMessage {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.rows) == 0 {
+		return nil
+	}
+	var head mockPubsubMessage
+	head, p.rows = p.rows[0], p.rows[1:]
+	return &head
+}
+
+func (p *deprecatedMockPubsubMessageBuffer) push(m mockPubsubMessage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rows = append(p.rows, m)
+}
+
+type deprecatedFakePubsubClient struct {
+	buffer *deprecatedMockPubsubMessageBuffer
+}
+
+var _ deprecatedPubsubClient = (*deprecatedFakePubsubClient)(nil)
+
+func (p *deprecatedFakePubsubClient) init() error {
+	return nil
+}
+
+func (p *deprecatedFakePubsubClient) close() error {
+	return nil
+}
+
+// sendMessage sends a message to the topic
+func (p *deprecatedFakePubsubClient) sendMessage(m []byte, _ string, _ string) error {
+	message := mockPubsubMessage{data: string(m)}
+	p.buffer.push(message)
+	return nil
+}
+
+func (p *deprecatedFakePubsubClient) sendMessageToAllTopics(m []byte) error {
+	message := mockPubsubMessage{data: string(m)}
+	p.buffer.push(message)
+	return nil
+}
+
+func (p *deprecatedFakePubsubClient) flushTopics() {
+}
+
+type deprecatedFakePubsubSink struct {
+	Sink
+	client *deprecatedFakePubsubClient
+	sync   *sinkSynchronizer
+}
+
+var _ Sink = (*deprecatedFakePubsubSink)(nil)
+
+func (p *deprecatedFakePubsubSink) Dial() error {
+	s := p.Sink.(*deprecatedPubsubSink)
+	s.client = p.client
+	s.setupWorkers()
+	return nil
+}
+
+func (p *deprecatedFakePubsubSink) Flush(ctx context.Context) error {
+	defer p.sync.addFlush()
+	return p.Sink.Flush(ctx)
+}
+
+func (p *deprecatedFakePubsubClient) connectivityErrorLocked() error {
+	return nil
 }
 
 type fakePubsubServer struct {
@@ -2538,6 +2558,12 @@ func (p *pubsubFeedFactory) Feed(create string, args ...interface{}) (cdctest.Te
 
 	mockServer := makeFakePubsubServer()
 
+	deprecatedClient := &deprecatedFakePubsubClient{
+		buffer: &deprecatedMockPubsubMessageBuffer{
+			rows: make([]mockPubsubMessage, 0),
+		},
+	}
+
 	ss := &sinkSynchronizer{}
 	var mu syncutil.Mutex
 	wrapSink := func(s Sink) Sink {
@@ -2550,15 +2576,22 @@ func (p *pubsubFeedFactory) Feed(create string, args ...interface{}) (cdctest.Te
 				sinkClient.client = mockClient
 			}
 			return &notifyFlushSinkWithTopics{SinkWithTopics: s.(SinkWithTopics), notifyFlushSink: notifyFlushSink{Sink: s, sync: ss}}
+		} else if _, ok := s.(*deprecatedPubsubSink); ok {
+			return &deprecatedFakePubsubSink{
+				Sink:   s,
+				client: deprecatedClient,
+				sync:   ss,
+			}
 		}
 		return s
 	}
 
 	c := &pubsubFeed{
-		jobFeed:        newJobFeed(p.jobsTableConn(), wrapSink),
-		seenTrackerMap: make(map[string]struct{}),
-		ss:             ss,
-		mockServer:     mockServer,
+		jobFeed:          newJobFeed(p.jobsTableConn(), wrapSink),
+		seenTrackerMap:   make(map[string]struct{}),
+		ss:               ss,
+		mockServer:       mockServer,
+		deprecatedClient: deprecatedClient,
 	}
 
 	if err := p.startFeedJob(c.jobFeed, tree.AsStringWithFlags(createStmt, tree.FmtShowPasswords), args...); err != nil {
@@ -2576,8 +2609,9 @@ func (p *pubsubFeedFactory) Server() serverutils.ApplicationLayerInterface {
 type pubsubFeed struct {
 	*jobFeed
 	seenTrackerMap
-	ss         *sinkSynchronizer
-	mockServer *fakePubsubServer
+	ss               *sinkSynchronizer
+	mockServer       *fakePubsubServer
+	deprecatedClient *deprecatedFakePubsubClient
 }
 
 var _ cdctest.TestFeed = (*pubsubFeed)(nil)
@@ -2612,7 +2646,12 @@ func extractJSONMessagePubsub(wrapped []byte) (value []byte, key []byte, topic s
 // Next implements TestFeed
 func (p *pubsubFeed) Next() (*cdctest.TestFeedMessage, error) {
 	for {
+		deprecatedMessage := false
 		msg := p.mockServer.Pop()
+		if msg == nil {
+			deprecatedMessage = true
+			msg = p.deprecatedClient.buffer.pop()
+		}
 		if msg != nil {
 			details, err := p.Details()
 			if err != nil {
@@ -2631,7 +2670,9 @@ func (p *pubsubFeed) Next() (*cdctest.TestFeedMessage, error) {
 				msgBytes := []byte(msg.data)
 				if resolved {
 					m.Resolved = msgBytes
-					m.Topic = msg.topic
+					if !deprecatedMessage {
+						m.Topic = msg.topic
+					}
 				} else {
 					m.Value, m.Key, m.Topic, err = extractJSONMessagePubsub(msgBytes)
 					if err != nil {

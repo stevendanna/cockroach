@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/cockroachdb/cmux"
 	"github.com/cockroachdb/cockroach/pkg/inspectz"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
+	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/debug"
@@ -274,7 +276,7 @@ func startHTTPService(
 	stopper *stop.Stopper,
 	handler http.HandlerFunc,
 ) error {
-	httpLn, err := ListenAndUpdateAddrs(ctx, &cfg.HTTPAddr, &cfg.HTTPAdvertiseAddr, "http", cfg.AcceptProxyProtocolHeaders)
+	httpLn, err := ListenAndUpdateAddrs(ctx, &cfg.HTTPAddr, &cfg.HTTPAdvertiseAddr, "http")
 	if err != nil {
 		return err
 	}
@@ -330,7 +332,7 @@ func startHTTPService(
 			return err
 		}
 
-		httpLn = tls.NewListener(tlsL, uiTLSConfig)
+		httpLn = newTLSRestrictLn(tlsL, uiTLSConfig)
 	}
 
 	// The connManager is responsible for tearing down the net.Conn
@@ -346,6 +348,28 @@ func startHTTPService(
 	})
 }
 
+type tlsRestrictLn struct {
+	net.Listener
+}
+
+// Accept wraps the net.Listener Accept method to apply http based tls
+// constraints on the incoming connection.
+func (l tlsRestrictLn) Accept() (c net.Conn, err error) {
+	if c, err = l.Listener.Accept(); err == nil {
+		if err = security.TLSCipherRestrict(c); err != nil {
+			_ = c.Close()
+			return
+		}
+	}
+	return
+}
+
+func newTLSRestrictLn(ln net.Listener, config *tls.Config) tlsRestrictLn {
+	return tlsRestrictLn{
+		Listener: tls.NewListener(ln, config),
+	}
+}
+
 // baseHandler is the top-level HTTP handler for all HTTP traffic, before
 // authentication and authorization.
 //
@@ -353,7 +377,7 @@ func startHTTPService(
 // gzip middleware, then delegates to the mux for handling the request.
 func (s *httpServer) baseHandler(w http.ResponseWriter, r *http.Request) {
 	// Disable caching of responses.
-	w.Header().Set("Cache-control", "no-store")
+	w.Header().Set("Cache-control", "no-cache")
 
 	if HSTSEnabled.Get(&s.cfg.Settings.SV) {
 		w.Header().Set("Strict-Transport-Security", hstsHeaderValue)

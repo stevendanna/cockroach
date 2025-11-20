@@ -117,12 +117,9 @@ LIMIT
 	require.NoError(t, err)
 	defer it.Close()
 	rsl := logstore.NewStateLoader(rangeID)
-	ts, err := rsl.LoadRaftTruncatedState(ctx, eng)
+	lastIndex, err := rsl.LoadLastIndex(ctx, eng)
 	require.NoError(t, err)
-	lastEntryID, err := rsl.LoadLastEntryID(ctx, eng, ts)
-	require.NoError(t, err)
-	t.Logf("loaded LastEntryID: %+v", lastEntryID)
-	lastIndex := lastEntryID.Index
+	t.Logf("loaded LastIndex: %d", lastIndex)
 	ok, err := it.SeekGE(lastIndex)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -193,7 +190,7 @@ LIMIT
 			}
 
 			idKey := raftlog.MakeCmdIDKey()
-			payload, err := raftlog.EncodeCommand(ctx, &raftCmd, idKey, raftlog.EncodeOptions{})
+			payload, err := raftlog.EncodeCommand(ctx, &raftCmd, idKey, nil)
 			require.NoError(t, err)
 			ents = append(ents, raftpb.Entry{
 				Term:  lastTerm,
@@ -259,7 +256,7 @@ LIMIT
 type wgSyncCallback sync.WaitGroup
 
 func (w *wgSyncCallback) OnLogSync(
-	context.Context, logstore.MsgStorageAppendDone, storage.BatchCommitStats,
+	ctx context.Context, messages []raftpb.Message, stats storage.BatchCommitStats,
 ) {
 	(*sync.WaitGroup)(w).Done()
 }

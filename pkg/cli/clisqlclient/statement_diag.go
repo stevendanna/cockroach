@@ -111,8 +111,6 @@ type StmtDiagActivationRequest struct {
 	MinExecutionLatency time.Duration
 	// Zero value indicates that the request never expires.
 	ExpiresAt time.Time
-	// If true, then the redacted bundle is requested.
-	Redacted bool
 }
 
 // StmtDiagListOutstandingRequests retrieves outstanding statement diagnostics
@@ -129,16 +127,16 @@ func StmtDiagListOutstandingRequests(
 	return result, nil
 }
 
-func isAtLeast24dot2ClusterVersion(ctx context.Context, conn Conn) (bool, error) {
-	// Check whether the upgrade to add the redacted column to the
-	// statement_diagnostics_requests system table has already been run.
+func isAtLeast23dot2ClusterVersion(ctx context.Context, conn Conn) (bool, error) {
+	// Check whether the upgrade to add the plan_gist and anti_plan_gist columns
+	// to the statement_diagnostics_requests system table has already been run.
 	row, err := conn.QueryRow(ctx, `
  SELECT
    count(*)
  FROM
    [SHOW COLUMNS FROM system.statement_diagnostics_requests]
  WHERE
-   column_name = 'redacted';`)
+   column_name = 'plan_gist';`)
 	if err != nil {
 		return false, err
 	}
@@ -153,12 +151,12 @@ func stmtDiagListOutstandingRequestsInternal(
 	ctx context.Context, conn Conn,
 ) ([]StmtDiagActivationRequest, error) {
 	var extraColumns string
-	atLeast24dot2, err := isAtLeast24dot2ClusterVersion(ctx, conn)
+	atLeast23dot2, err := isAtLeast23dot2ClusterVersion(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
-	if atLeast24dot2 {
-		extraColumns = ", redacted"
+	if atLeast23dot2 {
+		extraColumns = ", plan_gist, anti_plan_gist"
 	}
 
 	// Converting an INTERVAL to a number of milliseconds within that interval
@@ -170,8 +168,7 @@ func stmtDiagListOutstandingRequestsInternal(
                         EXTRACT(millisecond FROM min_execution_latency)::INT8 -
                         EXTRACT(second FROM min_execution_latency)::INT8 * 1000`
 	rows, err := conn.Query(ctx,
-		fmt.Sprintf("SELECT id, statement_fingerprint, requested_at, "+getMilliseconds+`,
-                                   expires_at, sampling_probability, plan_gist, anti_plan_gist%s
+		fmt.Sprintf("SELECT id, statement_fingerprint, requested_at, "+getMilliseconds+`, expires_at, sampling_probability%s
 			FROM system.statement_diagnostics_requests
 			WHERE NOT completed
 			ORDER BY requested_at DESC`, extraColumns),
@@ -180,7 +177,7 @@ func stmtDiagListOutstandingRequestsInternal(
 		return nil, err
 	}
 	var result []StmtDiagActivationRequest
-	vals := make([]driver.Value, 9)
+	vals := make([]driver.Value, 8)
 	for {
 		if err := rows.Next(vals); err == io.EOF {
 			break
@@ -191,7 +188,7 @@ func stmtDiagListOutstandingRequestsInternal(
 		var expiresAt time.Time
 		var samplingProbability float64
 		var planGist string
-		var antiPlanGist, redacted bool
+		var antiPlanGist bool
 
 		if ms, ok := vals[3].(int64); ok {
 			minExecutionLatency = time.Millisecond * time.Duration(ms)
@@ -202,15 +199,12 @@ func stmtDiagListOutstandingRequestsInternal(
 		if sp, ok := vals[5].(float64); ok {
 			samplingProbability = sp
 		}
-		if gist, ok := vals[6].(string); ok {
-			planGist = gist
-		}
-		if antiGist, ok := vals[7].(bool); ok {
-			antiPlanGist = antiGist
-		}
-		if atLeast24dot2 {
-			if b, ok := vals[8].(bool); ok {
-				redacted = b
+		if atLeast23dot2 {
+			if gist, ok := vals[6].(string); ok {
+				planGist = gist
+			}
+			if antiGist, ok := vals[7].(bool); ok {
+				antiPlanGist = antiGist
 			}
 		}
 		info := StmtDiagActivationRequest{
@@ -222,7 +216,6 @@ func stmtDiagListOutstandingRequestsInternal(
 			SamplingProbability: samplingProbability,
 			MinExecutionLatency: minExecutionLatency,
 			ExpiresAt:           expiresAt,
-			Redacted:            redacted,
 		}
 		result = append(result, info)
 	}

@@ -165,7 +165,6 @@ func (b *Builder) buildDataSource(
 				}),
 				indexFlags, locking, inScope,
 				false, /* disableNotVisibleIndex */
-				cat.PolicyScopeSelect,
 			)
 
 		case cat.Sequence:
@@ -205,6 +204,11 @@ func (b *Builder) buildDataSource(
 		// This is the special '[ ... ]' syntax. We treat this as syntactic sugar
 		// for a top-level CTE, so it cannot refer to anything in the input scope.
 		// See #41078.
+		if b.insideFuncDef {
+			panic(unimplemented.NewWithIssue(
+				92961, "statement source (square bracket syntax) within user-defined function",
+			))
+		}
 		emptyScope := b.allocScope()
 		innerScope := b.buildStmt(source.Statement, nil /* desiredTypes */, emptyScope)
 		if len(innerScope.cols) == 0 {
@@ -482,7 +486,6 @@ func (b *Builder) buildScanFromTableRef(
 	locking = b.lockingSpecForTableScan(locking, tabMeta)
 	return b.buildScan(
 		tabMeta, ordinals, indexFlags, locking, inScope, false, /* disableNotVisibleIndex */
-		cat.PolicyScopeSelect,
 	)
 }
 
@@ -525,6 +528,18 @@ func errorOnInvalidMultiregionDB(
 // be in the list (in practice, this coincides with all "ordinary" table columns
 // being in the list).
 //
+// If scanMutationCols is true, then include columns being added or dropped from
+// the table. These are currently required by the execution engine as "fetch
+// columns", when performing mutation DML statements (INSERT, UPDATE, UPSERT,
+// DELETE).
+//
+// NOTE: Callers must take care that mutation columns (columns that are being
+//
+//	added or dropped from the table) are only used when performing mutation
+//	DML statements (INSERT, UPDATE, UPSERT, DELETE). They cannot be used in
+//	any other way because they may not have been initialized yet by the
+//	backfiller!
+//
 // See Builder.buildStmt for a description of the remaining input and return
 // values.
 func (b *Builder) buildScan(
@@ -534,7 +549,6 @@ func (b *Builder) buildScan(
 	locking lockingSpec,
 	inScope *scope,
 	disableNotVisibleIndex bool,
-	policyCommandScope cat.PolicyCommandScope,
 ) (outScope *scope) {
 	if ordinals == nil {
 		panic(errors.AssertionFailedf("no ordinals"))
@@ -745,14 +759,13 @@ func (b *Builder) buildScan(
 
 	b.addCheckConstraintsForTable(tabMeta)
 	b.addComputedColsForTable(tabMeta, virtualMutationColOrds)
-	tabMeta.CacheIndexPartitionLocalities(b.ctx, b.evalCtx)
+	tabMeta.CacheIndexPartitionLocalities(b.evalCtx)
 
 	outScope.expr = b.factory.ConstructScan(&private)
 
 	// Add the partial indexes after constructing the scan so we can use the
 	// logical properties of the scan to fully normalize the index predicates.
 	b.addPartialIndexPredicatesForTable(tabMeta, outScope.expr)
-	b.addRowLevelSecurityFilter(tabMeta, outScope, policyCommandScope)
 
 	if !virtualColIDs.Empty() {
 		// Project the expressions for the virtual columns (and pass through all
@@ -939,7 +952,10 @@ func (b *Builder) addComputedColsForTable(
 							scalarType, colType, string(tabCol.ColName()),
 						))
 					}
-					scalar = b.factory.ConstructAssignmentCast(scalar, colType)
+					// TODO(mgartner): This should be an assignment cast, but
+					// until #81698 is addressed, that could cause reads to
+					// error after adding a virtual computed column to a table.
+					scalar = b.factory.ConstructCast(scalar, colType)
 				}
 			})
 			// Check if the expression contains non-immutable operators.
@@ -1480,16 +1496,6 @@ func (b *Builder) validateAsOf(asOfClause tree.AsOfClause) {
 	)
 	if err != nil {
 		panic(err)
-	}
-
-	// We need to look at the original statement to know if the AOST clause was
-	// specified for a backfill, This must be set correctly in order to pass
-	// the validations below.
-	switch s := b.stmt.(type) {
-	case *tree.CreateTable, *tree.RefreshMaterializedView:
-		asOf.ForBackfill = true
-	case *tree.CreateView:
-		asOf.ForBackfill = s.Materialized
 	}
 
 	if b.evalCtx.AsOfSystemTime == nil {

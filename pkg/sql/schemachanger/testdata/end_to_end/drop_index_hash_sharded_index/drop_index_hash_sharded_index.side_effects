@@ -76,7 +76,6 @@ upsert descriptor #104
   -      isSharded: true
   -      name: crdb_internal_j_shard_16
   -      shardBuckets: 16
-  -    vecConfig: {}
   -    version: 4
   +  indexes: []
      modificationTime: {}
@@ -124,7 +123,6 @@ upsert descriptor #104
   +        isSharded: true
   +        name: crdb_internal_j_shard_16
   +        shardBuckets: 16
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -189,8 +187,6 @@ upsert descriptor #104
   +      columns:
   +        "1": i
   +        "2": j
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -237,7 +233,6 @@ upsert descriptor #104
   -      isSharded: true
   -      name: crdb_internal_j_shard_16
   -      shardBuckets: 16
-  -    vecConfig: {}
   -    version: 4
   +  indexes: []
      modificationTime: {}
@@ -285,7 +280,6 @@ upsert descriptor #104
   +        isSharded: true
   +        name: crdb_internal_j_shard_16
   +        shardBuckets: 16
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -460,7 +454,6 @@ upsert descriptor #104
   -        isSharded: true
   -        name: crdb_internal_j_shard_16
   -        shardBuckets: 16
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -481,11 +474,11 @@ upsert descriptor #104
 persist all catalog changes to storage
 create job #2 (non-cancelable: true): "GC for DROP INDEX defaultdb.public.t@idx CASCADE"
   descriptor IDs: [104]
-update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 3 of 3 with 2 MutationType ops pending"
+update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 3 of 3 with 1 MutationType op pending"
 commit transaction #4
 notified job registry to adopt jobs: [2]
 begin transaction #5
-## PostCommitNonRevertiblePhase stage 3 of 3 with 4 MutationType ops
+## PostCommitNonRevertiblePhase stage 3 of 3 with 3 MutationType ops
 upsert descriptor #104
   ...
      createAsOfTime:
@@ -499,8 +492,6 @@ upsert descriptor #104
   -      columns:
   -        "1": i
   -        "2": j
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      families:

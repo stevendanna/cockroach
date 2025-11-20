@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcutils"
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/checkpoint"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/schemafeed"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/timers"
@@ -98,8 +97,6 @@ type AggMetrics struct {
 	// TODO(#130358): This doesn't really belong here, but is easier than
 	// threading the NetMetrics through all the other places.
 	NetMetrics *cidr.NetMetrics
-
-	CheckpointMetrics *checkpoint.AggMetrics
 }
 
 const (
@@ -137,8 +134,7 @@ func (a *AggMetrics) MetricStruct() {}
 
 // sliMetrics holds all SLI related metrics aggregated into AggMetrics.
 type sliMetrics struct {
-	EmittedRowMessages          *aggmetric.Counter
-	EmittedResolvedMessages     *aggmetric.Counter
+	EmittedMessages             *aggmetric.Counter
 	EmittedBatchSizes           *aggmetric.Histogram
 	FilteredMessages            *aggmetric.Counter
 	MessageSize                 *aggmetric.Histogram
@@ -181,8 +177,6 @@ type sliMetrics struct {
 		checkpoint map[int64]hlc.Timestamp
 	}
 	NetMetrics *cidr.NetMetrics
-
-	CheckpointMetrics *checkpoint.Metrics
 }
 
 // closeId unregisters an id. The id can still be used after its closed, but
@@ -276,7 +270,7 @@ func (m *sliMetrics) recordEmittedBatch(
 		return
 	}
 	emitNanos := timeutil.Since(startTime).Nanoseconds()
-	m.EmittedRowMessages.Inc(int64(numMessages))
+	m.EmittedMessages.Inc(int64(numMessages))
 	m.EmittedBytes.Inc(int64(bytes))
 	m.EmittedBatchSizes.RecordValue(int64(numMessages))
 	if compressedBytes == sinkDoesNotCompress {
@@ -297,7 +291,7 @@ func (m *sliMetrics) recordResolvedCallback() func() {
 	start := timeutil.Now()
 	return func() {
 		emitNanos := timeutil.Since(start).Nanoseconds()
-		m.EmittedResolvedMessages.Inc(1)
+		m.EmittedMessages.Inc(1)
 		m.BatchHistNanos.RecordValue(emitNanos)
 		m.EmittedBatchSizes.RecordValue(int64(1))
 	}
@@ -1014,10 +1008,9 @@ func newAggregateMetrics(histogramWindow time.Duration, lookup *cidr.Lookup) *Ag
 	// NB: When adding new histograms, use sigFigs = 1.  Older histograms
 	// retain significant figures of 2.
 	b := aggmetric.MakeBuilder("scope")
-	emittedMessagesBuilder := aggmetric.MakeBuilder("scope", "message_type")
 	a := &AggMetrics{
 		ErrorRetries:    b.Counter(metaChangefeedErrorRetries),
-		EmittedMessages: emittedMessagesBuilder.Counter(metaChangefeedEmittedMessages),
+		EmittedMessages: b.Counter(metaChangefeedEmittedMessages),
 		EmittedBatchSizes: b.Histogram(metric.HistogramOptions{
 			Metadata:     metaChangefeedEmittedBatchSizes,
 			Duration:     histogramWindow,
@@ -1101,11 +1094,10 @@ func newAggregateMetrics(histogramWindow time.Duration, lookup *cidr.Lookup) *Ag
 			SigFigs:      2,
 			BucketConfig: metric.ChangefeedBatchLatencyBuckets,
 		}),
-		SinkErrors:        b.Counter(metaSinkErrors),
-		MaxBehindNanos:    b.FunctionalGauge(metaChangefeedMaxBehindNanos, functionalGaugeMaxFn),
-		Timers:            timers.New(histogramWindow),
-		NetMetrics:        lookup.MakeNetMetrics(metaNetworkBytesOut, metaNetworkBytesIn, "sink"),
-		CheckpointMetrics: checkpoint.NewAggMetrics(b),
+		SinkErrors:     b.Counter(metaSinkErrors),
+		MaxBehindNanos: b.FunctionalGauge(metaChangefeedMaxBehindNanos, functionalGaugeMaxFn),
+		Timers:         timers.New(histogramWindow),
+		NetMetrics:     lookup.MakeNetMetrics(metaNetworkBytesOut, metaNetworkBytesIn, "sink"),
 	}
 	a.mu.sliMetrics = make(map[string]*sliMetrics)
 	_, err := a.getOrCreateScope(defaultSLIScope)
@@ -1144,8 +1136,7 @@ func (a *AggMetrics) getOrCreateScope(scope string) (*sliMetrics, error) {
 	}
 
 	sm := &sliMetrics{
-		EmittedRowMessages:          a.EmittedMessages.AddChild(scope, "row"),
-		EmittedResolvedMessages:     a.EmittedMessages.AddChild(scope, "resolved"),
+		EmittedMessages:             a.EmittedMessages.AddChild(scope),
 		EmittedBatchSizes:           a.EmittedBatchSizes.AddChild(scope),
 		FilteredMessages:            a.FilteredMessages.AddChild(scope),
 		MessageSize:                 a.MessageSize.AddChild(scope),
@@ -1181,8 +1172,6 @@ func (a *AggMetrics) getOrCreateScope(scope string) (*sliMetrics, error) {
 		// TODO(#130358): Again, this doesn't belong here, but it's the most
 		// convenient way to feed this metric to changefeeds.
 		NetMetrics: a.NetMetrics,
-
-		CheckpointMetrics: a.CheckpointMetrics.AddChild(scope),
 	}
 	sm.mu.resolved = make(map[int64]hlc.Timestamp)
 	sm.mu.checkpoint = make(map[int64]hlc.Timestamp)
@@ -1330,42 +1319,6 @@ func MakeMetrics(histogramWindow time.Duration, lookup *cidr.Lookup) metric.Stru
 	return m
 }
 
-var (
-	metaMemMaxBytes = metric.Metadata{
-		Name:        "sql.mem.changefeed.max",
-		Help:        "Maximum memory usage across all changefeeds",
-		Measurement: "Memory",
-		Unit:        metric.Unit_BYTES,
-	}
-	metaMemCurBytes = metric.Metadata{
-		Name:        "sql.mem.changefeed.current",
-		Help:        "Current memory usage across all changefeeds",
-		Measurement: "Memory",
-		Unit:        metric.Unit_BYTES,
-	}
-)
-
-// See pkg/sql/mem_metrics.go
-// log10int64times1000 = log10(math.MaxInt64) * 1000, rounded up somewhat
-const log10int64times1000 = 19 * 1000
-
-// MakeMemoryMetrics instantiates the metrics holder for memory monitors of
-// changefeeds.
-func MakeMemoryMetrics(
-	histogramWindow time.Duration,
-) (curCount *metric.Gauge, maxHist metric.IHistogram) {
-	curCount = metric.NewGauge(metaMemCurBytes)
-	maxHist = metric.NewHistogram(metric.HistogramOptions{
-		Metadata:     metaMemMaxBytes,
-		Duration:     histogramWindow,
-		MaxVal:       log10int64times1000,
-		SigFigs:      3,
-		BucketConfig: metric.MemoryUsage64MBBuckets,
-	})
-	return curCount, maxHist
-}
-
 func init() {
 	jobs.MakeChangefeedMetricsHook = MakeMetrics
-	jobs.MakeChangefeedMemoryMetricsHook = MakeMemoryMetrics
 }

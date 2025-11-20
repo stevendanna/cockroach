@@ -32,9 +32,6 @@ t  CREATE TABLE public.t (
    ) WITH (schema_locked = true)
 
 statement ok
-ALTER TABLE t RESET (schema_locked)
-
-statement ok
 DROP TABLE t;
 
 # This subtest ensures storage parameter "schema_locked" can only be set/reset
@@ -56,17 +53,11 @@ ALTER TABLE t SET (schema_locked=f); CREATE TABLE t2 (i INT PRIMARY KEY);
 statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 
-statement ok
-SET LOCAL autocommit_before_ddl=off;
-
 statement error pq: "schema_locked" can only be set/reset on its own without other parameters in a single-statement implicit transaction.
 ALTER TABLE t SET (schema_locked=f);
 
 statement ok
 ROLLBACK
-
-statement ok
-ALTER TABLE t RESET (schema_locked)
 
 statement ok
 DROP TABLE t
@@ -127,17 +118,4 @@ COMMENT ON INDEX t@idx IS 'idx is an index';
 COMMENT ON COLUMN t.i IS 'i is a column';
 
 statement ok
-ALTER TABLE t RESET (schema_locked)
-
-statement ok
 DROP TABLE t;
-
-subtest zone_config
-
-statement ok
-ALTER TABLE ref SET (schema_locked = true);
-
-statement error pgcode 57000 schema changes are disallowed on table "ref" because it is locked
-ALTER TABLE ref CONFIGURE ZONE USING num_replicas = 11;
-
-subtest end

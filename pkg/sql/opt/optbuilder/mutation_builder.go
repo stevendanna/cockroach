@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/cast"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
@@ -62,8 +61,6 @@ type mutationBuilder struct {
 	// inserted into the target table. It is only populated for INSERT
 	// expressions. It is currently used to inline constant insert values into
 	// uniqueness checks.
-	//
-	// insertExpr may not be set (e.g. if there are INSERT triggers).
 	insertExpr memo.RelExpr
 
 	// targetColList is an ordered list of IDs of the table columns into which
@@ -139,31 +136,6 @@ type mutationBuilder struct {
 	// the table.
 	partialIndexDelColIDs opt.OptionalColList
 
-	// vectorIndexDelPartitionColIDs lists the input column IDs storing the keys
-	// for the partitions that the deleted or updated rows should be removed from.
-	// The length is always equal to the number of vector indexes on the table.
-	vectorIndexDelPartitionColIDs opt.OptionalColList
-
-	// vectorIndexPutPartitionColIDs lists the input column IDs storing the keys
-	// for the partitions that the inserted or updated rows should be added to.
-	// The length is always equal to the number of vector indexes on the table.
-	vectorIndexPutPartitionColIDs opt.OptionalColList
-
-	// vectorIndexPutQuantizedVecColIDs lists the input column IDs storing the
-	// quantized and encoded vectors that should be inserted into the index. Note
-	// that the quantized vectors are not needed for deletions. The length is
-	// always equal to the number of vector indexes on the table.
-	vectorIndexPutQuantizedVecColIDs opt.OptionalColList
-
-	// triggerColIDs is the set of column IDs used to project the OLD and NEW rows
-	// for row-level AFTER triggers, and possibly also contains the canary column.
-	// It is only populated if the mutation statement has row-level AFTER
-	// triggers.
-	//
-	// NOTE: triggerColIDs may contain columns both contained and not contained in
-	// the lists above.
-	triggerColIDs opt.ColSet
-
 	// canaryColID is the ID of the column that is used to decide whether to
 	// insert or update each row. If the canary column's value is null, then it's
 	// an insert; otherwise it's an update.
@@ -213,9 +185,6 @@ type mutationBuilder struct {
 	// cascades contains foreign key check cascades; see buildFK* methods.
 	cascades memo.FKCascades
 
-	// afterTriggers contains AFTER triggers; see buildRowLevelAfterTriggers.
-	afterTriggers *memo.AfterTriggers
-
 	// withID is nonzero if we need to buffer the input for FK or uniqueness
 	// checks.
 	withID opt.WithID
@@ -240,10 +209,6 @@ type mutationBuilder struct {
 	// inputForInsertExpr stores the result of outscope.expr from the most
 	// recent call to buildInputForInsert.
 	inputForInsertExpr memo.RelExpr
-
-	// uniqueWithTombstoneIndexes is the set of unique indexes that ensure uniqueness
-	// by writing tombstones to all partitions
-	uniqueWithTombstoneIndexes intsets.Fast
 }
 
 func (mb *mutationBuilder) init(b *Builder, opName string, tab cat.Table, alias tree.TableName) {
@@ -257,31 +222,19 @@ func (mb *mutationBuilder) init(b *Builder, opName string, tab cat.Table, alias 
 		alias:  alias,
 	}
 
-	tabCols := tab.ColumnCount()
-	mb.targetColList = make(opt.ColList, 0, tabCols)
+	n := tab.ColumnCount()
+	mb.targetColList = make(opt.ColList, 0, n)
 
 	// Allocate segmented array of column IDs.
 	numPartialIndexes := partialIndexCount(tab)
-	numVectorIndexes := vectorIndexCount(tab)
-	numChecks := tab.CheckCount()
-	colIDs := make(opt.OptionalColList, 4*tabCols+numChecks+2*numPartialIndexes+3*numVectorIndexes)
-
-	var start int
-	getSlice := func(n int) opt.OptionalColList {
-		slice := colIDs[start : start+n]
-		start += n
-		return slice
-	}
-	mb.insertColIDs = getSlice(tabCols)
-	mb.fetchColIDs = getSlice(tabCols)
-	mb.updateColIDs = getSlice(tabCols)
-	mb.upsertColIDs = getSlice(tabCols)
-	mb.checkColIDs = getSlice(numChecks)
-	mb.partialIndexPutColIDs = getSlice(numPartialIndexes)
-	mb.partialIndexDelColIDs = getSlice(numPartialIndexes)
-	mb.vectorIndexPutPartitionColIDs = getSlice(numVectorIndexes)
-	mb.vectorIndexPutQuantizedVecColIDs = getSlice(numVectorIndexes)
-	mb.vectorIndexDelPartitionColIDs = getSlice(numVectorIndexes)
+	colIDs := make(opt.OptionalColList, n*4+tab.CheckCount()+2*numPartialIndexes)
+	mb.insertColIDs = colIDs[:n]
+	mb.fetchColIDs = colIDs[n : n*2]
+	mb.updateColIDs = colIDs[n*2 : n*3]
+	mb.upsertColIDs = colIDs[n*3 : n*4]
+	mb.checkColIDs = colIDs[n*4 : n*4+tab.CheckCount()]
+	mb.partialIndexPutColIDs = colIDs[n*4+tab.CheckCount() : n*4+tab.CheckCount()+numPartialIndexes]
+	mb.partialIndexDelColIDs = colIDs[n*4+tab.CheckCount()+numPartialIndexes:]
 
 	// Add the table and its columns (including mutation columns) to metadata.
 	mb.tabID = mb.md.AddTable(tab, &mb.alias)
@@ -337,13 +290,6 @@ func (mb *mutationBuilder) buildInputForUpdate(
 		telemetry.Inc(sqltelemetry.IndexHintUpdateUseCounter)
 	}
 
-	if mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		if indexFlags == nil {
-			indexFlags = &tree.IndexFlags{}
-		}
-		indexFlags.AvoidFullScan = true
-	}
-
 	// Fetch columns from different instance of the table metadata, so that it's
 	// possible to remap columns, as in this example:
 	//
@@ -362,7 +308,6 @@ func (mb *mutationBuilder) buildInputForUpdate(
 		noRowLocking,
 		inScope,
 		false, /* disableNotVisibleIndex */
-		cat.PolicyScopeUpdate,
 	)
 
 	// Set list of columns that will be fetched by the input expression.
@@ -455,13 +400,6 @@ func (mb *mutationBuilder) buildInputForDelete(
 		telemetry.Inc(sqltelemetry.IndexHintDeleteUseCounter)
 	}
 
-	if mb.b.evalCtx.SessionData().AvoidFullTableScansInMutations {
-		if indexFlags == nil {
-			indexFlags = &tree.IndexFlags{}
-		}
-		indexFlags.AvoidFullScan = true
-	}
-
 	// Fetch columns from different instance of the table metadata, so that it's
 	// possible to remap columns, as in this example:
 	//
@@ -481,7 +419,6 @@ func (mb *mutationBuilder) buildInputForDelete(
 		noRowLocking,
 		inScope,
 		false, /* disableNotVisibleIndex */
-		cat.PolicyScopeDelete,
 	)
 
 	// Set list of columns that will be fetched by the input expression.
@@ -869,31 +806,9 @@ func (mb *mutationBuilder) addCheckConstraintCols(isUpdate bool) {
 		projectionsScope := mb.outScope.replace()
 		projectionsScope.appendColumnsFromScope(mb.outScope)
 		mutationCols := mb.mutationColumnIDs()
-		var seenRLSConstraint bool
 
 		for i, n := 0, mb.tab.CheckCount(); i < n; i++ {
 			check := mb.tab.Check(i)
-
-			// For tables with RLS enabled, we create a synthetic check constraint
-			// to enforce the policies. Since this check varies based on the role
-			// and command used, it must be generated each time it is needed rather
-			// than being included with the table's actual check constraints.
-			if check.IsRLSConstraint() {
-				if seenRLSConstraint {
-					panic(errors.AssertionFailedf("a table should only have one RLS constraint"))
-				}
-				seenRLSConstraint = true
-				chkBuilder := optRLSConstraintBuilder{
-					tab:      mb.tab,
-					md:       mb.md,
-					tabMeta:  mb.md.TableMeta(mb.tabID),
-					oc:       mb.b.catalog,
-					user:     mb.b.checkPrivilegeUser,
-					isUpdate: isUpdate,
-				}
-				check = chkBuilder.Build(mb.b.ctx)
-			}
-
 			expr, err := parser.ParseExpr(check.Constraint())
 			if err != nil {
 				panic(err)
@@ -903,12 +818,7 @@ func (mb *mutationBuilder) addCheckConstraintCols(isUpdate bool) {
 
 			// Use an anonymous name because the column cannot be referenced
 			// in other expressions.
-			colName := scopeColName("")
-			if check.IsRLSConstraint() {
-				colName = colName.WithMetadataName("rls")
-			} else {
-				colName = colName.WithMetadataName(fmt.Sprintf("check%d", i+1))
-			}
+			colName := scopeColName("").WithMetadataName(fmt.Sprintf("check%d", i+1))
 			scopeCol := projectionsScope.addColumn(colName, texpr)
 
 			// TODO(ridwanmsharif): Maybe we can avoid building constraints here
@@ -916,17 +826,11 @@ func (mb *mutationBuilder) addCheckConstraintCols(isUpdate bool) {
 			referencedCols := &opt.ColSet{}
 			mb.b.buildScalar(texpr, mb.outScope, projectionsScope, scopeCol, referencedCols)
 
-			// For non-UPDATE mutations, track the synthesized check columns in
-			// checkColIDs. For UPDATE mutations, track the check columns in two
-			// scenarios:
-			// - If the check expression is a real check constraint and the columns
-			//   referenced in the check expression are being mutated.
-			// - If the check expression is a synthetic one used for row-level
-			//   security (RLS). Since it's not a real check expression, different
-			//   expressions can exist for read and write operations. This means it's
-			//   possible to read a row whose column values would violate the write
-			//   expression.
-			if !isUpdate || check.IsRLSConstraint() || referencedCols.Intersects(mutationCols) {
+			// If the mutation is not an UPDATE, track the synthesized check
+			// columns in checkColIDS. If the mutation is an UPDATE, only track
+			// the check columns if the columns referenced in the check
+			// expression are being mutated.
+			if !isUpdate || referencedCols.Intersects(mutationCols) {
 				mb.checkColIDs[i] = scopeCol.id
 
 				// TODO(michae2): Under weaker isolation levels we need to use shared
@@ -1014,7 +918,7 @@ func (mb *mutationBuilder) projectPartialIndexPutCols() {
 	mb.projectPartialIndexColsImpl(mb.outScope, nil /* delScope */)
 }
 
-// projectPartialIndexDelCols builds a Project that synthesizes boolean DEL
+// projectPartialIndexDelCols builds a Project that synthesizes boolean PUT
 // columns for each partial index defined on the target table. See
 // partialIndexDelColIDs for more info on these columns.
 func (mb *mutationBuilder) projectPartialIndexDelCols() {
@@ -1086,185 +990,6 @@ func (mb *mutationBuilder) projectPartialIndexColsImpl(putScope, delScope *scope
 	}
 }
 
-// projectVectorIndexColsForInsert builds VectorMutationSearch operators for the input
-// of an INSERT mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForInsert() {
-	mb.projectVectorIndexColsImpl(opt.InsertOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutPartitionColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutQuantizedVecColIDs)
-}
-
-// projectVectorIndexColsForUpsert builds VectorMutationSearch operators for the input
-// of an UPSERT mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForUpsert() {
-	mb.projectVectorIndexColsImpl(opt.UpsertOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutPartitionColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutQuantizedVecColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexDelPartitionColIDs)
-}
-
-// projectVectorIndexColsForUpdate builds VectorMutationSearch operators for the input
-// of an UPDATE mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForUpdate() {
-	mb.projectVectorIndexColsImpl(opt.UpdateOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutPartitionColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexPutQuantizedVecColIDs)
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexDelPartitionColIDs)
-}
-
-// projectVectorIndexColsForDelete builds VectorMutationSearch operators for the
-// input of a DELETE mutation. See projectVectorIndexColsImpl for details.
-func (mb *mutationBuilder) projectVectorIndexColsForDelete() {
-	mb.projectVectorIndexColsImpl(opt.DeleteOp /* op */)
-
-	// Execution expects each list to have one entry for each vector index. Ensure
-	// this is the case by projecting NULL values as necessary.
-	mb.replaceUnsetColsWithNulls(mb.vectorIndexDelPartitionColIDs)
-}
-
-// replaceUnsetColsWithNulls checks the given OptionalColList for unset column
-// IDs, and replaces any found with a new column that projects a NULL value.
-func (mb *mutationBuilder) replaceUnsetColsWithNulls(cols opt.OptionalColList) {
-	// We will construct a new Project operator that will contain the newly
-	// synthesized column(s).
-	pb := makeProjectionBuilder(mb.b, mb.outScope)
-
-	for i, colID := range cols {
-		if colID == 0 {
-			// Add synthesized column that projects a NULL value. Update the cols list
-			// to include the new column ID.
-			colName := scopeColName("").WithMetadataName(fmt.Sprintf("null%d", i+1))
-			cols[i], _ = pb.Add(colName, tree.DNull, types.Unknown)
-		}
-	}
-
-	mb.outScope = pb.Finish()
-}
-
-// projectVectorIndexColsImpl builds VectorMutationSearch operators that project
-// partitions to be the target of index insertions and deletions for each vector
-// index defined on the target table. This is needed because vector indexes must
-// perform a search to determine which partition a given vector belongs to.
-func (mb *mutationBuilder) projectVectorIndexColsImpl(op opt.Operator) {
-	if vectorIndexCount(mb.tab) > 0 {
-		addCol := func(name string, typ *types.T) opt.ColumnID {
-			colName := scopeColName("").WithMetadataName(name)
-			sc := mb.b.synthesizeColumn(mb.outScope, colName, typ, nil /* expr */, nil /* expr */)
-			return sc.id
-		}
-		idxOrd := 0
-		for i := range mb.tab.DeletableIndexCount() {
-			index := mb.tab.Index(i)
-
-			// Skip non-vector indexes.
-			if index.Type() != idxtype.VECTOR {
-				continue
-			}
-
-			// Determine whether index PUT and DEL operations will be necessary.
-			indexColIsUpdated := false
-			if op == opt.UpsertOp || op == opt.UpdateOp {
-				// UPSERT and UPDATE statements can target specific columns for update.
-				// Check if any columns from the index are being updated.
-				for colIndexOrd := 0; colIndexOrd < index.ColumnCount(); colIndexOrd++ {
-					colTableOrd := index.Column(colIndexOrd).Ordinal()
-					if mb.upsertColIDs[colTableOrd] != 0 || mb.updateColIDs[colTableOrd] != 0 {
-						indexColIsUpdated = true
-						break
-					}
-				}
-			}
-			// It is possible for a vector index to be the target of both PUT and DEL
-			// operations, in which case two search operators are needed in order to
-			// locate the old index entry, as well as the partition for the new one.
-			//
-			// TODO(drewk): we may be able to avoid the DEL for updates to stored
-			// columns (once they're supported).
-			if op == opt.DeleteOp || indexColIsUpdated {
-				const isIndexPut = false
-				partitionCol := addCol(fmt.Sprintf("vector_index_del_partition%d", idxOrd+1), types.Int)
-				mb.outScope.expr = mb.buildVectorMutationSearch(
-					mb.outScope.expr, index, partitionCol, 0 /* encVectorCol */, isIndexPut,
-				)
-				mb.vectorIndexDelPartitionColIDs[idxOrd] = partitionCol
-			}
-			if op == opt.InsertOp || op == opt.UpsertOp || indexColIsUpdated {
-				const isIndexPut = true
-				partitionCol := addCol(fmt.Sprintf("vector_index_put_partition%d", idxOrd+1), types.Int)
-				quantizedVecCol := addCol(fmt.Sprintf("vector_index_put_quantized_vec%d", idxOrd+1), types.Bytes)
-				mb.outScope.expr = mb.buildVectorMutationSearch(
-					mb.outScope.expr, index, partitionCol, quantizedVecCol, isIndexPut,
-				)
-				mb.vectorIndexPutPartitionColIDs[idxOrd] = partitionCol
-				mb.vectorIndexPutQuantizedVecColIDs[idxOrd] = quantizedVecCol
-			}
-			idxOrd++
-		}
-	}
-}
-
-// buildVectorMutationSearch builds a VectorMutationSearch operator that will
-// find the partition (and quantized vector, if requested) for vectors in the
-// given queryVectorCol.
-func (mb *mutationBuilder) buildVectorMutationSearch(
-	input memo.RelExpr, index cat.Index, partitionCol, quantizedVecCol opt.ColumnID, isIndexPut bool,
-) memo.RelExpr {
-	getCol := func(colOrd int) (colID opt.ColumnID) {
-		// Check in turn if the column is being upserted, inserted, updated, or
-		// fetched.
-		if isIndexPut {
-			colID = mb.upsertColIDs[colOrd]
-			if colID == 0 {
-				colID = mb.insertColIDs[colOrd]
-			}
-			if colID == 0 {
-				colID = mb.updateColIDs[colOrd]
-			}
-		}
-		if colID == 0 {
-			colID = mb.fetchColIDs[colOrd]
-		}
-		if colID == 0 {
-			panic(errors.AssertionFailedf("column %d not found", colOrd))
-		}
-		return colID
-	}
-	prefixCols := make(opt.ColList, 0, index.PrefixColumnCount())
-	for colIdx := range index.PrefixColumnCount() {
-		prefixCols = append(prefixCols, getCol(index.Column(colIdx).Ordinal()))
-	}
-	var suffixCols opt.ColList
-	if !isIndexPut {
-		// Index DEL operations must specify the full key to ensure the correct
-		// index entry is deleted.
-		suffixStart := index.PrefixColumnCount() + 1
-		suffixCols = make(opt.ColList, 0, index.KeyColumnCount()-suffixStart)
-		for colIdx := suffixStart; colIdx < index.KeyColumnCount(); colIdx++ {
-			suffixCols = append(suffixCols, getCol(index.Column(colIdx).Ordinal()))
-		}
-	}
-	private := memo.VectorMutationSearchPrivate{
-		Table:              mb.tabID,
-		Index:              index.Ordinal(),
-		PrefixKeyCols:      prefixCols,
-		QueryVectorCol:     getCol(index.VectorColumn().Ordinal()),
-		SuffixKeyCols:      suffixCols,
-		PartitionCol:       partitionCol,
-		QuantizedVectorCol: quantizedVecCol,
-		IsIndexPut:         isIndexPut,
-	}
-	return mb.b.factory.ConstructVectorMutationSearch(input, &private)
-}
-
 // computedColumnScope returns a new scope that can be used to build computed
 // column expressions. Columns will never be ambiguous because each column in
 // the returned scope maps to a single column in the target table.
@@ -1320,12 +1045,7 @@ func (mb *mutationBuilder) disambiguateColumns() {
 
 // makeMutationPrivate builds a MutationPrivate struct containing the table and
 // column metadata needed for the mutation operator.
-//
-// - vectorInsert indicates that the mutation operator is an Insert with a
-// specialized vectorized implementation for Copy.
-func (mb *mutationBuilder) makeMutationPrivate(
-	needResults, vectorInsert bool,
-) *memo.MutationPrivate {
+func (mb *mutationBuilder) makeMutationPrivate(needResults bool) *memo.MutationPrivate {
 	// Helper function that returns nil if there are no non-zero column IDs in a
 	// given list. A zero column ID indicates that column does not participate
 	// in this mutation operation.
@@ -1337,30 +1057,21 @@ func (mb *mutationBuilder) makeMutationPrivate(
 	}
 
 	private := &memo.MutationPrivate{
-		Table:                          mb.tabID,
-		InsertCols:                     checkEmptyList(mb.insertColIDs),
-		FetchCols:                      checkEmptyList(mb.fetchColIDs),
-		UpdateCols:                     checkEmptyList(mb.updateColIDs),
-		CanaryCol:                      mb.canaryColID,
-		ArbiterIndexes:                 mb.arbiters.IndexOrdinals(),
-		ArbiterConstraints:             mb.arbiters.UniqueConstraintOrdinals(),
-		CheckCols:                      checkEmptyList(mb.checkColIDs),
-		PartialIndexPutCols:            checkEmptyList(mb.partialIndexPutColIDs),
-		PartialIndexDelCols:            checkEmptyList(mb.partialIndexDelColIDs),
-		VectorIndexPutPartitionCols:    checkEmptyList(mb.vectorIndexPutPartitionColIDs),
-		VectorIndexPutQuantizedVecCols: checkEmptyList(mb.vectorIndexPutQuantizedVecColIDs),
-		VectorIndexDelPartitionCols:    checkEmptyList(mb.vectorIndexDelPartitionColIDs),
-		TriggerCols:                    mb.triggerColIDs,
-		FKCascades:                     mb.cascades,
-		AfterTriggers:                  mb.afterTriggers,
-		UniqueWithTombstoneIndexes:     mb.uniqueWithTombstoneIndexes.Ordered(),
-		VectorInsert:                   vectorInsert,
+		Table:               mb.tabID,
+		InsertCols:          checkEmptyList(mb.insertColIDs),
+		FetchCols:           checkEmptyList(mb.fetchColIDs),
+		UpdateCols:          checkEmptyList(mb.updateColIDs),
+		CanaryCol:           mb.canaryColID,
+		ArbiterIndexes:      mb.arbiters.IndexOrdinals(),
+		ArbiterConstraints:  mb.arbiters.UniqueConstraintOrdinals(),
+		CheckCols:           checkEmptyList(mb.checkColIDs),
+		PartialIndexPutCols: checkEmptyList(mb.partialIndexPutColIDs),
+		PartialIndexDelCols: checkEmptyList(mb.partialIndexDelColIDs),
+		FKCascades:          mb.cascades,
 	}
 
-	// If we didn't actually plan any checks, cascades, or triggers, don't buffer
-	// the input.
-	if len(mb.uniqueChecks) > 0 || len(mb.fkChecks) > 0 ||
-		len(mb.cascades) > 0 || mb.afterTriggers != nil {
+	// If we didn't actually plan any checks or cascades, don't buffer the input.
+	if len(mb.uniqueChecks) > 0 || len(mb.fkChecks) > 0 || len(mb.cascades) > 0 {
 		private.WithID = mb.withID
 	}
 
@@ -1749,16 +1460,6 @@ func partialIndexCount(tab cat.Table) int {
 	return count
 }
 
-func vectorIndexCount(tab cat.Table) int {
-	count := 0
-	for i, n := 0, tab.DeletableIndexCount(); i < n; i++ {
-		if tab.Index(i).Type() == idxtype.VECTOR {
-			count++
-		}
-	}
-	return count
-}
-
 type checkInputScanType uint8
 
 const (
@@ -1832,11 +1533,7 @@ func (mb *mutationBuilder) buildCheckInputScan(
 	// TODO(mgartner): We do not currently inline constants for FK checks
 	// because this would break the insert fast path. The fast path can
 	// currently only be planned when FK checks are built with WithScans.
-	//
-	// We also do not inline constants for checks that have row-level triggers
-	// because the triggers may modify the values that are being checked.
-	if !isFK && mb.insertExpr != nil &&
-		!cat.HasRowLevelTriggers(mb.tab, tree.TriggerActionTimeBefore, tree.TriggerEventInsert) {
+	if !isFK && mb.insertExpr != nil {
 		// Find the constant columns produced by the insert expression. All
 		// input columns must be constant in order to inline them.
 		constCols := memo.FindInlinableConstants(mb.insertExpr)

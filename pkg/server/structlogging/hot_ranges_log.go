@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
+	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -93,7 +94,7 @@ func (s *hotRangesLoggingScheduler) start(ctx context.Context, stopper *stop.Sto
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !TelemetryHotRangesStatsEnabled.Get(&s.st.SV) {
+				if !logcrash.DiagnosticsReportingEnabled.Get(&s.st.SV) || !TelemetryHotRangesStatsEnabled.Get(&s.st.SV) {
 					continue
 				}
 				resp, err := s.sServer.HotRangesV2(ctx,
@@ -109,10 +110,10 @@ func (s *hotRangesLoggingScheduler) start(ctx context.Context, stopper *stop.Sto
 					hrEvent := &eventpb.HotRangesStats{
 						RangeID:             int64(r.RangeID),
 						Qps:                 r.QPS,
-						Databases:           r.Databases,
-						Tables:              r.Tables,
-						Indexes:             r.Indexes,
+						DatabaseName:        r.DatabaseName,
 						SchemaName:          r.SchemaName,
+						TableName:           r.TableName,
+						IndexName:           r.IndexName,
 						CPUTimePerSecond:    r.CPUTimePerSecond,
 						ReadBytesPerSecond:  r.ReadBytesPerSecond,
 						WriteBytesPerSecond: r.WriteBytesPerSecond,

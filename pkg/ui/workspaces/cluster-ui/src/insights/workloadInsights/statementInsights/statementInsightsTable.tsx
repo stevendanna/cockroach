@@ -3,17 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import React from "react";
-import { Link } from "react-router-dom";
-
-import { Badge } from "src/badge";
-import {
-  InsightExecEnum,
-  StatementStatus,
-  StmtInsightEvent,
-} from "src/insights";
 import {
   ColumnDescriptor,
   ISortedTablePagination,
@@ -27,14 +17,22 @@ import {
   limitText,
   NO_SAMPLES_FOUND,
 } from "src/util";
-
-import { Timestamp } from "../../../timestamp";
+import {
+  InsightExecEnum,
+  StatementStatus,
+  StmtInsightEvent,
+} from "src/insights";
 import {
   InsightCell,
   insightsTableTitles,
   StatementDetailsLink,
 } from "../util";
+import { Tooltip } from "@cockroachlabs/ui-components";
+import { Link } from "react-router-dom";
+import classNames from "classnames/bind";
 import styles from "../util/workloadInsights.module.scss";
+import { Badge } from "src/badge";
+import { Timestamp } from "../../../timestamp";
 
 const cx = classNames.bind(styles);
 

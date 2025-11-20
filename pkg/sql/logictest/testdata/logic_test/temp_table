@@ -150,14 +150,14 @@ SELECT * from pg_temp.view_on_temp
 2
 
 # A "permanent" view on a temporary table gets upgraded to temporary.
-# Weak isolation levels emit extra notices, so skip them.
-skipif config weak-iso-level-configs
+# Read committed emits extra notices, so skip it.
+skipif config local-read-committed
 query T noticetrace
 CREATE VIEW upgrade_temp_view AS SELECT a FROM temp_table
 ----
 NOTICE: view "upgrade_temp_view" will be a temporary view
 
-onlyif config weak-iso-level-configs
+onlyif config local-read-committed
 statement ok
 CREATE VIEW upgrade_temp_view AS SELECT a FROM temp_table
 
@@ -479,5 +479,34 @@ SELECT descriptor FROM system.descriptor WHERE id = $t_108751_view_id
 
 statement ok
 DROP DATABASE database_108751 CASCADE
+
+subtest end
+
+# Test ALTER TYPE when a temp table exists.
+subtest alter_type
+
+statement ok
+USE defaultdb;
+
+statement ok
+SET experimental_enable_temp_tables=on
+
+statement ok
+create type my_enum as enum ('value1', 'value2');
+
+statement ok
+create temporary table tmp_table (id int primary key);
+
+statement ok
+insert into tmp_table values (1), (2), (3);
+
+statement ok
+ALTER TYPE my_enum ADD VALUE 'value3';
+
+statement ok
+DROP TYPE my_enum;
+
+statement ok
+DROP TABLE tmp_table;
 
 subtest end

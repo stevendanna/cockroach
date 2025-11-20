@@ -5,10 +5,7 @@
 
 package scpb
 
-import (
-	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
-)
+import "github.com/cockroachdb/errors"
 
 const (
 	// PlaceHolderRoleName placeholder string for non-fetched role names.
@@ -18,15 +15,6 @@ const (
 // TargetStatus is the subset of Status values which serve as valid target
 // statuses.
 type TargetStatus Status
-
-var _ redact.SafeValue = Status(0)
-var _ redact.SafeValue = TargetStatus(0)
-
-// SafeValue implements the redact.SafeValue interface.
-func (t TargetStatus) SafeValue() {}
-
-// SafeValue implements the redact.SafeValue interface.
-func (s Status) SafeValue() {}
 
 const (
 	// InvalidTarget indicates that the element doesn't have a target status
@@ -49,11 +37,6 @@ const (
 	// and target statuses are both ABSENT won't experience any state transitions.
 	Transient TargetStatus = TargetStatus(Status_TRANSIENT_ABSENT)
 )
-
-// Status returns the TargetStatus as a Status.
-func (t TargetStatus) String() string {
-	return Status(t).String()
-}
 
 // Status returns the TargetStatus as a Status.
 func (t TargetStatus) Status() Status {

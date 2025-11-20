@@ -80,7 +80,7 @@ func newTableReader(
 ) (*tableReader, error) {
 	// NB: we hit this with a zero NodeID (but !ok) with multi-tenancy.
 	if nodeID, ok := flowCtx.NodeID.OptionalNodeID(); ok && nodeID == 0 {
-		return nil, errors.AssertionFailedf("attempting to create a tableReader with uninitialized NodeID")
+		return nil, errors.Errorf("attempting to create a tableReader with uninitialized NodeID")
 	}
 
 	if spec.LimitHint > 0 || spec.BatchBytesLimit > 0 {
@@ -150,7 +150,6 @@ func newTableReader(
 			LockWaitPolicy:             spec.LockingWaitPolicy,
 			LockDurability:             spec.LockingDurability,
 			LockTimeout:                flowCtx.EvalCtx.SessionData().LockTimeout,
-			DeadlockTimeout:            flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 			Alloc:                      &tr.alloc,
 			MemMonitor:                 flowCtx.Mon,
 			Spec:                       &spec.FetchSpec,
@@ -202,6 +201,9 @@ func (tr *tableReader) Start(ctx context.Context) {
 }
 
 func (tr *tableReader) startScan(ctx context.Context) error {
+	if cb := tr.FlowCtx.Cfg.TestingKnobs.TableReaderStartScanCb; cb != nil {
+		cb()
+	}
 	limitBatches := !tr.parallelize
 	var bytesLimit rowinfra.BytesLimit
 	if !limitBatches {
@@ -219,7 +221,7 @@ func (tr *tableReader) startScan(ctx context.Context) error {
 		initialTS := tr.FlowCtx.Txn.ReadTimestamp()
 		err = tr.fetcher.StartInconsistentScan(
 			ctx, tr.FlowCtx.Cfg.DB.KV(), initialTS, tr.maxTimestampAge, tr.Spans,
-			bytesLimit, tr.limitHint, tr.FlowCtx.EvalCtx.QualityOfService(),
+			bytesLimit, tr.limitHint, tr.EvalCtx.QualityOfService(),
 		)
 	}
 	tr.scanStarted = true

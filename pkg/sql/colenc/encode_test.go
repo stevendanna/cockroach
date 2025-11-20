@@ -39,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
@@ -258,11 +257,15 @@ func TestEncoderEqualityRand(t *testing.T) {
 	ctx := context.Background()
 	s, db, kvdb := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(ctx)
+	// Increase the span config limit in case we're running with multiple
+	// tenants since the loop below might create more spans than the default
+	// limit of 5k.
+	s.SQLConn(t).QueryRow("SET CLUSTER SETTING spanconfig.tenant_limit = 50000")
 	codec, sv := s.ApplicationLayer().Codec(), &s.ApplicationLayer().ClusterSettings().SV
 	rng, _ := randutil.NewTestRand()
 	for i := 0; i < 100; i++ {
 		tableName := fmt.Sprintf("t%d", i)
-		ct := randgen.RandCreateTableWithName(ctx, rng, tableName, i, randgen.TableOptNone)
+		ct := randgen.RandCreateTableWithName(rng, tableName, i, false /* isMultiRegion */)
 		tableDef := tree.Serialize(ct)
 		r := sqlutils.MakeSQLRunner(db)
 		r.Exec(t, tableDef)
@@ -600,14 +603,14 @@ func buildRowKVs(
 	sv *settings.Values,
 	codec keys.SQLCodec,
 ) (kvs, error) {
-	inserter, err := row.MakeInserter(context.Background(), nil /*txn*/, codec, desc, nil /* uniqueWithTombstoneIndexes */, cols, nil, sv, false, nil)
+	inserter, err := row.MakeInserter(context.Background(), nil /*txn*/, codec, desc, cols, nil, sv, false, nil)
 	if err != nil {
 		return kvs{}, err
 	}
 	p := &capturePutter{}
 	var pm row.PartialIndexUpdateHelper
 	for _, d := range datums {
-		if err := inserter.InsertRow(context.Background(), p, d, pm, nil, row.CPutOp, true /* traceKV */); err != nil {
+		if err := inserter.InsertRow(context.Background(), p, d, pm, false, true); err != nil {
 			return kvs{}, err
 		}
 	}
@@ -707,12 +710,6 @@ func (c *capturePutter) CPut(key, value interface{}, expValue []byte) {
 	c.kvs.values = append(c.kvs.values, copyBytes(v.RawBytes))
 }
 
-func (c *capturePutter) CPutWithOriginTimestamp(
-	key, value interface{}, expValue []byte, ts hlc.Timestamp, shouldWinTie bool,
-) {
-	colexecerror.InternalError(errors.New("unimplemented"))
-}
-
 func (c *capturePutter) Put(key, value interface{}) {
 	k := key.(*roachpb.Key)
 	c.kvs.keys = append(c.kvs.keys, copyBytes(*k))
@@ -720,24 +717,15 @@ func (c *capturePutter) Put(key, value interface{}) {
 	c.kvs.values = append(c.kvs.values, copyBytes(v.RawBytes))
 }
 
-func (c *capturePutter) PutMustAcquireExclusiveLock(key, value interface{}) {
-	colexecerror.InternalError(errors.New("unimplemented"))
+func (c *capturePutter) InitPut(key, value interface{}, failOnTombstones bool) {
+	k := key.(*roachpb.Key)
+	c.kvs.keys = append(c.kvs.keys, *k)
+	v := value.(*roachpb.Value)
+	c.kvs.values = append(c.kvs.values, copyBytes(v.RawBytes))
 }
 
 func (c *capturePutter) Del(key ...interface{}) {
 	colexecerror.InternalError(errors.New("unimplemented"))
-}
-
-func (c *capturePutter) CPutBytesEmpty(kys []roachpb.Key, values [][]byte) {
-	for i, k := range kys {
-		if len(k) == 0 {
-			continue
-		}
-		c.kvs.keys = append(c.kvs.keys, k)
-		var kvValue roachpb.Value
-		kvValue.SetBytes(values[i])
-		c.kvs.values = append(c.kvs.values, kvValue.RawBytes)
-	}
 }
 
 func (c *capturePutter) CPutTuplesEmpty(kys []roachpb.Key, values [][]byte) {
@@ -766,10 +754,32 @@ func (c *capturePutter) CPutValuesEmpty(kys []roachpb.Key, values []roachpb.Valu
 func (c *capturePutter) PutBytes(kys []roachpb.Key, values [][]byte) {
 	colexecerror.InternalError(errors.New("unimplemented"))
 }
+func (c *capturePutter) InitPutBytes(kys []roachpb.Key, values [][]byte) {
+	for i, k := range kys {
+		if len(k) == 0 {
+			continue
+		}
+		c.kvs.keys = append(c.kvs.keys, k)
+		var kvValue roachpb.Value
+		kvValue.SetBytes(values[i])
+		c.kvs.values = append(c.kvs.values, kvValue.RawBytes)
+	}
+}
 
 // we don't call this
 func (c *capturePutter) PutTuples(kys []roachpb.Key, values [][]byte) {
 	colexecerror.InternalError(errors.New("unimplemented"))
+}
+func (c *capturePutter) InitPutTuples(kys []roachpb.Key, values [][]byte) {
+	for i, k := range kys {
+		if len(k) == 0 {
+			continue
+		}
+		c.kvs.keys = append(c.kvs.keys, k)
+		var kvValue roachpb.Value
+		kvValue.SetTuple(values[i])
+		c.kvs.values = append(c.kvs.values, kvValue.RawBytes)
+	}
 }
 
 type kvs struct {

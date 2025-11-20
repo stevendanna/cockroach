@@ -65,7 +65,7 @@ func makeDatumFromColOffset(
 	hint *types.T,
 	evalCtx *eval.Context,
 	semaCtx *tree.SemaContext,
-	col *coldata.Vec,
+	col coldata.Vec,
 	rowIdx int,
 ) (tree.Datum, error) {
 	if col.Nulls().NullAt(rowIdx) {
@@ -119,18 +119,6 @@ func makeDatumFromColOffset(
 			data := col.Bytes().Get(rowIdx)
 			str := *(*string)(unsafe.Pointer(&data))
 			return rowenc.ParseDatumStringAs(ctx, hint, str, evalCtx, semaCtx)
-		}
-	case types.TimestampFamily, types.TimestampTZFamily:
-		switch hint.Family() {
-		case types.TimestampFamily:
-			// workloads are responsible for rounding their timestamp(s) so skip
-			// MakeDTimestamp here and just directly construct it.
-			return alloc.NewDTimestamp(tree.DTimestamp{Time: col.Timestamp()[rowIdx]}), nil
-
-		case types.TimestampTZFamily:
-			// workloads are responsible for rounding their timestamp(s) so skip
-			// MakeDTimestamp here and just directly construct it.
-			return alloc.NewDTimestampTZ(tree.DTimestampTZ{Time: col.Timestamp()[rowIdx]}), nil
 		}
 	}
 	return nil, errors.Errorf(

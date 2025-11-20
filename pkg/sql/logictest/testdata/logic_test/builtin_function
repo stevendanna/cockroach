@@ -195,13 +195,8 @@ SELECT concat('RoacH', NULL)
 ----
 RoacH
 
-statement ok
-CREATE TYPE concat_enum AS ENUM ('foo', 'bar', 'baz')
-
-query T
-SELECT concat('foo'::concat_enum, ' ', 64.532, ' ', 'baz'::concat_enum, ' ', 42, ' ', 1 = 0, ' ', '{"foo": "bar"}'::json, ' ', '{1, 2, 3}'::int[])
-----
-foo 64.532 baz 42 f {"foo": "bar"} {1,2,3}
+statement error unknown signature: concat\(string, bool, decimal, bool\)
+SELECT concat('RoacH', false, 64.532, TRUE)
 
 query T
 SELECT substr('RoacH', 2, 3)
@@ -427,46 +422,6 @@ query T
 SELECT split_part('abc~@~def~@~ghi', '~@~', 2)
 ----
 def
-
-query T
-SELECT split_part('abc,def,ghi,jkl', ',', -2)
-----
-ghi
-
-statement error pq: split_part\(\): field position must not be zero
-SELECT split_part('abc,def,ghi,jkl', ',', 0)
-
-# To maintain compatibility with postgres, if the separator is not found and
-# the request is for the first or last field, return the entire input text.
-query T
-SELECT split_part('joeuser@mydatabase', '', 1)
-----
-joeuser@mydatabase
-
-query T
-SELECT split_part('joeuser@mydatabase', '', -1)
-----
-joeuser@mydatabase
-
-query T
-SELECT split_part('joeuser@mydatabase', '?', 1)
-----
-joeuser@mydatabase
-
-query T
-SELECT split_part('joeuser@mydatabase', '?', -1)
-----
-joeuser@mydatabase
-
-query T
-SELECT split_part('joeuser@mydatabase', '', 2)
-----
-·
-
-query T
-SELECT split_part('joeuser@mydatabase', '?', -2)
-----
-·
 
 query T
 SELECT repeat('Pg', 4)
@@ -2328,7 +2283,7 @@ CREATE INDEX pg_indexdef_partial_idx ON test.public.pg_indexdef_test USING btree
 query T
 SELECT pg_catalog.pg_get_indexdef((SELECT oid from pg_class WHERE relname='pg_indexdef_partial_enum_idx'))
 ----
-CREATE INDEX pg_indexdef_partial_enum_idx ON test.public.pg_indexdef_test USING btree (a ASC) WHERE (e IN ('foo'::public.testenum, 'bar'::public.testenum))
+CREATE INDEX pg_indexdef_partial_enum_idx ON test.public.pg_indexdef_test USING btree (a ASC) WHERE (e IN ('foo'::test.public.testenum, 'bar'::test.public.testenum))
 
 query T
 SELECT pg_catalog.pg_get_indexdef(0, 0, true)
@@ -3075,7 +3030,6 @@ SELECT (SELECT * FROM [SHOW crdb_version]) = version()
 ----
 true
 
-# Replicated version field was added in 24.3, which will make the two non-equivalent.
 query B
 select crdb_internal.json_to_pb('cockroach.sql.sqlbase.Descriptor', crdb_internal.pb_to_json('cockroach.sql.sqlbase.Descriptor', descriptor)) = descriptor from system.descriptor where id = 1
 ----
@@ -3905,72 +3859,6 @@ select crdb_internal.job_payload_type('invalid'::BYTES);
 query error pgcode 22023 pq: crdb_internal.job_payload_type\(\): invalid type in job payload protocol message: Payload.Type called on a payload with an unknown details type: <nil>
 select crdb_internal.job_payload_type('');
 
-subtest crdb_internal.get_fully_qualified_table_name
-query T
-SELECT crdb_internal.get_fully_qualified_table_name(NULL)
-----
-NULL
-
-query T
-SELECT crdb_internal.get_fully_qualified_table_name(9999999)
-----
-NULL
-
-statement ok
-CREATE DATABASE "testDatabase"
-
-query T
-SELECT crdb_internal.get_fully_qualified_table_name((SELECT id FROM system.namespace WHERE name = 'foo'))
-----
-test.public.foo
-
-statement error unknown signature: crdb_internal.get_fully_qualified_table_name\(string\)
-SELECT crdb_internal.get_fully_qualified_table_name('')
-
-statement ok
-USE "testDatabase"
-
-statement ok
-CREATE SCHEMA "testSchema"
-
-statement ok
-CREATE TABLE "testSchema"."testTable" (a INT)
-
-let $testTableID
-SELECT id FROM system.namespace WHERE name = 'testTable'
-
-statement ok
-USE test
-
-query T
-SELECT crdb_internal.get_fully_qualified_table_name($testTableID)
-----
-"testDatabase"."testSchema"."testTable"
-
-user testuser
-
-# Verify that testuser has permissions to use the builtin function, and the
-# backing view.
-query T
-SELECT crdb_internal.get_fully_qualified_table_name($testTableID)
-----
-"testDatabase"."testSchema"."testTable"
-
-user root
-
-statement ok
-REVOKE CONNECT ON DATABASE "testDatabase" FROM public
-
-user testuser
-
-# testuser should no longer be able to see the name.
-query T
-SELECT crdb_internal.get_fully_qualified_table_name($testTableID)
-----
-NULL
-
-user root
-
 subtest crdb_internal.redactable_sql_constants
 query T
 SELECT crdb_internal.redactable_sql_constants(NULL)
@@ -4379,174 +4267,3 @@ query T rowsort
 SELECT oidvectortypes(proargtypes) FROM pg_proc WHERE proname='custom_fn'
 ----
 custom_typ
-
-subtest obj_description_with_comment_on_type
-
-skipif config local-legacy-schema-changer
-statement ok
-CREATE TYPE roach_dwellings AS ENUM ('roach_motel','roach_kitchen','roach_bathroom','roach_house');
-
-skipif config local-legacy-schema-changer
-statement ok
-COMMENT ON TYPE roach_dwellings IS 'roach_penthouse coming soon';
-
-# This select statement tests the underlying statement run with \dT
-skipif config local-legacy-schema-changer
-query TTT colnames
-SELECT n.nspname AS "Schema",
-         pg_catalog.format_type(t.oid, NULL) AS "Name",
-         COALESCE(pg_catalog.obj_description(t.oid, 'pg_type'),'') AS "Description"
-    FROM pg_catalog.pg_type t
-LEFT JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-   WHERE (t.typrelid = 0
-         OR (SELECT c.relkind = 'c'
-               FROM pg_catalog.pg_class c
-              WHERE c.oid = t.typrelid))
-     AND (NOT EXISTS(
-         SELECT 1
-           FROM pg_catalog.pg_type el
-          WHERE el.oid = t.typelem AND el.typarray = t.oid))
-     AND n.nspname !~ '^pg_'
-     AND n.nspname <> 'information_schema'
-     AND n.nspname <> 'crdb_internal'
-     AND pg_catalog.pg_type_is_visible(t.oid)
-ORDER BY 1, 2;
-----
-Schema  Name             Description
-public  concat_enum      ·
-public  custom_typ       ·
-public  roach_dwellings  ·
-public  testenum         ·
-
-subtest end
-
-subtest type_is_indexable
-
-# Indexable type (int4).
-query B
-SELECT crdb_internal.type_is_indexable(23);
-----
-true
-
-# Unindexable type (refcursor).
-query B
-SELECT crdb_internal.type_is_indexable(1790);
-----
-false
-
-statement ok
-CREATE TYPE foo_type AS ENUM ('v1', 'v2', 'v3');
-
-query B
-SELECT crdb_internal.type_is_indexable((SELECT oid FROM pg_type WHERE typname = 'foo_type'));
-----
-true
-
-query T
-SELECT crdb_internal.type_is_indexable(NULL);
-----
-NULL
-
-subtest substring_index
-
-# Test basic behavior of substring_index
-query T
-SELECT substring_index('www.cockroachlabs.com', '.', 2);
-----
-www.cockroachlabs
-
-query T
-SELECT substring_index('www.cockroachlabs.com', '.', -2);
-----
-cockroachlabs.com
-
-query T
-SELECT substring_index('hello.world.example.com', '.', 3);
-----
-hello.world.example
-
-query T
-SELECT substring_index('hello.world.example.com', '.', -1);
-----
-com
-
-# Test when count is 0, should return empty string
-query T
-SELECT substring_index('111-22222-3333', '-', 0);
-----
-·
-
-# Test when count exceeds available delimiters, should return full string
-query T
-SELECT substring_index('example.com', '.', 5);
-----
-example.com
-
-query T
-SELECT substring_index('example.com', '.', -5);
-----
-example.com
-
-# Test when delimiter is not found in the string, should return full string
-query T
-SELECT substring_index('no.delimiters.here', ':', 1);
-----
-no.delimiters.here
-
-query T
-SELECT substring_index('singleword', '.', 1);
-----
-singleword
-
-# Test when input is empty, should return empty string
-query T
-SELECT substring_index('', '.', 1);
-----
-·
-
-
-# Test when delimiter is empty, should return empty string
-query T
-SELECT substring_index('teststring', '', 1);
-----
-·
-
-# Test NULL behavior, should return NULL if any argument is NULL
-query T
-SELECT substring_index(NULL, '.', 1);
-----
-NULL
-
-query T
-SELECT substring_index('test.string', NULL, 1);
-----
-NULL
-
-query T
-SELECT substring_index('test.string', '.', NULL);
-----
-NULL
-
-# Test with multi-character delimiters
-query T
-SELECT substring_index('apple--banana--cherry--date', '--', 2);
-----
-apple--banana
-
-query T
-SELECT substring_index('apple--banana--cherry--date', '--', -2);
-----
-cherry--date
-
-# Test when the string contains repeated delimiters
-query T
-SELECT substring_index('a..b..c..d', '..', 2);
-----
-a..b
-
-query T
-SELECT substring_index('a..b..c..d', '..', -2);
-----
-c..d
-
-subtest end

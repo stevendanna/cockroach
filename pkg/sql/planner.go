@@ -7,6 +7,7 @@ package sql
 
 import (
 	"context"
+	crypto_rand "crypto/rand"
 	"sync/atomic"
 	"time"
 
@@ -27,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/multiregion"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schematelemetry/schematelemetrycontroller"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
@@ -35,6 +35,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/exprutil"
 	"github.com/cockroachdb/cockroach/pkg/sql/idxusage"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/querycache"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
@@ -45,12 +47,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
+	"github.com/cockroachdb/cockroach/pkg/util/ulid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -100,8 +102,6 @@ type extendedEvalContext struct {
 	jobs *txnJobsCollection
 
 	statsProvider *persistedsqlstats.PersistedSQLStats
-
-	localStatsProvider *sslocal.SQLStats
 
 	indexUsageStats *idxusage.LocalIndexUsageStats
 
@@ -288,9 +288,6 @@ type planner struct {
 	// This field is embedded into the planner to avoid an allocation in
 	// checkScanParallelizationIfLocal.
 	parallelizationChecker localScanParallelizationChecker
-
-	// datumAlloc is used when decoding datums and running subqueries.
-	datumAlloc *tree.DatumAlloc
 }
 
 // hasFlowForPausablePortal returns true if the planner is for re-executing a
@@ -336,7 +333,7 @@ func WithDescCollection(collection *descs.Collection) InternalPlannerParamsOptio
 // NewInternalPlanner is an exported version of newInternalPlanner. It
 // returns an interface{} so it can be used outside of the sql package.
 func NewInternalPlanner(
-	opName redact.SafeString,
+	opName string,
 	txn *kv.Txn,
 	user username.SQLUsername,
 	memMetrics *MemoryMetrics,
@@ -356,7 +353,8 @@ func NewInternalPlanner(
 // Returns a cleanup function that must be called once the caller is done with
 // the planner.
 func newInternalPlanner(
-	opName redact.SafeString,
+	// TODO(yuzefovich): make this redact.RedactableString.
+	opName string,
 	txn *kv.Txn,
 	user username.SQLUsername,
 	memMetrics *MemoryMetrics,
@@ -378,7 +376,7 @@ func newInternalPlanner(
 	// asking the caller for one is hard to explain. What we need is better and
 	// separate interfaces for planning and running plans, which could take
 	// suitable contexts.
-	ctx := logtags.AddTag(context.Background(), string(opName), "")
+	ctx := logtags.AddTag(context.Background(), opName, "")
 
 	sd = sd.Clone()
 	if sd.SessionData.Database == "" {
@@ -404,16 +402,29 @@ func newInternalPlanner(
 		ts = readTimestamp.GoTime()
 	}
 
+	p := &planner{execCfg: execCfg}
+
+	p.txn = txn
+	p.stmt = Statement{}
+	p.cancelChecker.Reset(ctx)
+
+	p.semaCtx = tree.MakeSemaContext()
+	p.semaCtx.SearchPath = &sd.SearchPath
+	p.semaCtx.TypeResolver = p
+	p.semaCtx.FunctionResolver = p
+	p.semaCtx.NameResolver = p
+	p.semaCtx.DateStyle = sd.GetDateStyle()
+	p.semaCtx.IntervalStyle = sd.GetIntervalStyle()
+	p.semaCtx.UnsupportedTypeChecker = eval.NewUnsupportedTypeChecker(execCfg.Settings.Version)
+
 	plannerMon := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeMonitorName("internal-planner." + opName),
+		Name:     redact.Sprintf("internal-planner.%s.%s", user, opName),
 		CurCount: memMetrics.CurBytesCount,
 		MaxHist:  memMetrics.MaxBytesHist,
 		Settings: execCfg.Settings,
 	})
 	plannerMon.StartNoReserved(ctx, execCfg.RootMemoryMonitor)
-
-	p := &planner{execCfg: execCfg, datumAlloc: &tree.DatumAlloc{}}
-	p.resetPlanner(ctx, txn, sd, plannerMon, nil /* sessionMon */)
+	p.monitor = plannerMon
 
 	smi := &sessionDataMutatorIterator{
 		sds: sds,
@@ -443,9 +454,9 @@ func newInternalPlanner(
 	p.extendedEvalCtx.NodeID = execCfg.NodeInfo.NodeID
 	p.extendedEvalCtx.Locality = execCfg.Locality
 	p.extendedEvalCtx.OriginalLocality = execCfg.Locality
-	p.extendedEvalCtx.DescIDGenerator = execCfg.DescIDGenerator
 
 	p.sessionDataMutatorIterator = smi
+	p.autoCommit = false
 
 	p.extendedEvalCtx.MemMetrics = memMetrics
 	p.extendedEvalCtx.ExecCfg = execCfg
@@ -504,7 +515,6 @@ func internalExtendedEvalCtx(
 	var schemaTelemetryController eval.SchemaTelemetryController
 	var indexUsageStatsController eval.IndexUsageStatsController
 	var sqlStatsProvider *persistedsqlstats.PersistedSQLStats
-	var localSqlStatsProvider *sslocal.SQLStats
 	if ief := execCfg.InternalDB; ief != nil {
 		if ief.server != nil {
 			indexUsageStats = ief.server.indexUsageStats
@@ -512,7 +522,6 @@ func internalExtendedEvalCtx(
 			schemaTelemetryController = ief.server.schemaTelemetryController
 			indexUsageStatsController = ief.server.indexUsageStatsController
 			sqlStatsProvider = ief.server.sqlStats
-			localSqlStatsProvider = ief.server.localSqlStats
 		} else {
 			// If the indexUsageStats is nil from the sql.Server, we create a dummy
 			// index usage stats collector. The sql.Server in the ExecutorConfig
@@ -524,7 +533,6 @@ func internalExtendedEvalCtx(
 			schemaTelemetryController = &schematelemetrycontroller.Controller{}
 			indexUsageStatsController = &idxusage.Controller{}
 			sqlStatsProvider = &persistedsqlstats.PersistedSQLStats{}
-			localSqlStatsProvider = &sslocal.SQLStats{}
 		}
 	}
 	ret := extendedEvalContext{
@@ -543,14 +551,15 @@ func internalExtendedEvalCtx(
 			ConsistencyChecker:             execCfg.ConsistencyChecker,
 			StmtDiagnosticsRequestInserter: execCfg.StmtDiagnosticsRecorder.InsertRequest,
 			RangeStatsFetcher:              execCfg.RangeStatsFetcher,
+			ULIDEntropy:                    ulid.Monotonic(crypto_rand.Reader, 0),
 		},
-		Tracing:            &SessionTracing{},
-		Descs:              tables,
-		indexUsageStats:    indexUsageStats,
-		statsProvider:      sqlStatsProvider,
-		localStatsProvider: localSqlStatsProvider,
-		jobs:               newTxnJobsCollection(),
+		Tracing:         &SessionTracing{},
+		Descs:           tables,
+		indexUsageStats: indexUsageStats,
+		statsProvider:   sqlStatsProvider,
+		jobs:            newTxnJobsCollection(),
 	}
+	ret.SetDeprecatedContext(ctx)
 	ret.copyFromExecCfg(execCfg)
 	return ret
 }
@@ -660,34 +669,8 @@ func (p *planner) User() username.SQLUsername {
 	return p.SessionData().User()
 }
 
-// TemporarySchemaName implements scbuildstmt.TemporarySchemaProvider.
 func (p *planner) TemporarySchemaName() string {
 	return temporarySchemaName(p.ExtendedEvalContext().SessionID)
-}
-
-// NodesStatusServer implements scbuildstmt.NodesStatusInfo.
-func (p *planner) NodesStatusServer() *serverpb.OptionalNodesStatusServer {
-	return &p.extendedEvalCtx.NodesStatusServer
-}
-
-// GetRegions implements scbuildstmt.GetRegions.
-func (p *planner) GetRegions(ctx context.Context) (*serverpb.RegionsResponse, error) {
-	provider := p.regionsProvider()
-	if provider == nil {
-		return nil, errors.AssertionFailedf("no regions provider available")
-	}
-	return provider.GetRegions(ctx)
-}
-
-// SynthesizeRegionConfig implements the scbuildstmt.SynthesizeRegionConfig interface.
-func (p *planner) SynthesizeRegionConfig(
-	ctx context.Context, dbID descpb.ID, opts ...multiregion.SynthesizeRegionConfigOption,
-) (multiregion.RegionConfig, error) {
-	provider := p.regionsProvider()
-	if provider == nil {
-		return multiregion.RegionConfig{}, errors.AssertionFailedf("no regions provider available")
-	}
-	return provider.SynthesizeRegionConfig(ctx, dbID, opts...)
 }
 
 // DistSQLPlanner returns the DistSQLPlanner
@@ -826,7 +809,7 @@ func (p *planner) IsActive(ctx context.Context, key clusterversion.Key) bool {
 // they have previously been set through SetSessionData().
 func (p *planner) QueryRowEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	override sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -838,7 +821,7 @@ func (p *planner) QueryRowEx(
 // fields (e.g. the user).
 func (p *planner) ExecEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	override sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -854,7 +837,7 @@ func (p *planner) ExecEx(
 // have previously been set through SetSessionData().
 func (p *planner) QueryIteratorEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	override sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -868,7 +851,7 @@ func (p *planner) QueryIteratorEx(
 // have previously been set through SetSessionData().
 func (p *planner) QueryBufferedEx(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -880,7 +863,7 @@ func (p *planner) QueryBufferedEx(
 // ResultColumns of the input query.
 func (p *planner) QueryRowExWithCols(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -892,7 +875,7 @@ func (p *planner) QueryRowExWithCols(
 // computed ResultColumns of the input query.
 func (p *planner) QueryBufferedExWithCols(
 	ctx context.Context,
-	opName redact.RedactableString,
+	opName string,
 	session sessiondata.InternalExecutorOverride,
 	stmt string,
 	qargs ...interface{},
@@ -903,6 +886,7 @@ func (p *planner) QueryBufferedExWithCols(
 func (p *planner) resetPlanner(
 	ctx context.Context,
 	txn *kv.Txn,
+	stmtTS time.Time,
 	sd *sessiondata.SessionData,
 	plannerMon *mon.BytesMonitor,
 	sessionMon *mon.BytesMonitor,
@@ -915,9 +899,12 @@ func (p *planner) resetPlanner(
 
 	p.cancelChecker.Reset(ctx)
 
-	p.semaCtx = tree.MakeSemaContext(p)
+	p.semaCtx = tree.MakeSemaContext()
 	p.semaCtx.SearchPath = &sd.SearchPath
 	p.semaCtx.Annotations = nil
+	p.semaCtx.TypeResolver = p
+	p.semaCtx.FunctionResolver = p
+	p.semaCtx.NameResolver = p
 	p.semaCtx.DateStyle = sd.GetDateStyle()
 	p.semaCtx.IntervalStyle = sd.GetIntervalStyle()
 	p.semaCtx.UnsupportedTypeChecker = eval.NewUnsupportedTypeChecker(p.execCfg.Settings.Version)
@@ -936,7 +923,7 @@ func (p *planner) resetPlanner(
 func (p *planner) GetReplicationStreamManager(
 	ctx context.Context,
 ) (eval.ReplicationStreamManager, error) {
-	return repstream.GetReplicationStreamManager(ctx, p.EvalContext(), &p.schemaResolver, p.InternalSQLTxn(), p.ExtendedEvalContext().SessionID)
+	return repstream.GetReplicationStreamManager(ctx, p.EvalContext(), p.InternalSQLTxn(), p.ExtendedEvalContext().SessionID)
 }
 
 // GetStreamIngestManager returns a StreamIngestManager.
@@ -1005,20 +992,6 @@ func (p *planner) AutoCommit() bool {
 	return p.autoCommit
 }
 
-// ClearQueryPlanCache is part of the eval.Planner interface.
-func (p *planner) ClearQueryPlanCache() {
-	if p.execCfg.QueryCache != nil {
-		p.execCfg.QueryCache.Clear()
-	}
-}
-
-// ClearTableStatsCache is part of the eval.Planner interface.
-func (p *planner) ClearTableStatsCache() {
-	if p.execCfg.TableStatsCache != nil {
-		p.execCfg.TableStatsCache.Clear()
-	}
-}
-
 // mustUseLeafTxn returns true if inner plans must use a leaf transaction.
 func (p *planner) mustUseLeafTxn() bool {
 	return atomic.LoadInt32(&p.atomic.innerPlansMustUseLeafTxn) >= 1
@@ -1027,6 +1000,10 @@ func (p *planner) mustUseLeafTxn() bool {
 func (p *planner) StartHistoryRetentionJob(
 	ctx context.Context, desc string, protectTS hlc.Timestamp, expiration time.Duration,
 ) (jobspb.JobID, error) {
+	if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V24_1) {
+		return 0, pgerror.New(pgcode.FeatureNotSupported,
+			"history retention job not supported before V24.1")
+	}
 	return StartHistoryRetentionJob(ctx, p.EvalContext(), p.InternalSQLTxn(), desc, protectTS, expiration)
 }
 

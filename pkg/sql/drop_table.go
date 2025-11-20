@@ -30,7 +30,6 @@ import (
 )
 
 type dropTableNode struct {
-	zeroInputPlanNode
 	n *tree.DropTable
 	// td is a map from table descriptor to toDelete struct, indicating which
 	// tables this operation should delete.
@@ -72,10 +71,6 @@ func (p *planner) DropTable(ctx context.Context, n *tree.DropTable) (planNode, e
 
 	for _, toDel := range td {
 		droppedDesc := toDel.desc
-		// Disallow the DROP if this table's schema is locked.
-		if err := checkSchemaChangeIsAllowed(droppedDesc, n); err != nil {
-			return nil, err
-		}
 		for _, fk := range droppedDesc.InboundForeignKeys() {
 			if _, ok := td[fk.GetOriginTableID()]; !ok {
 				if err := p.canRemoveFKBackreference(ctx, droppedDesc.Name, fk, n.DropBehavior); err != nil {
@@ -271,19 +266,6 @@ func (p *planner) dropTableImpl(
 		}
 	}
 
-	// Remove trigger dependencies on other tables.
-	//
-	// NOTE: we don't have to explicitly do this for other types of backreferences
-	// because they use the "GetAll..." methods.
-	for i := range tableDesc.Triggers {
-		trigger := &tableDesc.Triggers[i]
-		for _, id := range trigger.DependsOn {
-			if err := p.removeTriggerBackReference(ctx, tableDesc, id, trigger.Name); err != nil {
-				return droppedViews, err
-			}
-		}
-	}
-
 	// Remove function dependencies
 	fnIDs, err := tableDesc.GetAllReferencedFunctionIDs()
 	if err != nil {
@@ -452,20 +434,20 @@ func (p *planner) markTableMutationJobsSuccessful(
 		if err := mutationJob.WithTxn(p.InternalSQLTxn()).Update(ctx, func(
 			txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater,
 		) error {
-			status := md.State
+			status := md.Status
 			switch status {
-			case jobs.StateSucceeded, jobs.StateCanceled, jobs.StateFailed, jobs.StateRevertFailed:
+			case jobs.StatusSucceeded, jobs.StatusCanceled, jobs.StatusFailed, jobs.StatusRevertFailed:
 				log.Warningf(ctx, "mutation job %d in unexpected state %s", jobID, status)
 				return nil
-			case jobs.StateRunning, jobs.StatePending:
-				status = jobs.StateSucceeded
+			case jobs.StatusRunning, jobs.StatusPending:
+				status = jobs.StatusSucceeded
 			default:
 				// We shouldn't mark jobs as succeeded if they're not in a state where
 				// they're eligible to ever succeed, so mark them as failed.
-				status = jobs.StateFailed
+				status = jobs.StatusFailed
 			}
 			log.Infof(ctx, "marking mutation job %d for dropped table as %s", jobID, status)
-			ju.UpdateState(status)
+			ju.UpdateStatus(status)
 			return nil
 		}); err != nil {
 			return errors.Wrap(err, "updating mutation job for dropped table")
@@ -667,41 +649,6 @@ func removeFKBackReferenceFromTable(
 	referencedTableDesc.InboundFKs = append(referencedTableDesc.InboundFKs[:matchIdx],
 		referencedTableDesc.InboundFKs[matchIdx+1:]...)
 	return nil
-}
-
-// removeTriggerBackReference removes the trigger back reference for the
-// referenced table with the given ID.
-func (p *planner) removeTriggerBackReference(
-	ctx context.Context, tableDesc *tabledesc.Mutable, refID descpb.ID, triggerName string,
-) error {
-	var refTableDesc *tabledesc.Mutable
-	// We don't want to lookup/edit a second copy of the same table.
-	if tableDesc.ID == refID {
-		refTableDesc = tableDesc
-	} else {
-		lookup, err := p.Descriptors().MutableByID(p.txn).Table(ctx, refID)
-		if err != nil {
-			return errors.Wrapf(err, "error resolving referenced table ID %d", refID)
-		}
-		refTableDesc = lookup
-	}
-	if refTableDesc.Dropped() {
-		// The referenced table is being dropped. No need to modify it further.
-		return nil
-	}
-	refTableDesc.DependedOnBy = removeMatchingReferences(refTableDesc.DependedOnBy, tableDesc.ID)
-
-	name, err := p.getQualifiedTableName(ctx, tableDesc)
-	if err != nil {
-		return err
-	}
-	refName, err := p.getQualifiedTableName(ctx, refTableDesc)
-	if err != nil {
-		return err
-	}
-	jobDesc := fmt.Sprintf("updating table %q after removing trigger %q from table %q",
-		refName.FQString(), triggerName, name.FQString())
-	return p.writeSchemaChange(ctx, refTableDesc, descpb.InvalidMutationID, jobDesc)
 }
 
 // removeMatchingReferences removes all refs from the provided slice that

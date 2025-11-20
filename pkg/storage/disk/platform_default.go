@@ -3,7 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-//go:build !linux && !darwin
+//go:build !linux
+// +build !linux
 
 package disk
 

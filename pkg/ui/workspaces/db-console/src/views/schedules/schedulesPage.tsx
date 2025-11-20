@@ -13,7 +13,6 @@ import {
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
 import { createSelector } from "reselect";
-
 import {
   CachedDataReducerState,
   schedulesKey,

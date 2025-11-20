@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvstreamer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/diskmap"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
@@ -112,9 +111,6 @@ type ServerConfig struct {
 	// used during restore.
 	RestoreMonitor *mon.BytesMonitor
 
-	// ChangefeedMonitor is the parent monitor for all CDC DistSQL flows.
-	ChangefeedMonitor *mon.BytesMonitor
-
 	// BulkSenderLimiter is the concurrency limiter that is shared across all of
 	// the processes in a given sql server when sending bulk ingest (AddSST) reqs.
 	BulkSenderLimiter limit.ConcurrentRequestLimiter
@@ -129,7 +125,6 @@ type ServerConfig struct {
 	Metrics            *DistSQLMetrics
 	RowMetrics         *rowinfra.Metrics
 	InternalRowMetrics *rowinfra.Metrics
-	KVStreamerMetrics  *kvstreamer.Metrics
 
 	// SQLLivenessReader provides access to reading the liveness of sessions.
 	SQLLivenessReader sqlliveness.Reader
@@ -210,11 +205,6 @@ type ServerConfig struct {
 	// RootSQLMemoryPoolSize is the size in bytes of the root SQL memory
 	// monitor.
 	RootSQLMemoryPoolSize int64
-
-	// VecIndexManager allows SQL processors to access the vecindex.VectorIndex
-	// for operations on a vector index. It's stored as an `interface{}` due to
-	// package dependency cycles
-	VecIndexManager interface{}
 }
 
 // RuntimeStats is an interface through which the rowexec layer can get
@@ -333,6 +323,10 @@ type TestingKnobs struct {
 	// will be assigned to the gateway before we start assigning partitions to
 	// other nodes.
 	MinimumNumberOfGatewayPartitions int
+
+	// TableReaderStartScanCb, when non-nil, will be called whenever the
+	// TableReader processor starts its scan.
+	TableReaderStartScanCb func()
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

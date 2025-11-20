@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build linux
+// +build linux
 
 package disk
 
@@ -12,7 +13,6 @@ import (
 	"io/fs"
 
 	"github.com/cockroachdb/cockroach/pkg/util/sysutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/vfs"
 	"golang.org/x/sys/unix"
@@ -48,7 +48,7 @@ func (s *linuxStatsCollector) collect(disks []*monitoredDisk) error {
 		// single read. Reallocate (doubling) the buffer and continue.
 		s.buf = make([]byte, len(s.buf)*2)
 	}
-	return parseDiskStats(s.buf[:n], disks, timeutil.Now())
+	return parseDiskStats(s.buf[:n], disks)
 }
 
 func newStatsCollector(fs vfs.FS) (*linuxStatsCollector, error) {

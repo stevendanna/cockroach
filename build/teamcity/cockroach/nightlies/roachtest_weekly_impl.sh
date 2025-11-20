@@ -46,8 +46,4 @@ timeout -s INT $((7800*60)) build/teamcity-roachtest-invoke.sh \
   --metamorphic-encryption-probability=0.5 \
   --metamorphic-arm64-probability="${ARM_PROBABILITY:-0.5}" \
   --use-spot="${USE_SPOT:-auto}" \
-  --slack-token="${SLACK_TOKEN}" \
-  --side-eye-token="${SIDE_EYE_API_TOKEN}" \
-  --export-openmetrics="${EXPORT_OPENMETRICS:-false}" \
-  --openmetrics-labels="branch=$(tc_build_branch), cpu-arch=${arch}, suite=weekly" \
-  ${TESTS:-}
+  --slack-token="${SLACK_TOKEN}"

@@ -73,16 +73,6 @@ func (n NodeListOption) SeededRandNode(rand *rand.Rand) NodeListOption {
 	return NodeListOption{n[rand.Intn(len(n))]}
 }
 
-func (n NodeListOption) SeededRandList(rand *rand.Rand, size int) (NodeListOption, error) {
-	if size > len(n) {
-		return NodeListOption{}, fmt.Errorf("cannot select list - size: %d > len: %d", size, len(n))
-	}
-
-	nodes := append([]int{}, n...)
-	rand.Shuffle(len(nodes), func(i, j int) { nodes[i], nodes[j] = nodes[j], nodes[i] })
-	return nodes[:size], nil
-}
-
 // NodeIDsString returns the nodes in the NodeListOption, separated by spaces.
 func (n NodeListOption) NodeIDsString() string {
 	result := ""

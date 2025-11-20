@@ -3,15 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { createSelector } from "@reduxjs/toolkit";
 import Long from "long";
-import moment from "moment-timezone";
+import { createSelector } from "@reduxjs/toolkit";
 import { RouteComponentProps } from "react-router-dom";
-
 import { AppState } from "../store";
-import { selectTimeScale } from "../store/utils/selectors";
-import { TimeScale, toRoundedDateRange } from "../timeScaleDropdown";
 import {
   appNamesAttr,
   statementAttr,
@@ -19,6 +14,10 @@ import {
   queryByName,
   generateStmtDetailsToID,
 } from "../util";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { TimeScale, toRoundedDateRange } from "../timeScaleDropdown";
+import { selectTimeScale } from "../store/utils/selectors";
+import moment from "moment-timezone";
 
 type StatementDetailsResponseMessage =
   cockroach.server.serverpb.StatementDetailsResponse;

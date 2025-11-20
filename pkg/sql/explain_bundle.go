@@ -533,7 +533,7 @@ func (b *stmtBundleBuilder) addInFlightTrace(c inFlightTraceCollector) {
 // as well as accumulates the string into b.errorStrings. The method should only
 // be used for non-critical errors.
 func (b *stmtBundleBuilder) printError(errString string, buf *bytes.Buffer) {
-	fmt.Fprintln(buf, errString)
+	fmt.Fprintf(buf, errString+"\n")
 	b.errorStrings = append(b.errorStrings, errString)
 }
 
@@ -585,7 +585,7 @@ func (b *stmtBundleBuilder) addEnv(ctx context.Context) {
 	// update this logic to not include virtual tables into schema.sql but still
 	// create stats files for them.
 	var tables, sequences, views []tree.TableName
-	var addFKs []*tree.AlterTable
+	var addFKs, skipFKs []*tree.AlterTable
 	err := b.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		// Catalog objects can show up multiple times in our lists, so
 		// deduplicate them.
@@ -628,19 +628,19 @@ func (b *stmtBundleBuilder) addEnv(ctx context.Context) {
 			ctx,
 			b.plan.catalog,
 			mem.Metadata().AllTables(),
-			func(table cat.Table, fk cat.ForeignKeyConstraint) (exploreFKs bool) {
+			func(table cat.Table, fk cat.ForeignKeyConstraint) (recurse bool) {
 				if includeAll {
 					return true
 				}
 				if !hasMutation {
 					// For read-only queries, we don't care about any tables not
-					// referenced by metadata, so we don't want to explore any
-					// FKs.
+					// referenced by metadata, so we don't want to recursed into
+					// any FKs.
 					return false
 				}
 				if referencedByMetadata.Contains(int(table.ID())) || fk == nil {
-					// For mutations, we always want to explore FKs of tables
-					// referenced by metadata.
+					// For mutations, we always want to recurse into FKs of
+					// tables referenced by metadata.
 					//
 					// The second part of the conditional should never evaluate
 					// to 'true' since nil FK parameter is provided only for
@@ -654,31 +654,33 @@ func (b *stmtBundleBuilder) addEnv(ctx context.Context) {
 				//   CREATE TABLE child (pk INT PRIMARY KEY, fk INT REFERENCES parent(pk));
 				//   CREATE TABLE grandchild (pk INT PRIMARY KEY, fk INT REFERENCES child(pk));
 				if table.ID() == fk.ReferencedTableID() {
-					// The table we're considering for exploration is a
-					// referenced table of a FK constraint where the referencing
-					// (origin) table has already been visited.
+					// The table we're considering for recursion is a referenced
+					// table of a FK constraint where the referencing (origin)
+					// table has already been visited.
 					//
 					// In our example, we've already visited 'child' and are
-					// considering exploring 'parent', but we never actually
-					// want to explore it.
+					// considering recursing into 'parent', but we never
+					// actually want to do that.
 					return false
 				}
-				// The table we're considering for exploration is an origin
+				// The table we're considering for recursion is an origin
 				// table of a FK constraint where the referenced table has
 				// already been visited.
 				//
 				// In our example, we've already visited 'parent' and are
-				// considering exploring 'child'.
+				// considering recursing into 'child'.
 				if hasDelete && fk.DeleteReferenceAction() == tree.Cascade {
 					// We deleted from 'parent', and we have the ON DELETE
-					// CASCADE action of the 'child' FK, so we need to explore
-					// child's FKs in order to additionally visit 'grandchild'.
+					// CASCADE action of the 'child' FK, so we need to recurse
+					// into child's FKs in order to additionally visit
+					// 'grandchild'.
 					return true
 				}
 				if (hasUpdate || hasUpsert) && fk.UpdateReferenceAction() == tree.Cascade {
 					// We updated the 'parent', and we have the ON UPDATE
-					// CASCADE action of the 'child' FK, so we need to explore
-					// child's FKs in order to additionally visit 'grandchild'.
+					// CASCADE action of the 'child' FK, so we need to recurse
+					// into child's FKs in order to additionally visit
+					// 'grandchild'.
 					//
 					// We don't know whether UPSERT resulted in an UPDATE or an
 					// INSERT, but we'll assume the former to be on the safer
@@ -762,9 +764,13 @@ func (b *stmtBundleBuilder) addEnv(ctx context.Context) {
 				include = hasDelete || hasUpdate || hasUpsert
 			},
 		)
-		addFKs = opt.GetAllFKsAmongTables(refTables, func(t cat.Table) (tree.TableName, error) {
-			return b.plan.catalog.fullyQualifiedNameWithTxn(ctx, t, txn)
-		})
+		addFKs, skipFKs = opt.GetAllFKs(
+			ctx,
+			b.plan.catalog,
+			refTables,
+			func(t cat.Table) (tree.TableName, error) {
+				return b.plan.catalog.fullyQualifiedNameWithTxn(ctx, t, txn)
+			})
 		var err error
 		tables, err = getNames(len(refTables), func(i int) cat.DataSource {
 			return refTables[i]
@@ -873,6 +879,13 @@ func (b *stmtBundleBuilder) addEnv(ctx context.Context) {
 		// we need to add them separately.
 		for _, addFK := range addFKs {
 			fmt.Fprintf(&buf, "%s;\n", addFK)
+		}
+		if len(skipFKs) > 0 {
+			// Include FK constraints that were skipped in commented out form.
+			fmt.Fprintf(&buf, "-- NOTE: these FKs are active and are only commented out for ease of bundle recreation.\n--\n")
+			for _, skipFK := range skipFKs {
+				fmt.Fprintf(&buf, "-- %s;\n", skipFK)
+			}
 		}
 	}
 	for i := range views {
@@ -1070,8 +1083,7 @@ func (c *stmtEnvCollector) PrintSessionSettings(w io.Writer, sv *settings.Values
 		maybeAdjustTimeout := func(value string) (string, error) {
 			switch varName {
 			case "idle_in_session_timeout", "idle_in_transaction_session_timeout",
-				"idle_session_timeout", "lock_timeout", "deadlock_timeout",
-				"statement_timeout", "transaction_timeout":
+				"idle_session_timeout", "lock_timeout", "statement_timeout", "transaction_timeout":
 				// Defaults for timeout settings are of the duration type (i.e.
 				// "0s"), so we'll parse it to extract the number of
 				// milliseconds (which is what the session variable uses).
@@ -1354,22 +1366,21 @@ func (c *stmtEnvCollector) PrintTableStats(
 // explicitly excluded from env.sql of the bundle (they were deemed unlikely to
 // be useful in investigations).
 var skipReadOnlySessionVar = map[string]struct{}{
-	"crdb_version":              {}, // version is included separately
-	"integer_datetimes":         {},
-	"lc_collate":                {},
-	"lc_ctype":                  {},
-	"max_connections":           {},
-	"max_identifier_length":     {},
-	"max_index_keys":            {},
-	"max_prepared_transactions": {},
-	"server_encoding":           {},
-	"server_version":            {},
-	"server_version_num":        {},
-	"session_authorization":     {},
-	"session_user":              {},
-	"system_identity":           {},
-	"tracing":                   {},
-	"virtual_cluster_name":      {},
+	"crdb_version":          {}, // version is included separately
+	"integer_datetimes":     {},
+	"lc_collate":            {},
+	"lc_ctype":              {},
+	"max_connections":       {},
+	"max_identifier_length": {},
+	"max_index_keys":        {},
+	"server_encoding":       {},
+	"server_version":        {},
+	"server_version_num":    {},
+	"session_authorization": {},
+	"session_user":          {},
+	"system_identity":       {},
+	"tracing":               {},
+	"virtual_cluster_name":  {},
 }
 
 // sessionVarNeedsEscaping contains all writable session variables that have

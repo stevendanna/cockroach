@@ -68,7 +68,8 @@ func registerCDCMixedVersions(r registry.Registry) {
 		Cluster:          r.MakeClusterSpec(5, spec.WorkloadNode(), spec.GCEZones(teamcityAgentZone), spec.Arch(vm.ArchAMD64)),
 		Timeout:          3 * time.Hour,
 		CompatibleClouds: registry.OnlyGCE,
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+		Suites:           registry.Suites(registry.Nightly),
+		RequiresLicense:  true,
 		Randomized:       true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runCDCMixedVersions(ctx, t, c)
@@ -143,7 +144,7 @@ func (cmvt *cdcMixedVersionTester) StartKafka(t test.Test, c cluster.Cluster) (c
 	}
 	cmvt.kafka.manager = manager
 
-	consumer, err := cmvt.kafka.manager.newConsumer(cmvt.ctx, targetTable, nil /* stopper */)
+	consumer, err := cmvt.kafka.manager.newConsumer(cmvt.ctx, targetTable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +154,7 @@ func (cmvt *cdcMixedVersionTester) StartKafka(t test.Test, c cluster.Cluster) (c
 	cmvt.kafka.consumer = consumer
 
 	return func() {
-		consumer.close()
+		cmvt.kafka.consumer.Close()
 		tearDown()
 	}
 }
@@ -228,7 +229,7 @@ func (cmvt *cdcMixedVersionTester) setupValidator(
 		fprintV,
 	}
 
-	cmvt.validator = cdctest.NewCountValidator(validators)
+	cmvt.validator = cdctest.MakeCountValidator(validators)
 	cmvt.fprintV = fprintV
 	return nil
 }
@@ -245,9 +246,15 @@ func (cmvt *cdcMixedVersionTester) runKafkaConsumer(
 	// context cancellation. We rely on consumer.Next() to check
 	// the context.
 	for {
-		m, err := cmvt.kafka.consumer.next(ctx)
-		if err != nil {
-			return err
+		m := cmvt.kafka.consumer.Next(ctx)
+		if m == nil {
+			// this is expected to happen once the test has finished and
+			// Kafka is being shut down. If it happens in the middle of
+			// the test, it will eventually time out, and this message
+			// should allow us to see that the validator finished
+			// earlier than it should have
+			l.Printf("end of changefeed")
+			return nil
 		}
 
 		// Forward resolved timetsamps to "heartbeat" that the changefeed is running.
@@ -301,7 +308,7 @@ func (cmvt *cdcMixedVersionTester) validate(
 
 		partitionStr := strconv.Itoa(int(m.Partition))
 		if len(m.Key) > 0 {
-			if err := cmvt.validator.NoteRow(partitionStr, string(m.Key), string(m.Value), updated, m.Topic); err != nil {
+			if err := cmvt.validator.NoteRow(partitionStr, string(m.Key), string(m.Value), updated); err != nil {
 				return err
 			}
 		} else {
@@ -419,8 +426,9 @@ func (cmvt *cdcMixedVersionTester) muxRangeFeedSupported(
 ) (bool, option.NodeListOption, error) {
 	// changefeed.mux_rangefeed.enabled was added in 22.2 and deleted in 24.1.
 	return canMixedVersionUseDeletedClusterSetting(h,
+		false, /* isSystem */
 		clusterupgrade.MustParseVersion("v22.2.0"),
-		clusterupgrade.MustParseVersion("v24.1.0"),
+		clusterupgrade.MustParseVersion("v24.1.0-alpha.00000000"),
 	)
 }
 
@@ -440,17 +448,21 @@ func (cmvt *cdcMixedVersionTester) distributionStrategySupported(
 	return h.ClusterVersionAtLeast(r, v241CV)
 }
 
-// canMixedVersionUseDeletedClusterSetting returns whether a
-// mixed-version cluster can use a deleted (system) cluster
-// setting. If it returns true, it will also return the subset of
-// nodes that understand the setting.
+// canMixedVersionUseDeletedClusterSetting returns whether a mixed-version
+// cluster can use a deleted cluster setting. If it returns true, it will
+// also return the subset of nodes that understand the setting.
 func canMixedVersionUseDeletedClusterSetting(
 	h *mixedversion.Helper,
+	isSystem bool,
 	addedVersion *clusterupgrade.Version,
 	deletedVersion *clusterupgrade.Version,
 ) (bool, option.NodeListOption, error) {
 	fromVersion := h.System.FromVersion
 	toVersion := h.System.ToVersion
+	if !isSystem {
+		fromVersion = h.DefaultService().FromVersion
+		toVersion = h.DefaultService().ToVersion
+	}
 
 	// Cluster setting was deleted at or before the from version so no nodes
 	// know about the setting.
@@ -463,7 +475,7 @@ func canMixedVersionUseDeletedClusterSetting(
 	// all the nodes on that version will know about the setting.
 	if toVersion.AtLeast(deletedVersion) {
 		if fromVersion.AtLeast(addedVersion) {
-			fromVersionNodes := h.System.NodesInPreviousVersion()
+			fromVersionNodes := h.Context().NodesInPreviousVersion()
 			if len(fromVersionNodes) > 0 {
 				return true, fromVersionNodes, nil
 			}
@@ -475,11 +487,11 @@ func canMixedVersionUseDeletedClusterSetting(
 	// at least the added version will know about the setting.
 
 	if fromVersion.AtLeast(addedVersion) {
-		return true, h.System.Descriptor.Nodes, nil
+		return true, h.Context().Descriptor.Nodes, nil
 	}
 
 	if toVersion.AtLeast(addedVersion) {
-		toVersionNodes := h.System.NodesInNextVersion()
+		toVersionNodes := h.Context().NodesInNextVersion()
 		if len(toVersionNodes) > 0 {
 			return true, toVersionNodes, nil
 		}
@@ -500,9 +512,9 @@ func runCDCMixedVersions(ctx context.Context, t test.Test, c cluster.Cluster) {
 		// 23.1. That mistake was then fixed (#110676) but, to simplify
 		// this test, we only create changefeeds in more recent versions.
 		mixedversion.MinimumSupportedVersion("v23.2.0"),
-		// We limit the total number of plan steps to 80, which is roughly 60% of all plan lengths.
-		// See https://github.com/cockroachdb/cockroach/pull/137963#discussion_r1906256740 for more details.
-		mixedversion.MaxNumPlanSteps(80),
+		// We limit the number of upgrades to be performed in the test run because
+		// the test takes a significant amount of time to complete.
+		mixedversion.MaxUpgrades(3),
 	)
 
 	cleanupKafka := tester.StartKafka(t, c)

@@ -43,66 +43,10 @@ func TestBackupRollbacks_base_add_column_default_unique_not_null(t *testing.T) {
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_add_column_generated(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_add_column_generated_serial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated_serial"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacks_base_add_column_no_default(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_no_default"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_add_column_serial_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_rowid"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_add_column_serial_simple_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_add_column_serial_simple_sequence_cached(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_add_column_serial_simple_sequence_cached_node(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached_node"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_add_column_serial_simple_sequence_virtual(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_virtual"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_add_column_serial_unordered_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_unordered_rowid"
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -127,52 +71,10 @@ func TestBackupRollbacks_base_add_column_with_stored_family(t *testing.T) {
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_alter_database_configure_zone(t *testing.T) {
+func TestBackupRollbacks_base_alter_table_add_bit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_database_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_discard"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_database_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_multiple"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_index_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_index_configure_zone_discard"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_named_range_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_named_range_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_discard"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_named_range_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_multiple"
+	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_add_bit"
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -253,41 +155,6 @@ func TestBackupRollbacks_base_alter_table_alter_column_set_not_null(t *testing.T
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_alter_table_alter_column_type_general(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_alter_column_type_general_expr(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general_expr"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_alter_column_type_noop(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_noop"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_alter_column_type_trivial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_trivial"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_alter_column_type_validation(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_validation"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacks_base_alter_table_alter_primary_key_drop_rowid(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -306,34 +173,6 @@ func TestBackupRollbacks_base_alter_table_alter_primary_key_vanilla(t *testing.T
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_primary_key_vanilla"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_discard"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_multiple"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_disable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_disable_row_level_security"
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -365,20 +204,6 @@ func TestBackupRollbacks_base_alter_table_drop_constraint_uwi(t *testing.T) {
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_alter_table_enable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_enable_row_level_security"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_alter_table_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_force_row_level_security"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacks_base_alter_table_multiple_commands(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -386,31 +211,10 @@ func TestBackupRollbacks_base_alter_table_multiple_commands(t *testing.T) {
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_alter_table_no_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_no_force_row_level_security"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacks_base_alter_table_validate_constraint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_validate_constraint"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_composite"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_enum"
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -477,13 +281,6 @@ func TestBackupRollbacks_base_create_index_create_schema_separate_statements(t *
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_create_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_policy"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacks_base_create_schema(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -516,13 +313,6 @@ func TestBackupRollbacks_base_create_sequence_drop_sequence(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_sequence_drop_sequence"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_create_temp_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_temp_sequence"
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -575,13 +365,6 @@ func TestBackupRollbacks_base_drop_column_with_null_constraint(t *testing.T) {
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_drop_column_with_null_constraint_stored(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_null_constraint_stored"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacks_base_drop_column_with_partial_index(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -593,20 +376,6 @@ func TestBackupRollbacks_base_drop_column_with_udf_default(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_udf_default"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_drop_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_composite"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacks_base_drop_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_enum"
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -659,13 +428,6 @@ func TestBackupRollbacks_base_drop_multiple_columns_separate_statements(t *testi
 	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacks_base_drop_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_policy"
-	sctest.BackupRollbacks(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacks_base_drop_schema(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -715,66 +477,10 @@ func TestBackupRollbacksMixedVersion_base_add_column_default_unique_not_null(t *
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_add_column_generated(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_add_column_generated_serial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated_serial"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacksMixedVersion_base_add_column_no_default(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_no_default"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_add_column_serial_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_rowid"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_add_column_serial_simple_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_add_column_serial_simple_sequence_cached(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_add_column_serial_simple_sequence_cached_node(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached_node"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_add_column_serial_simple_sequence_virtual(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_virtual"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_add_column_serial_unordered_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_unordered_rowid"
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -799,52 +505,10 @@ func TestBackupRollbacksMixedVersion_base_add_column_with_stored_family(t *testi
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_alter_database_configure_zone(t *testing.T) {
+func TestBackupRollbacksMixedVersion_base_alter_table_add_bit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_database_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_discard"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_database_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_multiple"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_index_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_index_configure_zone_discard"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_named_range_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_named_range_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_discard"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_named_range_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_multiple"
+	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_add_bit"
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -925,41 +589,6 @@ func TestBackupRollbacksMixedVersion_base_alter_table_alter_column_set_not_null(
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_alter_table_alter_column_type_general(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_alter_column_type_general_expr(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general_expr"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_alter_column_type_noop(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_noop"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_alter_column_type_trivial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_trivial"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_alter_column_type_validation(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_validation"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacksMixedVersion_base_alter_table_alter_primary_key_drop_rowid(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -978,34 +607,6 @@ func TestBackupRollbacksMixedVersion_base_alter_table_alter_primary_key_vanilla(
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_primary_key_vanilla"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_discard"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_multiple"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_disable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_disable_row_level_security"
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1037,20 +638,6 @@ func TestBackupRollbacksMixedVersion_base_alter_table_drop_constraint_uwi(t *tes
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_alter_table_enable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_enable_row_level_security"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_alter_table_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_force_row_level_security"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacksMixedVersion_base_alter_table_multiple_commands(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1058,31 +645,10 @@ func TestBackupRollbacksMixedVersion_base_alter_table_multiple_commands(t *testi
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_alter_table_no_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_no_force_row_level_security"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacksMixedVersion_base_alter_table_validate_constraint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_validate_constraint"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_composite"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_enum"
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1149,13 +715,6 @@ func TestBackupRollbacksMixedVersion_base_create_index_create_schema_separate_st
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_create_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_policy"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacksMixedVersion_base_create_schema(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1188,13 +747,6 @@ func TestBackupRollbacksMixedVersion_base_create_sequence_drop_sequence(t *testi
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_sequence_drop_sequence"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_create_temp_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_temp_sequence"
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1247,13 +799,6 @@ func TestBackupRollbacksMixedVersion_base_drop_column_with_null_constraint(t *te
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_drop_column_with_null_constraint_stored(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_null_constraint_stored"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacksMixedVersion_base_drop_column_with_partial_index(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1265,20 +810,6 @@ func TestBackupRollbacksMixedVersion_base_drop_column_with_udf_default(t *testin
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_udf_default"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_drop_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_composite"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupRollbacksMixedVersion_base_drop_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_enum"
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1331,13 +862,6 @@ func TestBackupRollbacksMixedVersion_base_drop_multiple_columns_separate_stateme
 	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupRollbacksMixedVersion_base_drop_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_policy"
-	sctest.BackupRollbacksMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupRollbacksMixedVersion_base_drop_schema(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1387,66 +911,10 @@ func TestBackupSuccess_base_add_column_default_unique_not_null(t *testing.T) {
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_add_column_generated(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_add_column_generated_serial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated_serial"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccess_base_add_column_no_default(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_no_default"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_add_column_serial_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_rowid"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_add_column_serial_simple_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_add_column_serial_simple_sequence_cached(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_add_column_serial_simple_sequence_cached_node(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached_node"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_add_column_serial_simple_sequence_virtual(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_virtual"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_add_column_serial_unordered_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_unordered_rowid"
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1471,52 +939,10 @@ func TestBackupSuccess_base_add_column_with_stored_family(t *testing.T) {
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_alter_database_configure_zone(t *testing.T) {
+func TestBackupSuccess_base_alter_table_add_bit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_database_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_discard"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_database_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_multiple"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_index_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_index_configure_zone_discard"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_named_range_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_named_range_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_discard"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_named_range_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_multiple"
+	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_add_bit"
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1597,41 +1023,6 @@ func TestBackupSuccess_base_alter_table_alter_column_set_not_null(t *testing.T) 
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_alter_table_alter_column_type_general(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_alter_column_type_general_expr(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general_expr"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_alter_column_type_noop(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_noop"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_alter_column_type_trivial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_trivial"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_alter_column_type_validation(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_validation"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccess_base_alter_table_alter_primary_key_drop_rowid(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1650,34 +1041,6 @@ func TestBackupSuccess_base_alter_table_alter_primary_key_vanilla(t *testing.T) 
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_primary_key_vanilla"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_discard"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_multiple"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_disable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_disable_row_level_security"
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1709,20 +1072,6 @@ func TestBackupSuccess_base_alter_table_drop_constraint_uwi(t *testing.T) {
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_alter_table_enable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_enable_row_level_security"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_alter_table_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_force_row_level_security"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccess_base_alter_table_multiple_commands(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1730,31 +1079,10 @@ func TestBackupSuccess_base_alter_table_multiple_commands(t *testing.T) {
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_alter_table_no_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_no_force_row_level_security"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccess_base_alter_table_validate_constraint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_validate_constraint"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_composite"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_enum"
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1821,13 +1149,6 @@ func TestBackupSuccess_base_create_index_create_schema_separate_statements(t *te
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_create_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_policy"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccess_base_create_schema(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1860,13 +1181,6 @@ func TestBackupSuccess_base_create_sequence_drop_sequence(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_sequence_drop_sequence"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_create_temp_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_temp_sequence"
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -1919,13 +1233,6 @@ func TestBackupSuccess_base_drop_column_with_null_constraint(t *testing.T) {
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_drop_column_with_null_constraint_stored(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_null_constraint_stored"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccess_base_drop_column_with_partial_index(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1937,20 +1244,6 @@ func TestBackupSuccess_base_drop_column_with_udf_default(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_udf_default"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_drop_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_composite"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccess_base_drop_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_enum"
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -2003,13 +1296,6 @@ func TestBackupSuccess_base_drop_multiple_columns_separate_statements(t *testing
 	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccess_base_drop_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_policy"
-	sctest.BackupSuccess(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccess_base_drop_schema(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -2059,66 +1345,10 @@ func TestBackupSuccessMixedVersion_base_add_column_default_unique_not_null(t *te
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccessMixedVersion_base_add_column_generated(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_add_column_generated_serial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_generated_serial"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccessMixedVersion_base_add_column_no_default(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_no_default"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_add_column_serial_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_rowid"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_add_column_serial_simple_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_add_column_serial_simple_sequence_cached(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_add_column_serial_simple_sequence_cached_node(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_cached_node"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_add_column_serial_simple_sequence_virtual(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_simple_sequence_virtual"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_add_column_serial_unordered_rowid(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/add_column_serial_unordered_rowid"
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -2143,52 +1373,10 @@ func TestBackupSuccessMixedVersion_base_add_column_with_stored_family(t *testing
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccessMixedVersion_base_alter_database_configure_zone(t *testing.T) {
+func TestBackupSuccessMixedVersion_base_alter_table_add_bit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_database_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_discard"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_database_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_database_configure_zone_multiple"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_index_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_index_configure_zone_discard"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_named_range_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_named_range_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_discard"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_named_range_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_named_range_configure_zone_multiple"
+	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_add_bit"
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -2269,41 +1457,6 @@ func TestBackupSuccessMixedVersion_base_alter_table_alter_column_set_not_null(t 
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccessMixedVersion_base_alter_table_alter_column_type_general(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_alter_column_type_general_expr(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_general_expr"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_alter_column_type_noop(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_noop"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_alter_column_type_trivial(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_trivial"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_alter_column_type_validation(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_column_type_validation"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccessMixedVersion_base_alter_table_alter_primary_key_drop_rowid(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -2322,34 +1475,6 @@ func TestBackupSuccessMixedVersion_base_alter_table_alter_primary_key_vanilla(t 
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_alter_primary_key_vanilla"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_configure_zone(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_configure_zone_discard(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_discard"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_configure_zone_multiple(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_configure_zone_multiple"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_disable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_disable_row_level_security"
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -2381,20 +1506,6 @@ func TestBackupSuccessMixedVersion_base_alter_table_drop_constraint_uwi(t *testi
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccessMixedVersion_base_alter_table_enable_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_enable_row_level_security"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_alter_table_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_force_row_level_security"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccessMixedVersion_base_alter_table_multiple_commands(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -2402,31 +1513,10 @@ func TestBackupSuccessMixedVersion_base_alter_table_multiple_commands(t *testing
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccessMixedVersion_base_alter_table_no_force_row_level_security(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_no_force_row_level_security"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccessMixedVersion_base_alter_table_validate_constraint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/alter_table_validate_constraint"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_composite"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/comment_on_type_enum"
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -2493,13 +1583,6 @@ func TestBackupSuccessMixedVersion_base_create_index_create_schema_separate_stat
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccessMixedVersion_base_create_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_policy"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccessMixedVersion_base_create_schema(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -2532,13 +1615,6 @@ func TestBackupSuccessMixedVersion_base_create_sequence_drop_sequence(t *testing
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_sequence_drop_sequence"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_create_temp_sequence(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/create_temp_sequence"
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -2591,13 +1667,6 @@ func TestBackupSuccessMixedVersion_base_drop_column_with_null_constraint(t *test
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
-func TestBackupSuccessMixedVersion_base_drop_column_with_null_constraint_stored(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_null_constraint_stored"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
 func TestBackupSuccessMixedVersion_base_drop_column_with_partial_index(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -2609,20 +1678,6 @@ func TestBackupSuccessMixedVersion_base_drop_column_with_udf_default(t *testing.
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_column_with_udf_default"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_drop_comment_on_type_composite(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_composite"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_drop_comment_on_type_enum(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_comment_on_type_enum"
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 
@@ -2672,13 +1727,6 @@ func TestBackupSuccessMixedVersion_base_drop_multiple_columns_separate_statement
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_multiple_columns_separate_statements"
-	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
-}
-
-func TestBackupSuccessMixedVersion_base_drop_policy(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const path = "pkg/sql/schemachanger/testdata/end_to_end/drop_policy"
 	sctest.BackupSuccessMixedVersion(t, path, sctest.SingleNodeTestClusterFactory{})
 }
 

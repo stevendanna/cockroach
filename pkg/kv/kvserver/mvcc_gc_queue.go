@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/gc"
@@ -28,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/grunning"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
@@ -124,6 +126,16 @@ var EnqueueInMvccGCQueueOnSpanConfigUpdateEnabled = settings.RegisterBoolSetting
 	false,
 )
 
+// See https://github.com/cockroachdb/cockroach/pull/143122.
+var mvccGCQueueFullyEnableAC = settings.RegisterBoolSetting(
+	settings.SystemOnly,
+	"kv.mvcc_gc.queue_kv_admission_control.enabled",
+	"when true, MVCC GC queue operations are subject to store admission control. If set to false, "+
+		"since store admission control will be disabled, replication flow control will also be effectively disabled. "+
+		"This setting does not affect CPU admission control.",
+	true,
+)
+
 func largeAbortSpan(ms enginepb.MVCCStats) bool {
 	// Checks if the size of the abort span exceeds the given threshold.
 	// The abort span is not supposed to become that large, but it does
@@ -199,6 +211,7 @@ func newMVCCGCQueue(store *Store) *mvccGCQueue {
 			},
 			successes:       store.metrics.MVCCGCQueueSuccesses,
 			failures:        store.metrics.MVCCGCQueueFailures,
+			storeFailures:   store.metrics.StoreFailures,
 			pending:         store.metrics.MVCCGCQueuePending,
 			processingNanos: store.metrics.MVCCGCQueueProcessingNanos,
 			disabledConfig:  kvserverbase.MVCCGCQueueEnabled,
@@ -294,8 +307,8 @@ func makeMVCCGCQueueScore(
 	canAdvanceGCThreshold bool,
 ) mvccGCQueueScore {
 	repl.mu.RLock()
-	ms := *repl.shMu.state.Stats
-	hint := *repl.shMu.state.GCHint
+	ms := *repl.mu.state.Stats
+	hint := *repl.mu.state.GCHint
 	repl.mu.RUnlock()
 
 	if repl.store.cfg.TestingKnobs.DisableLastProcessedCheck {
@@ -610,6 +623,9 @@ func (r *replicaGCer) send(ctx context.Context, req kvpb.GCRequest) error {
 		if err != nil {
 			return err
 		}
+		if mvccGCQueueFullyEnableAC.Get(&r.repl.ClusterSettings().SV) {
+			ctx = admissionHandle.AnnotateCtx(ctx)
+		}
 	}
 	_, writeBytes, pErr := r.repl.SendWithWriteBytes(ctx, ba)
 	defer writeBytes.Release()
@@ -734,7 +750,10 @@ func (mgcq *mvccGCQueue) process(
 	maxLocksPerCleanupBatch := gc.MaxLocksPerCleanupBatch.Get(&repl.store.ClusterSettings().SV)
 	maxLocksKeyBytesPerCleanupBatch := gc.MaxLockKeyBytesPerCleanupBatch.Get(&repl.store.ClusterSettings().SV)
 	txnCleanupThreshold := gc.TxnCleanupThreshold.Get(&repl.store.ClusterSettings().SV)
-	clearRangeMinKeys := gc.ClearRangeMinKeys.Get(&repl.store.ClusterSettings().SV)
+	var clearRangeMinKeys int64 = 0
+	if repl.store.ClusterSettings().Version.IsActive(ctx, clusterversion.V23_1) {
+		clearRangeMinKeys = gc.ClearRangeMinKeys.Get(&repl.store.ClusterSettings().SV)
+	}
 
 	info, err := gc.Run(ctx, desc, snap, gcTimestamp, newThreshold,
 		gc.RunOptions{
@@ -840,7 +859,6 @@ func updateStoreMetricsWithGCInfo(metrics *StoreMetrics, info gc.Info) {
 	metrics.GCTransactionSpanGCCommitted.Inc(int64(info.TransactionSpanGCCommitted))
 	metrics.GCTransactionSpanGCStaging.Inc(int64(info.TransactionSpanGCStaging))
 	metrics.GCTransactionSpanGCPending.Inc(int64(info.TransactionSpanGCPending))
-	metrics.GCTransactionSpanGCPrepared.Inc(int64(info.TransactionSpanGCPrepared))
 	metrics.GCAbortSpanScanned.Inc(int64(info.AbortSpanTotal))
 	metrics.GCAbortSpanConsidered.Inc(int64(info.AbortSpanConsidered))
 	metrics.GCAbortSpanGCNum.Inc(int64(info.AbortSpanGCNum))
@@ -939,7 +957,7 @@ func (*mvccGCQueue) updateChan() <-chan time.Time {
 }
 
 func gcAdmissionHeader(st *cluster.Settings) kvpb.AdmissionHeader {
-	pri := gc.AdmissionPriority.Get(&st.SV)
+	pri := admissionpb.WorkPriority(gc.AdmissionPriority.Get(&st.SV))
 	return kvpb.AdmissionHeader{
 		// TODO(irfansharif): GC could be expected to be BulkNormalPri, so
 		// that it does not impact user-facing traffic when resources (e.g.

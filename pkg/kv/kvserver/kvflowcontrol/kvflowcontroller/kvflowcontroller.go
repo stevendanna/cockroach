@@ -6,13 +6,15 @@
 package kvflowcontroller
 
 import (
-	"cmp"
 	"context"
-	"slices"
+	"fmt"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
+	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
@@ -21,6 +23,26 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
+)
+
+// regularTokensPerStream determines the flow tokens available for regular work
+// on a per-stream basis.
+var regularTokensPerStream = settings.RegisterByteSizeSetting(
+	settings.SystemOnly,
+	"kvadmission.flow_controller.regular_tokens_per_stream",
+	"flow tokens available for regular work on a per-stream basis",
+	16<<20, // 16 MiB
+	validateTokenRange,
+)
+
+// elasticTokensPerStream determines the flow tokens available for elastic work
+// on a per-stream basis.
+var elasticTokensPerStream = settings.RegisterByteSizeSetting(
+	settings.SystemOnly,
+	"kvadmission.flow_controller.elastic_tokens_per_stream",
+	"flow tokens available for elastic work on a per-stream basis",
+	8<<20, // 8 MiB
+	validateTokenRange,
 )
 
 // Aliases to make the code below slightly easier to read.
@@ -45,7 +67,7 @@ type Controller struct {
 		// streams get closed permanently (tenants get deleted, nodes removed)
 		// or when completely inactive (no tokens deducted/returned over 30+
 		// minutes), clear these out.
-		buckets     syncutil.Map[kvflowcontrol.Stream, bucket]
+		buckets     sync.Map // kvflowcontrol.Stream => *bucket
 		bucketCount int
 	}
 	metrics  *metrics
@@ -62,30 +84,32 @@ func New(registry *metric.Registry, settings *cluster.Settings, clock *hlc.Clock
 		settings: settings,
 	}
 
-	regularTokens := kvflowcontrol.Tokens(kvflowcontrol.RegularTokensPerStream.Get(&settings.SV))
-	elasticTokens := kvflowcontrol.Tokens(kvflowcontrol.ElasticTokensPerStream.Get(&settings.SV))
+	regularTokens := kvflowcontrol.Tokens(regularTokensPerStream.Get(&settings.SV))
+	elasticTokens := kvflowcontrol.Tokens(elasticTokensPerStream.Get(&settings.SV))
 	c.mu.limit = tokensPerWorkClass{
 		regular: regularTokens,
 		elastic: elasticTokens,
 	}
+	c.mu.buckets = sync.Map{}
 	onChangeFunc := func(ctx context.Context) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
 		before := c.mu.limit
 		now := tokensPerWorkClass{
-			regular: kvflowcontrol.Tokens(kvflowcontrol.RegularTokensPerStream.Get(&settings.SV)),
-			elastic: kvflowcontrol.Tokens(kvflowcontrol.ElasticTokensPerStream.Get(&settings.SV)),
+			regular: kvflowcontrol.Tokens(regularTokensPerStream.Get(&settings.SV)),
+			elastic: kvflowcontrol.Tokens(elasticTokensPerStream.Get(&settings.SV)),
 		}
 		adjustment := tokensPerWorkClass{
 			regular: now.regular - before.regular,
 			elastic: now.elastic - before.elastic,
 		}
 		c.mu.limit = now
-		c.mu.buckets.Range(func(_ kvflowcontrol.Stream, b *bucket) bool {
+		c.mu.buckets.Range(func(_, value any) bool {
 			// NB: We're holding the controller mutex here, which guards against
 			// new buckets being added, synchronization we don't get out of
-			// syncutil.Map.Range() directly.
+			// sync.Map.Range() directly.
+			b := value.(*bucket)
 			adj, _ := b.adjust(
 				ctx, admissionpb.RegularWorkClass, adjustment.regular, now, true, c.clock.PhysicalTime())
 			if adj.elastic != 0 {
@@ -108,15 +132,15 @@ func New(registry *metric.Registry, settings *cluster.Settings, clock *hlc.Clock
 			return true
 		})
 	}
-	kvflowcontrol.RegularTokensPerStream.SetOnChange(&settings.SV, onChangeFunc)
-	kvflowcontrol.ElasticTokensPerStream.SetOnChange(&settings.SV, onChangeFunc)
+	regularTokensPerStream.SetOnChange(&settings.SV, onChangeFunc)
+	elasticTokensPerStream.SetOnChange(&settings.SV, onChangeFunc)
 	c.metrics = newMetrics(c)
 	registry.AddMetricStruct(c.metrics)
 	return c
 }
 
 func (c *Controller) mode() kvflowcontrol.ModeT {
-	return kvflowcontrol.Mode.Get(&c.settings.SV)
+	return kvflowcontrol.ModeT(kvflowcontrol.Mode.Get(&c.settings.SV))
 }
 
 // Admit is part of the kvflowcontrol.Controller interface. It blocks until
@@ -222,22 +246,25 @@ func (c *Controller) Inspect(ctx context.Context) []kvflowinspectpb.Stream {
 	// NB: we are not acquiring c.mu since we don't care about streams that are
 	// being concurrently added to the map.
 	var streams []kvflowinspectpb.Stream
-	c.mu.buckets.Range(func(stream kvflowcontrol.Stream, b *bucket) bool {
+	c.mu.buckets.Range(func(key, value any) bool {
+		stream := key.(kvflowcontrol.Stream)
+		b := value.(*bucket)
+
 		b.mu.RLock()
 		streams = append(streams, kvflowinspectpb.Stream{
-			TenantID:                   stream.TenantID,
-			StoreID:                    stream.StoreID,
-			AvailableEvalRegularTokens: int64(b.tokensLocked(regular)),
-			AvailableEvalElasticTokens: int64(b.tokensLocked(elastic)),
+			TenantID:               stream.TenantID,
+			StoreID:                stream.StoreID,
+			AvailableRegularTokens: int64(b.tokensLocked(regular)),
+			AvailableElasticTokens: int64(b.tokensLocked(elastic)),
 		})
 		b.mu.RUnlock()
 		return true
 	})
-	slices.SortFunc(streams, func(a, b kvflowinspectpb.Stream) int { // for determinism
-		return cmp.Or(
-			cmp.Compare(a.TenantID.ToUint64(), b.TenantID.ToUint64()),
-			cmp.Compare(a.StoreID, b.StoreID),
-		)
+	sort.Slice(streams, func(i, j int) bool { // for determinism
+		if streams[i].TenantID != streams[j].TenantID {
+			return streams[i].TenantID.ToUint64() < streams[j].TenantID.ToUint64()
+		}
+		return streams[i].StoreID < streams[j].StoreID
 	})
 	return streams
 }
@@ -248,10 +275,10 @@ func (c *Controller) InspectStream(
 ) kvflowinspectpb.Stream {
 	tokens := c.getTokensForStream(stream)
 	return kvflowinspectpb.Stream{
-		TenantID:                   stream.TenantID,
-		StoreID:                    stream.StoreID,
-		AvailableEvalRegularTokens: int64(tokens.regular),
-		AvailableEvalElasticTokens: int64(tokens.elastic),
+		TenantID:               stream.TenantID,
+		StoreID:                stream.StoreID,
+		AvailableRegularTokens: int64(tokens.regular),
+		AvailableElasticTokens: int64(tokens.elastic),
 	}
 }
 
@@ -284,10 +311,10 @@ func (c *Controller) adjustTokens(
 }
 
 func (c *Controller) getBucket(stream kvflowcontrol.Stream) *bucket {
-	// NB: syncutil.Map is more expensive CPU wise as per BenchmarkController
+	// NB: sync.map is more expensive CPU wise as per BenchmarkController
 	// for reads, ~250ns vs. ~350ns, though better for mutex contention when
-	// looking at kv0/enc=false/nodes=3/cpu=9. The syncutil.Map does show up in
-	// CPU profiles more prominently though. If we want to go back to it being a
+	// looking at kv0/enc=false/nodes=3/cpu=9. The sync.Map does show up in CPU
+	// profiles more prominently though. If we want to go back to it being a
 	// mutex-backed map, we could use a read-Lock when trying to read the bucket
 	// and then swapping for a write-lock when optionally creating the bucket.
 	b, ok := c.mu.buckets.Load(stream)
@@ -300,7 +327,7 @@ func (c *Controller) getBucket(stream kvflowcontrol.Stream) *bucket {
 		}
 		c.mu.Unlock()
 	}
-	return b
+	return b.(*bucket)
 }
 
 // bucketPerWorkClass is a helper struct for implementing bucket. tokens and
@@ -599,6 +626,22 @@ func (b *bucket) testingSignalChannel(wc admissionpb.WorkClass) {
 type tokensPerWorkClass struct {
 	regular, elastic kvflowcontrol.Tokens
 }
+
+const (
+	minTokensPerStream kvflowcontrol.Tokens = 1 << 20  // 1 MiB
+	maxTokensPerStream kvflowcontrol.Tokens = 64 << 20 // 64 MiB
+)
+
+var validateTokenRange = settings.WithValidateInt(func(b int64) error {
+	t := kvflowcontrol.Tokens(b)
+	if t < minTokensPerStream {
+		return fmt.Errorf("minimum flowed tokens allowed is %s, got %s", minTokensPerStream, t)
+	}
+	if t > maxTokensPerStream {
+		return fmt.Errorf("maximum flow tokens allowed is %s, got %s", maxTokensPerStream, t)
+	}
+	return nil
+})
 
 func (c *Controller) getTokensForStream(stream kvflowcontrol.Stream) tokensPerWorkClass {
 	ret := tokensPerWorkClass{}

@@ -43,9 +43,11 @@ RUN curl -fsSL https://dl.yarnpkg.com/debian/pubkey.gpg > /etc/apt/trusted.gpg.d
  && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc > /etc/apt/trusted.gpg.d/microsoft.asc \
  && echo "deb https://packages.microsoft.com/repos/microsoft-ubuntu-bionic-prod/ bionic main" > /etc/apt/sources.list.d/microsoft.list \
  && apt-get install --yes --no-install-recommends gnupg \
+ && curl https://packages.erlang-solutions.com/erlang-solutions_2.0_all.deb > erlang-solutions_2.0_all.deb && dpkg -i erlang-solutions_2.0_all.deb \
  && apt-get update \
  && apt-get install --yes --no-install-recommends \
     expect \
+    esl-erlang \
     libc6-dev \
     libcurl4 \
     libpq-dev \
@@ -63,7 +65,13 @@ RUN curl -fsSL https://dl.yarnpkg.com/debian/pubkey.gpg > /etc/apt/trusted.gpg.d
     ruby \
     ruby-pg \
     xmlstarlet \
-    yarn
+    yarn \
+    python3-dev \
+    python3-pip \
+    python3-setuptools \
+&& pip3 install --upgrade pip \
+&& pip3 install backports.zoneinfo \
+&& pip3 install psycopg
 
 RUN case ${TARGETPLATFORM} in \
     "linux/amd64") ARCH=amd64; SHASUM=442dae58b727a79f81368127fac141d7f95501ffa05f8c48943d27c4e807deb7 ;; \

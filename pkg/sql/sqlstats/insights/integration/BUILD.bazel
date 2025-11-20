@@ -12,7 +12,6 @@ go_test(
         "//pkg/settings/cluster",
         "//pkg/sql",
         "//pkg/sql/appstatspb",
-        "//pkg/sql/clusterunique",
         "//pkg/sql/contention",
         "//pkg/sql/sessiondata",
         "//pkg/sql/sqlstats/insights",

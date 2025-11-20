@@ -176,13 +176,8 @@ type Config struct {
 	// DefaultInFlightBackpressureLimit.
 	InFlightBackpressureLimit func() int
 
-	manualTime *timeutil.ManualTime // optional for testing
-	// This channel can be populated in tests with an unbuffered channel in
-	// which case the batcher will attempt to send itself over it, allowing
-	// tests to pause the batcher's goroutine and inspect state. Once the
-	// test is done it _must_ return the batcher on the channel to unblock
-	// the batcher's main loop again.
-	testingPeekCh chan *RequestBatcher
+	// NowFunc is used to determine the current time. It defaults to timeutil.Now.
+	NowFunc func() time.Time
 }
 
 const (
@@ -258,6 +253,9 @@ func validateConfig(cfg *Config) {
 			return DefaultInFlightBackpressureLimit
 		}
 	}
+	if cfg.NowFunc == nil {
+		cfg.NowFunc = timeutil.Now
+	}
 }
 
 func normalizedInFlightBackPressureLimit(cfg *Config) int {
@@ -266,25 +264,6 @@ func normalizedInFlightBackPressureLimit(cfg *Config) int {
 		limit = DefaultInFlightBackpressureLimit
 	}
 	return limit
-}
-
-func (b *RequestBatcher) now() time.Time {
-	if b.cfg.manualTime != nil {
-		return b.cfg.manualTime.Now()
-	}
-	return timeutil.Now()
-}
-
-func (b *RequestBatcher) newTimer() timeutil.TimerI {
-	if b.cfg.manualTime != nil {
-		return b.cfg.manualTime.NewTimer()
-	}
-	return (&timeutil.Timer{}).AsTimerI()
-}
-
-func (b *RequestBatcher) until(t time.Time) time.Duration {
-	return t.Sub(b.now())
-
 }
 
 // SendWithChan sends a request with a client provided response channel. The
@@ -361,7 +340,7 @@ func (b *RequestBatcher) sendBatch(ctx context.Context, ba *batch) {
 					timeout = b.cfg.MaxTimeout
 				}
 				if !ba.latestRequestDeadline.IsZero() {
-					reqTimeout := b.until(ba.latestRequestDeadline)
+					reqTimeout := timeutil.Until(ba.latestRequestDeadline)
 					if timeout == 0 || reqTimeout < timeout {
 						timeout = reqTimeout
 					}
@@ -520,7 +499,7 @@ func (b *RequestBatcher) run(ctx context.Context) {
 			}
 		}
 		handleRequest = func(req *request) {
-			now := b.now()
+			now := b.cfg.NowFunc()
 			ba, existsInQueue := b.batches.get(req.rangeID)
 			if !existsInQueue {
 				ba = b.pool.newBatch(now)
@@ -535,19 +514,19 @@ func (b *RequestBatcher) run(ctx context.Context) {
 			}
 		}
 		deadline time.Time
-		timer    = b.newTimer()
+		timer    timeutil.Timer
 	)
 	defer timer.Stop()
 
-	maybeSetTimer := func(read bool) {
+	maybeSetTimer := func() {
 		var nextDeadline time.Time
 		if next := b.batches.peekFront(); next != nil {
 			nextDeadline = next.deadline
 		}
-		if !deadline.Equal(nextDeadline) || read {
+		if !deadline.Equal(nextDeadline) || timer.Read {
 			deadline = nextDeadline
 			if !deadline.IsZero() {
-				timer.Reset(b.until(deadline))
+				timer.Reset(timeutil.Until(deadline))
 			} else {
 				// Clear the current timer due to a sole batch already sent before
 				// the timer fired.
@@ -558,15 +537,13 @@ func (b *RequestBatcher) run(ctx context.Context) {
 
 	for {
 		select {
-		case b.cfg.testingPeekCh <- b:
-			<-b.cfg.testingPeekCh
 		case req := <-reqChan():
 			handleRequest(req)
-			maybeSetTimer(false)
-		case <-timer.Ch():
-			timer.MarkRead()
+			maybeSetTimer()
+		case <-timer.C:
+			timer.Read = true
 			sendBatch(b.batches.popFront())
-			maybeSetTimer(true)
+			maybeSetTimer()
 		case <-b.sendDoneChan:
 			handleSendDone()
 		case <-b.cfg.Stopper.ShouldQuiesce():

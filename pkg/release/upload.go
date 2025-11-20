@@ -118,7 +118,6 @@ func createZip(files []ArchiveFile, body *bytes.Buffer, prefix string) error {
 		if err != nil {
 			return fmt.Errorf("failed to open file: %s", f.LocalAbsolutePath)
 		}
-		//nolint:deferloop TODO(#137605)
 		defer func() { _ = file.Close() }()
 
 		stat, err := file.Stat()
@@ -155,7 +154,6 @@ func createTarball(files []ArchiveFile, body *bytes.Buffer, prefix string) error
 		if err != nil {
 			return fmt.Errorf("failed to open file: %s", f.LocalAbsolutePath)
 		}
-		//nolint:deferloop TODO(#137605)
 		defer func() { _ = file.Close() }()
 
 		stat, err := file.Stat()
@@ -201,7 +199,6 @@ func PutNonRelease(svc ObjectPutGetter, o PutNonReleaseOptions) {
 		if err != nil {
 			log.Fatalf("failed to open %s: %s", f.LocalAbsolutePath, err)
 		}
-		//nolint:deferloop TODO(#137605)
 		defer func() {
 			_ = fileToUpload.Close()
 		}()

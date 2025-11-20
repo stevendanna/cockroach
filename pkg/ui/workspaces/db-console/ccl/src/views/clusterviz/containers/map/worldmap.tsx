@@ -3,8 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import * as d3 from "d3";
 import React from "react";
+import * as d3 from "d3";
 
 import shapes from "./world.json";
 

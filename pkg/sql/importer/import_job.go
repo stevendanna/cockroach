@@ -217,7 +217,7 @@ func (r *importResumer) Resume(ctx context.Context, execCtx interface{}) error {
 
 			// Re-initialize details after prepare step.
 			details = r.job.Details().(jobspb.ImportDetails)
-			emitImportJobEvent(ctx, p, jobs.StateRunning, r.job)
+			emitImportJobEvent(ctx, p, jobs.StatusRunning, r.job)
 		}
 
 		// Create a mapping from schemaID to schemaName.
@@ -371,7 +371,7 @@ func (r *importResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	}); err != nil {
 		log.Errorf(ctx, "failed to release protected timestamp: %v", err)
 	}
-	emitImportJobEvent(ctx, p, jobs.StateSucceeded, r.job)
+	emitImportJobEvent(ctx, p, jobs.StatusSucceeded, r.job)
 
 	addToFileFormatTelemetry(details.Format.Format.String(), "succeeded")
 	telemetry.CountBucketed("import.rows", r.res.Rows)
@@ -416,7 +416,8 @@ func (r *importResumer) prepareTablesForIngestion(
 	var newTableDescs []jobspb.ImportDetails_Table
 	var desc *descpb.TableDescriptor
 
-	useImportEpochs := importEpochs.Get(&p.ExecCfg().Settings.SV)
+	useImportEpochs := p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V24_1)
+	useImportEpochs = useImportEpochs && importEpochs.Get(&p.ExecCfg().Settings.SV)
 	for i, table := range details.Tables {
 		if !table.IsNew {
 			desc, err = prepareExistingTablesForIngestion(ctx, txn, descsCol, table.Desc, useImportEpochs)
@@ -638,7 +639,6 @@ func prepareNewTablesForIngestion(
 		ctx, txn, p.User(), descsCol, nil /* databases */, nil /* schemas */, tableDescs,
 		nil /* types */, nil /* functions */, tree.RequestedDescriptors, seqValKVs,
 		"" /* inheritParentName */, includePublicSchemaCreatePriv,
-		true, /* allowCrossDatabaseRefs */
 	); err != nil {
 		return nil, errors.Wrapf(err, "creating importTables")
 	}
@@ -788,7 +788,7 @@ func (r *importResumer) parseBundleSchemaIfNeeded(ctx context.Context, phs inter
 		ctx, span = tracing.ChildSpan(ctx, "import-parsing-bundle-schema")
 		defer span.Finish()
 
-		if err := r.job.NoTxn().UpdateStatusMessage(ctx, statusImportBundleParseSchema); err != nil {
+		if err := r.job.NoTxn().RunningStatus(ctx, runningStatusImportBundleParseSchema); err != nil {
 			return errors.Wrapf(err, "failed to update running status of job %d", errors.Safe(r.job.ID()))
 		}
 
@@ -797,7 +797,7 @@ func (r *importResumer) parseBundleSchemaIfNeeded(ctx context.Context, phs inter
 			if err := sql.DescsTxn(ctx, p.ExecCfg(), func(
 				ctx context.Context, txn isql.Txn, descriptors *descs.Collection,
 			) (err error) {
-				dbDesc, err = descriptors.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, parentID)
+				dbDesc, err = descriptors.ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, parentID)
 				if err != nil {
 					return err
 				}
@@ -1146,8 +1146,8 @@ func (r *importResumer) checkVirtualConstraints(
 		desc.SetPublic()
 
 		if sql.HasVirtualUniqueConstraints(desc) {
-			status := jobs.StatusMessage(fmt.Sprintf("re-validating %s", desc.GetName()))
-			if err := job.NoTxn().UpdateStatusMessage(ctx, status); err != nil {
+			status := jobs.RunningStatus(fmt.Sprintf("re-validating %s", desc.GetName()))
+			if err := job.NoTxn().RunningStatus(ctx, status); err != nil {
 				return errors.Wrapf(err, "failed to update running status of job %d", errors.Safe(job.ID()))
 			}
 		}
@@ -1215,7 +1215,7 @@ func (r *importResumer) checkForUDTModification(
 		ctx context.Context, txn *kv.Txn, col *descs.Collection,
 		savedTypeDesc *descpb.TypeDescriptor,
 	) error {
-		typeDesc, err := col.ByIDWithoutLeased(txn).Get().Type(ctx, savedTypeDesc.GetID())
+		typeDesc, err := col.ByID(txn).Get().Type(ctx, savedTypeDesc.GetID())
 		if err != nil {
 			return errors.Wrap(err, "resolving type descriptor when checking version mismatch")
 		}
@@ -1358,6 +1358,15 @@ func ingestWithRetry(
 		}
 
 		maxRetryDuration := retryDuration.Get(&execCtx.ExecCfg().Settings.SV)
+		if !execCtx.ExecCfg().Codec.ForSystemTenant() && flowinfra.IsFlowRetryableError(err) {
+			// If we encountered "could not register flow because the registry
+			// is draining" error in the application virtual cluster, we
+			// calibrate the retry duration. This is the case since DistSQL
+			// physical planning in virtual clusters uses 'sql_instances' table
+			// which currently doesn't have draining information
+			// TODO(#100578): remove this when this problem is addressed.
+			maxRetryDuration *= 30
+		}
 		if timeutil.Since(lastProgressChange) > maxRetryDuration {
 			log.Warningf(ctx, "encountered retryable error but exceeded retry duration, stopping: %+v", err)
 			break
@@ -1380,7 +1389,7 @@ func ingestWithRetry(
 
 // emitImportJobEvent emits an import job event to the event log.
 func emitImportJobEvent(
-	ctx context.Context, p sql.JobExecContext, status jobs.State, job *jobs.Job,
+	ctx context.Context, p sql.JobExecContext, status jobs.Status, job *jobs.Job,
 ) {
 	var importEvent eventpb.Import
 	if err := p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
@@ -1472,7 +1481,7 @@ func (r *importResumer) OnFailOrCancel(
 	p := execCtx.(sql.JobExecContext)
 
 	// Emit to the event log that the job has started reverting.
-	emitImportJobEvent(ctx, p, jobs.StateReverting, r.job)
+	emitImportJobEvent(ctx, p, jobs.StatusReverting, r.job)
 
 	// TODO(sql-exp): increase telemetry count for import.total.failed and
 	// import.duration-sec.failed.
@@ -1531,7 +1540,7 @@ func (r *importResumer) OnFailOrCancel(
 	}
 
 	// Emit to the event log that the job has completed reverting.
-	emitImportJobEvent(ctx, p, jobs.StateFailed, r.job)
+	emitImportJobEvent(ctx, p, jobs.StatusFailed, r.job)
 
 	return nil
 }
@@ -1807,7 +1816,7 @@ func (r *importResumer) ReportResults(ctx context.Context, resultsCh chan<- tree
 	select {
 	case resultsCh <- tree.Datums{
 		tree.NewDInt(tree.DInt(r.job.ID())),
-		tree.NewDString(string(jobs.StateSucceeded)),
+		tree.NewDString(string(jobs.StatusSucceeded)),
 		tree.NewDFloat(tree.DFloat(1.0)),
 		tree.NewDInt(tree.DInt(r.res.Rows)),
 		tree.NewDInt(tree.DInt(r.res.IndexEntries)),

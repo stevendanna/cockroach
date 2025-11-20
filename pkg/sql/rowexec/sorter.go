@@ -33,8 +33,7 @@ type sorterBase struct {
 	i    rowcontainer.RowIterator
 
 	// Only set if the ability to spill to disk is enabled.
-	unlimitedMemMonitor *mon.BytesMonitor
-	diskMonitor         *mon.BytesMonitor
+	diskMonitor *mon.BytesMonitor
 }
 
 func (s *sorterBase) init(
@@ -42,7 +41,7 @@ func (s *sorterBase) init(
 	self execinfra.RowSource,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	processorName redact.SafeString,
+	processorName redact.RedactableString,
 	input execinfra.RowSource,
 	post *execinfrapb.PostProcessSpec,
 	ordering colinfo.ColumnOrdering,
@@ -56,7 +55,7 @@ func (s *sorterBase) init(
 
 	// Limit the memory use by creating a child monitor with a hard limit.
 	// The processor will overflow to disk if this limit is not enough.
-	memMonitor := execinfra.NewLimitedMonitor(ctx, flowCtx.Mon, flowCtx, processorName+"-limited")
+	memMonitor := execinfra.NewLimitedMonitor(ctx, flowCtx.Mon, flowCtx, redact.Sprintf("%s-limited", processorName))
 	if err := s.ProcessorBase.Init(
 		ctx, self, post, input.OutputTypes(), flowCtx, processorID, memMonitor, opts,
 	); err != nil {
@@ -64,16 +63,14 @@ func (s *sorterBase) init(
 		return err
 	}
 
-	s.unlimitedMemMonitor = execinfra.NewMonitor(ctx, flowCtx.Mon, processorName+"-unlimited")
-	s.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, processorName+"-disk")
+	s.diskMonitor = execinfra.NewMonitor(ctx, flowCtx.DiskMonitor, redact.Sprintf("%s-disk", processorName))
 	rc := rowcontainer.DiskBackedRowContainer{}
 	rc.Init(
 		ordering,
 		input.OutputTypes(),
-		s.FlowCtx.EvalCtx,
+		s.EvalCtx,
 		flowCtx.Cfg.TempStorage,
 		memMonitor,
-		s.unlimitedMemMonitor,
 		s.diskMonitor,
 	)
 	s.rows = &rc
@@ -116,9 +113,6 @@ func (s *sorterBase) close() {
 		}
 		s.rows.Close(s.Ctx())
 		s.MemMonitor.Stop(s.Ctx())
-		if s.unlimitedMemMonitor != nil {
-			s.unlimitedMemMonitor.Stop(s.Ctx())
-		}
 		if s.diskMonitor != nil {
 			s.diskMonitor.Stop(s.Ctx())
 		}
@@ -134,7 +128,7 @@ func (s *sorterBase) execStatsForTrace() *execinfrapb.ComponentStats {
 	return &execinfrapb.ComponentStats{
 		Inputs: []execinfrapb.InputStats{is},
 		Exec: execinfrapb.ExecStats{
-			MaxAllocatedMem:  optional.MakeUint(uint64(s.MemMonitor.MaximumBytes() + s.unlimitedMemMonitor.MaximumBytes())),
+			MaxAllocatedMem:  optional.MakeUint(uint64(s.MemMonitor.MaximumBytes())),
 			MaxAllocatedDisk: optional.MakeUint(uint64(s.diskMonitor.MaximumBytes())),
 		},
 		Output: s.OutputHelper.Stats(),
@@ -360,7 +354,7 @@ func (s *sortTopKProcessor) Start(ctx context.Context) {
 		} else {
 			if !heapCreated {
 				// Arrange the k values into a max-heap.
-				s.rows.InitTopK(ctx)
+				s.rows.InitTopK()
 				heapCreated = true
 			}
 			// Replace the max value if the new row is smaller, maintaining the
@@ -434,7 +428,7 @@ func (s *sortChunksProcessor) chunkCompleted(
 	types := s.input.OutputTypes()
 	for _, ord := range s.ordering[:s.matchLen] {
 		col := ord.ColIdx
-		cmp, err := nextChunkRow[col].Compare(s.Ctx(), types[col], &s.alloc, s.FlowCtx.EvalCtx, &prefix[col])
+		cmp, err := nextChunkRow[col].Compare(types[col], &s.alloc, s.EvalCtx, &prefix[col])
 		if cmp != 0 || err != nil {
 			return true, err
 		}

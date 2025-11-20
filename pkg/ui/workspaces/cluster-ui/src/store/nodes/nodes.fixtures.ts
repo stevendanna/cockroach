@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import Long from "long";
-
 import { INodeStatus } from "../../util";
+import Long from "long";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 
 type INodesResponse = cockroach.server.serverpb.INodesResponse;
 
@@ -480,6 +479,8 @@ export const getNodeStatus = (): INodeStatus => {
       "sql.misc.started.count.internal": 2,
       "sql.new_conns": 0,
       "sql.conn.latency": 0,
+      "sql.optimizer.fallback.count": 0,
+      "sql.optimizer.fallback.count.internal": 0,
       "sql.optimizer.plan_cache.hits": 0,
       "sql.optimizer.plan_cache.hits.internal": 1641,
       "sql.optimizer.plan_cache.misses": 0,
@@ -650,6 +651,7 @@ export const getNodeStatus = (): INodeStatus => {
       "txn.restarts.txnpush": 0,
       "txn.restarts.unknown": 0,
       "txn.restarts.writetooold": 0,
+      "txn.restarts.writetoooldmulti": 0,
     },
     store_statuses: [
       {

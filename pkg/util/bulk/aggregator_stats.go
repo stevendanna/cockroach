@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
 
 // ConstructTracingAggregatorProducerMeta constructs a ProducerMetadata that
@@ -27,7 +26,7 @@ func ConstructTracingAggregatorProducerMeta(
 	ctx context.Context,
 	sqlInstanceID base.SQLInstanceID,
 	flowID execinfrapb.FlowID,
-	agg *tracing.TracingAggregator,
+	agg *TracingAggregator,
 ) *execinfrapb.ProducerMetadata {
 	aggEvents := &execinfrapb.TracingAggregatorEvents{
 		SQLInstanceID: sqlInstanceID,
@@ -35,8 +34,8 @@ func ConstructTracingAggregatorProducerMeta(
 		Events:        make(map[string][]byte),
 	}
 
-	agg.ForEachAggregatedEvent(func(name string, event tracing.AggregatorEvent) {
-		if data, err := tracing.AggregatorEventToBytes(ctx, event); err != nil {
+	agg.ForEachAggregatedEvent(func(name string, event TracingAggregatorEvent) {
+		if data, err := TracingAggregatorEventToBytes(ctx, event); err != nil {
 			// This should never happen but if it does skip the aggregated event.
 			log.Warningf(ctx, "failed to unmarshal aggregated event: %v", err.Error())
 			return
@@ -71,11 +70,11 @@ func (c ComponentAggregatorStats) DeepCopy() ComponentAggregatorStats {
 // FlushTracingAggregatorStats persists the following files to the
 // `system.job_info` table for consumption by job observability tools:
 //
-// - A file per node, for each aggregated AggregatorEvent. These files
-// contain the machine-readable proto bytes of the AggregatorEvent.
+// - A file per node, for each aggregated TracingAggregatorEvent. These files
+// contain the machine-readable proto bytes of the TracingAggregatorEvent.
 //
 // - A text file that contains a cluster-wide and per-node summary of each
-// AggregatorEvent in its human-readable format.
+// TracingAggregatorEvent in its human-readable format.
 func FlushTracingAggregatorStats(
 	ctx context.Context,
 	jobID jobspb.JobID,
@@ -83,7 +82,7 @@ func FlushTracingAggregatorStats(
 	perNodeAggregatorStats ComponentAggregatorStats,
 ) error {
 	return db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		clusterWideAggregatorStats := make(map[string]tracing.AggregatorEvent)
+		clusterWideAggregatorStats := make(map[string]TracingAggregatorEvent)
 		asOf := timeutil.Now().Format("20060102_150405.00")
 
 		var clusterWideSummary bytes.Buffer
@@ -112,7 +111,7 @@ func FlushTracingAggregatorStats(
 				// basis as well as a cluster-wide aggregate.
 				clusterWideSummary.WriteString(fmt.Sprintf("# %s\n", name))
 
-				aggEvent := msg.(tracing.AggregatorEvent)
+				aggEvent := msg.(TracingAggregatorEvent)
 				clusterWideSummary.WriteString(aggEvent.String())
 				clusterWideSummary.WriteString("\n")
 
@@ -130,9 +129,6 @@ func FlushTracingAggregatorStats(
 			clusterWideSummary.WriteString(event.String())
 		}
 
-		// Ensure the file always has a trailing newline, regardless of whether or
-		// not the loops above wrote anything.
-		clusterWideSummary.WriteString("\n")
 		filename := fmt.Sprintf("aggregatorstats.%s.txt", asOf)
 		return jobs.WriteExecutionDetailFile(ctx, filename, clusterWideSummary.Bytes(), txn, jobID)
 	})

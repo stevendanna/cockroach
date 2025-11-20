@@ -33,21 +33,11 @@ func CPU(n int) Option {
 	}
 }
 
-// WorkloadNodeCount indicates the count of last nodes in cluster to be treated
-// as workload node. Defaults to a VM with 4 CPUs if not specified by
-// WorkloadNodeCPUs.
-func WorkloadNodeCount(n int) Option {
-	return func(spec *ClusterSpec) {
-		spec.WorkloadNodeCount = n
-		spec.WorkloadNode = true
-	}
-}
-
-// TODO(GouravKumar): remove use of WorkloadNode, use WorkloadNodeCount instead
+// WorkloadNode indicates that the last node is a workload node.
+// Defaults to a VM with 4 CPUs if not specified by WorkloadNodeCPUs.
 func WorkloadNode() Option {
 	return func(spec *ClusterSpec) {
 		spec.WorkloadNode = true
-		spec.WorkloadNodeCount = 1
 	}
 }
 
@@ -283,20 +273,5 @@ func AWSVolumeThroughput(throughput int) Option {
 func AWSZones(zones string) Option {
 	return func(spec *ClusterSpec) {
 		spec.AWS.Zones = zones
-	}
-}
-
-// AzureZones is a node option which requests Geo-distributed nodes; only applies
-// when the test runs on Azure.
-//
-// Note that this overrides the --zones flag and is useful for tests that
-// require running on specific zones.
-//
-// TODO(darrylwong): Something is not quite right when creating
-// zones that have overlapping address spaces, i.e. eastus and westus.
-// See: https://github.com/cockroachdb/cockroach/issues/124612
-func AzureZones(zones string) Option {
-	return func(spec *ClusterSpec) {
-		spec.Azure.Zones = zones
 	}
 }

@@ -44,7 +44,7 @@ type SendOptions struct {
 //
 // The caller is responsible for ordering the replicas in the slice according to
 // the order in which the should be tried.
-type TransportFactory func(SendOptions, ReplicaSlice) Transport
+type TransportFactory func(SendOptions, ReplicaSlice) (Transport, error)
 
 // Transport objects can send RPCs to one or more replicas of a range.
 // All calls to Transport methods are made from a single thread, so
@@ -102,7 +102,7 @@ const (
 // requests in a tight loop, exposing data races; see transport_race.go.
 func grpcTransportFactoryImpl(
 	opts SendOptions, nodeDialer *nodedialer.Dialer, rs ReplicaSlice,
-) Transport {
+) (Transport, error) {
 	transport := grpcTransportPool.Get().(*grpcTransport)
 	// Grab the saved slice memory from grpcTransport.
 	replicas := transport.replicas
@@ -140,7 +140,7 @@ func grpcTransportFactoryImpl(
 		transport.splitHealthy()
 	}
 
-	return transport
+	return transport, nil
 }
 
 type grpcTransport struct {
@@ -324,10 +324,10 @@ func (h *byHealth) Less(i, j int) bool {
 // Transport. This is useful for tests that want to use DistSender
 // without a full RPC stack.
 func SenderTransportFactory(tracer *tracing.Tracer, sender kv.Sender) TransportFactory {
-	return func(_ SendOptions, replicas ReplicaSlice) Transport {
+	return func(_ SendOptions, replicas ReplicaSlice) (Transport, error) {
 		// Always send to the first replica.
 		replica := replicas[0].ReplicaDescriptor
-		return &senderTransport{tracer, sender, replica, false}
+		return &senderTransport{tracer, sender, replica, false}, nil
 	}
 }
 

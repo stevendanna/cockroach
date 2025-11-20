@@ -123,18 +123,18 @@ func TestShowJobsWithExecutionDetails(t *testing.T) {
 
 	runner := sqlutils.MakeSQLRunner(sqlDB)
 
-	defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+	jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 		return fakeExecResumer{
 			OnResume: func(ctx context.Context) error {
 				p := sql.PhysicalPlan{}
-				infra := physicalplan.NewPhysicalInfrastructure(uuid.MakeV4(), base.SQLInstanceID(1))
+				infra := physicalplan.NewPhysicalInfrastructure(uuid.FastMakeV4(), base.SQLInstanceID(1))
 				p.PhysicalInfrastructure = infra
 				jobsprofiler.StorePlanDiagram(ctx, s.Stopper(), &p, s.InternalDB().(isql.DB), j.ID())
 				checkForPlanDiagrams(ctx, t, s.InternalDB().(isql.DB), j.ID(), 1)
 				return nil
 			},
 		}
-	}, jobs.UsesTenantCostControl)()
+	}, jobs.UsesTenantCostControl)
 
 	runner.Exec(t, `CREATE TABLE t (id INT)`)
 	runner.Exec(t, `INSERT INTO t SELECT generate_series(1, 100)`)
@@ -174,11 +174,11 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 	defer close(isRunning)
 	continueRunning := make(chan struct{})
 	t.Run("read/write DistSQL diagram", func(t *testing.T) {
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					p := sql.PhysicalPlan{}
-					infra := physicalplan.NewPhysicalInfrastructure(uuid.MakeV4(), base.SQLInstanceID(1))
+					infra := physicalplan.NewPhysicalInfrastructure(uuid.FastMakeV4(), base.SQLInstanceID(1))
 					p.PhysicalInfrastructure = infra
 					jobsprofiler.StorePlanDiagram(ctx, s.Stopper(), &p, s.InternalDB().(isql.DB), j.ID())
 					checkForPlanDiagrams(ctx, t, s.InternalDB().(isql.DB), j.ID(), 1)
@@ -187,7 +187,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
@@ -205,7 +205,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 		continueCh := make(chan struct{})
 		defer close(blockCh)
 		defer close(continueCh)
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					pprof.Do(ctx, pprof.Labels("foo", "bar"), func(ctx2 context.Context) {
@@ -215,7 +215,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
 		<-blockCh
@@ -233,7 +233,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 	})
 
 	t.Run("read/write terminal trace", func(t *testing.T) {
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					sp := tracing.SpanFromContext(ctx)
@@ -242,7 +242,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
 		jobutils.WaitForJobToSucceed(t, runner, jobspb.JobID(importJobID))
@@ -262,7 +262,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 		continueCh := make(chan struct{})
 		defer close(blockCh)
 		defer close(continueCh)
-		defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+		jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 			return fakeExecResumer{
 				OnResume: func(ctx context.Context) error {
 					_, childSp := tracing.ChildSpan(ctx, "child")
@@ -272,7 +272,7 @@ func TestReadWriteProfilerExecutionDetails(t *testing.T) {
 					return nil
 				},
 			}
-		}, jobs.UsesTenantCostControl)()
+		}, jobs.UsesTenantCostControl)
 		var importJobID int
 		runner.QueryRow(t, `IMPORT INTO t CSV DATA ('nodelocal://1/foo') WITH DETACHED`).Scan(&importJobID)
 		<-blockCh
@@ -337,11 +337,11 @@ func TestListProfilerExecutionDetails(t *testing.T) {
 	defer close(writtenDiagram)
 	continueCh := make(chan struct{})
 	defer close(continueCh)
-	defer jobs.TestingRegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+	jobs.RegisterConstructor(jobspb.TypeImport, func(j *jobs.Job, _ *cluster.Settings) jobs.Resumer {
 		return fakeExecResumer{
 			OnResume: func(ctx context.Context) error {
 				p := sql.PhysicalPlan{}
-				infra := physicalplan.NewPhysicalInfrastructure(uuid.MakeV4(), base.SQLInstanceID(1))
+				infra := physicalplan.NewPhysicalInfrastructure(uuid.FastMakeV4(), base.SQLInstanceID(1))
 				p.PhysicalInfrastructure = infra
 				jobsprofiler.StorePlanDiagram(ctx, s.Stopper(), &p, s.InternalDB().(isql.DB), j.ID())
 				checkForPlanDiagrams(ctx, t, s.InternalDB().(isql.DB), j.ID(), expectedDiagrams)
@@ -353,7 +353,7 @@ func TestListProfilerExecutionDetails(t *testing.T) {
 				return nil
 			},
 		}
-	}, jobs.UsesTenantCostControl)()
+	}, jobs.UsesTenantCostControl)
 
 	runner.Exec(t, `CREATE TABLE t (id INT)`)
 	runner.Exec(t, `INSERT INTO t SELECT generate_series(1, 100)`)

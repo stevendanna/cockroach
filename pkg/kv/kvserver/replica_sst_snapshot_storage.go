@@ -204,9 +204,9 @@ func (f *SSTSnapshotStorageFile) ensureFile() error {
 	}
 	var err error
 	if f.bytesPerSync > 0 {
-		f.file, err = fs.CreateWithSync(f.scratch.storage.engine.Env(), f.filename, int(f.bytesPerSync), fs.RaftSnapshotWriteCategory)
+		f.file, err = fs.CreateWithSync(f.scratch.storage.engine.Env(), f.filename, int(f.bytesPerSync))
 	} else {
-		f.file, err = f.scratch.storage.engine.Env().Create(f.filename, fs.RaftSnapshotWriteCategory)
+		f.file, err = f.scratch.storage.engine.Env().Create(f.filename)
 	}
 	if err != nil {
 		return err

@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -34,7 +33,7 @@ func registerSchemaChangeDuringKV(r registry.Registry) {
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			const fixturePath = `gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=10?AUTH=implicit`
+			const fixturePath = `gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=10/backup?AUTH=implicit`
 
 			c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.All())
 			db := c.Conn(ctx, t.L(), 1)
@@ -44,7 +43,7 @@ func registerSchemaChangeDuringKV(r registry.Registry) {
 			m.Go(func(ctx context.Context) error {
 				t.Status("loading fixture")
 				if _, err := db.Exec(
-					`RESTORE DATABASE tpch FROM 'backup' IN $1 WITH unsafe_restore_incompatible_version`, fixturePath); err != nil {
+					`RESTORE DATABASE tpch FROM $1 WITH unsafe_restore_incompatible_version`, fixturePath); err != nil {
 					t.Fatal(err)
 				}
 				return nil
@@ -54,10 +53,17 @@ func registerSchemaChangeDuringKV(r registry.Registry) {
 			c.Run(ctx, option.WithNodes(c.Node(1)), `./cockroach workload init kv --drop --db=test {pgurl:1}`)
 			for node := 1; node <= c.Spec().NodeCount; node++ {
 				node := node
-				t.Go(func(taskCtx context.Context, _ *logger.Logger) error {
+				// TODO(dan): Ideally, the test would fail if this queryload failed,
+				// but we can't put it in monitor as-is because the test deadlocks.
+				go func() {
 					const cmd = `./cockroach workload run kv --tolerate-errors --min-block-bytes=8 --max-block-bytes=127 --db=test {pgurl%s}`
-					return c.RunE(taskCtx, option.WithNodes(c.Node(node)), fmt.Sprintf(cmd, c.Nodes(node)))
-				}, task.Name(fmt.Sprintf(`kv-%d`, node)))
+					l, err := t.L().ChildLogger(fmt.Sprintf(`kv-%d`, node))
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer l.Close()
+					_ = c.RunE(ctx, option.WithNodes(c.Node(node)), fmt.Sprintf(cmd, c.Nodes(node)))
+				}()
 			}
 
 			m = c.NewMonitor(ctx, c.All())
@@ -303,7 +309,7 @@ func makeIndexAddTpccTest(
 		Cluster:          spec,
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
-		Leases:           registry.DefaultLeases,
+		Leases:           registry.MetamorphicLeases,
 		Timeout:          length * 3,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCC(ctx, t, t.L(), c, tpccOptions{
@@ -313,15 +319,13 @@ func makeIndexAddTpccTest(
 				ExtraRunArgs: fmt.Sprintf("--wait=false --tolerate-errors --workers=%d", warehouses),
 				During: func(ctx context.Context) error {
 					return runAndLogStmts(ctx, t, c, "addindex", []string{
-						`SET CLUSTER SETTING bulkio.index_backfill.ingest_concurrency = 2;`,
 						`CREATE UNIQUE INDEX ON tpcc.order (o_entry_d, o_w_id, o_d_id, o_carrier_id, o_id);`,
 						`CREATE INDEX ON tpcc.order (o_carrier_id);`,
 						`CREATE INDEX ON tpcc.customer (c_last, c_first);`,
 					})
 				},
-				DisableDefaultScheduledBackup: true,
-				Duration:                      length,
-				SetupType:                     usingImport,
+				Duration:  length,
+				SetupType: usingImport,
 			})
 		},
 	}

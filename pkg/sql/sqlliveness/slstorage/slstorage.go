@@ -529,7 +529,7 @@ func (s *Storage) Insert(
 
 		}
 		v := encodeValue(expiration)
-		batch.CPut(k, &v, nil /* expValue */)
+		batch.InitPut(k, &v, true)
 
 		return txn.CommitInBatch(ctx, batch)
 	}); err != nil {

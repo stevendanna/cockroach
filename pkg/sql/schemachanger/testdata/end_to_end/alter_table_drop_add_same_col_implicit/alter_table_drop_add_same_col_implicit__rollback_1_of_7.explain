@@ -5,7 +5,7 @@ create table t(i int);
 alter table t drop column i, add column i bool;
 EXPLAIN (DDL) rollback at post-commit stage 1 of 7;
 ----
-Schema change plan for rolling back ALTER TABLE defaultdb.public.t DROP COLUMN i, ADD COLUMN i BOOL;
+Schema change plan for rolling back ALTER TABLE ‹defaultdb›.public.‹t› DROP COLUMN ‹i›, ADD COLUMN ‹i› BOOL;
  └── PostCommitNonRevertiblePhase
       └── Stage 1 of 1 in PostCommitNonRevertiblePhase
            ├── 2 elements transitioning toward PUBLIC
@@ -19,7 +19,7 @@ Schema change plan for rolling back ALTER TABLE defaultdb.public.t DROP COLUMN i
            │    ├── PUBLIC        → ABSENT IndexColumn:{DescID: 104 (t), ColumnID: 2 (rowid), IndexID: 3}
            │    ├── DELETE_ONLY   → ABSENT Column:{DescID: 104 (t), ColumnID: 3 (i-)}
            │    ├── PUBLIC        → ABSENT ColumnName:{DescID: 104 (t), Name: "i", ColumnID: 3 (i-)}
-           │    ├── PUBLIC        → ABSENT ColumnType:{DescID: 104 (t), ColumnFamilyID: 0 (primary), ColumnID: 3 (i-), TypeName: "BOOL"}
+           │    ├── PUBLIC        → ABSENT ColumnType:{DescID: 104 (t), ColumnFamilyID: 0 (primary), ColumnID: 3 (i-)}
            │    ├── PUBLIC        → ABSENT IndexColumn:{DescID: 104 (t), ColumnID: 3 (i-), IndexID: 1 (t_pkey+)}
            │    ├── PUBLIC        → ABSENT IndexColumn:{DescID: 104 (t), ColumnID: 3 (i-), IndexID: 2 (t_pkey-)}
            │    └── PUBLIC        → ABSENT IndexColumn:{DescID: 104 (t), ColumnID: 3 (i-), IndexID: 3}

@@ -7,8 +7,10 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -34,8 +36,6 @@ type stmtDiagnosticsRequest struct {
 	MinExecutionLatency time.Duration
 	// Zero value indicates that the request never expires.
 	ExpiresAt time.Time
-	// Indicates whether redacted bundle is requested.
-	Redacted bool
 }
 
 type stmtDiagnostics struct {
@@ -91,7 +91,6 @@ func (s *statusServer) CreateStatementDiagnosticsReport(
 		req.SamplingProbability,
 		req.MinExecutionLatency,
 		req.ExpiresAfter,
-		req.Redacted,
 	)
 	if err != nil {
 		return nil, err
@@ -138,10 +137,18 @@ func (s *statusServer) StatementDiagnosticsRequests(
 		return nil, err
 	}
 
+	var err error
+
+	var extraColumns string
+	if s.st.Version.IsActive(ctx, clusterversion.V23_2_StmtDiagForPlanGist) {
+		extraColumns = `,
+			plan_gist,
+			anti_plan_gist`
+	}
 	// TODO(davidh): Add pagination to this request.
 	it, err := s.internalExecutor.QueryIteratorEx(ctx, "stmt-diag-get-all", nil, /* txn */
 		sessiondata.NodeUserSessionDataOverride,
-		`SELECT
+		fmt.Sprintf(`SELECT
 			id,
 			statement_fingerprint,
 			completed,
@@ -149,12 +156,9 @@ func (s *statusServer) StatementDiagnosticsRequests(
 			requested_at,
 			min_execution_latency,
 			expires_at,
-			sampling_probability,
-			plan_gist,
-			anti_plan_gist,
-			redacted
+			sampling_probability%s
 		FROM
-			system.statement_diagnostics_requests`)
+			system.statement_diagnostics_requests`, extraColumns))
 	if err != nil {
 		return nil, err
 	}
@@ -191,14 +195,13 @@ func (s *statusServer) StatementDiagnosticsRequests(
 				continue
 			}
 		}
-		if planGist, ok := row[8].(*tree.DString); ok {
-			req.PlanGist = string(*planGist)
-		}
-		if antiGist, ok := row[9].(*tree.DBool); ok {
-			req.AntiPlanGist = bool(*antiGist)
-		}
-		if redacted, ok := row[10].(*tree.DBool); ok {
-			req.Redacted = bool(*redacted)
+		if extraColumns != "" {
+			if planGist, ok := row[8].(*tree.DString); ok {
+				req.PlanGist = string(*planGist)
+			}
+			if antiGist, ok := row[9].(*tree.DBool); ok {
+				req.AntiPlanGist = bool(*antiGist)
+			}
 		}
 
 		requests = append(requests, req)

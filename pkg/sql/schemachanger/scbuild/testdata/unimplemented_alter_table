@@ -13,6 +13,14 @@ CREATE TABLE defaultdb.foo (
 ----
 
 unimplemented
+ALTER TABLE defaultdb.foo ADD COLUMN j SERIAL
+----
+
+unimplemented
+ALTER TABLE defaultdb.foo ALTER COLUMN i SET DATA TYPE STRING
+----
+
+unimplemented
 ALTER TABLE defaultdb.foo ALTER COLUMN i DROP NOT NULL
 ----
 

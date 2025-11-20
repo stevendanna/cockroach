@@ -23,7 +23,6 @@ import (
 // Supported commands:
 //   - INJECT STATISTICS: imports table statistics from a JSON object.
 //   - ADD CONSTRAINT FOREIGN KEY: add a foreign key reference.
-//   - {ENABLE | DISABLE} ROW LEVEL SECURITY: enables or disables RLS policies for the table.
 func (tc *Catalog) AlterTable(stmt *tree.AlterTable) {
 	tn := stmt.Table.ToTableName()
 	// Update the table name to include catalog and schema if not provided.
@@ -34,9 +33,6 @@ func (tc *Catalog) AlterTable(stmt *tree.AlterTable) {
 		switch t := cmd.(type) {
 		case *tree.AlterTableInjectStats:
 			injectTableStats(tab, t.Stats, tc)
-
-		case *tree.AlterTableSetRLSMode:
-			toggleRLSMode(tab, t.Mode)
 
 		case *tree.AlterTableAddConstraint:
 			switch d := t.ConstraintDef.(type) {
@@ -56,7 +52,7 @@ func (tc *Catalog) AlterTable(stmt *tree.AlterTable) {
 // injectTableStats sets the table statistics as specified by a JSON object.
 func injectTableStats(tt *Table, statsExpr tree.Expr, tc *Catalog) {
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 	typedExpr, err := tree.TypeCheckAndRequire(ctx, statsExpr, &semaCtx, types.Jsonb, "INJECT STATISTICS")
 	if err != nil {
@@ -89,18 +85,4 @@ func injectTableStats(tt *Table, statsExpr tree.Expr, tc *Catalog) {
 
 	// Finally, sort the stats with most recent first.
 	sort.Sort(tt.Stats)
-}
-
-// toggleRLSMode will change the row-level security enabled field in the table.
-func toggleRLSMode(tt *Table, mode tree.TableRLSMode) {
-	switch mode {
-	case tree.TableRLSEnable:
-		tt.rlsEnabled = true
-		tt.addRLSConstraint()
-	case tree.TableRLSDisable:
-		tt.rlsEnabled = false
-		tt.removeRLSConstraint()
-	default:
-		panic(errors.AssertionFailedf("unsupported RLS mode %v", mode))
-	}
 }

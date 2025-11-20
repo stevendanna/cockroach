@@ -104,7 +104,6 @@ func distImport(
 			// The direct-ingest readers will emit a binary encoded BulkOpSummary.
 			[]*types.T{types.Bytes, types.Bytes},
 			execinfrapb.Ordering{},
-			nil, /* finalizeLastStageCb */
 		)
 
 		p.PlanToStreamColMap = []int{0, 1}
@@ -117,6 +116,7 @@ func distImport(
 	if err != nil {
 		return kvpb.BulkOpSummary{}, err
 	}
+	evalCtx := planCtx.ExtendedEvalCtx
 
 	// accumulatedBulkSummary accumulates the BulkOpSummary returned from each
 	// processor in their progress updates. It stores stats about the amount of
@@ -209,7 +209,7 @@ func distImport(
 		return nil
 	})
 
-	if planCtx.ExtendedEvalCtx.Codec.ForSystemTenant() {
+	if evalCtx.Codec.ForSystemTenant() {
 		if err := presplitTableBoundaries(ctx, execCtx.ExecCfg(), tables); err != nil {
 			return kvpb.BulkOpSummary{}, err
 		}
@@ -222,7 +222,7 @@ func distImport(
 		nil, /* rangeCache */
 		nil, /* txn - the flow does not read or write the database */
 		nil, /* clockUpdater */
-		planCtx.ExtendedEvalCtx.Tracing,
+		evalCtx.Tracing,
 	)
 	defer recv.Release()
 
@@ -267,9 +267,9 @@ func distImport(
 		execCfg := execCtx.ExecCfg()
 		jobsprofiler.StorePlanDiagram(ctx, execCfg.DistSQLSrv.Stopper, p, execCfg.InternalDB, job.ID())
 
-		// Copy the eval.Context, as dsp.Run() might change it.
-		evalCtxCopy := planCtx.ExtendedEvalCtx.Context.Copy()
-		dsp.Run(ctx, planCtx, nil, p, recv, evalCtxCopy, testingKnobs.onSetupFinish)
+		// Copy the evalCtx, as dsp.Run() might change it.
+		evalCtxCopy := *evalCtx
+		dsp.Run(ctx, planCtx, nil, p, recv, &evalCtxCopy, testingKnobs.onSetupFinish)
 		return rowResultWriter.Err()
 	})
 

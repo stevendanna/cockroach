@@ -17,9 +17,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/bazci/githubpost/issues"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/tests"
 	"github.com/cockroachdb/cockroach/pkg/internal/team"
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
@@ -139,12 +139,12 @@ func TestCreatePostRequest(t *testing.T) {
 
 		ti := &testImpl{
 			spec:        testSpec,
+			l:           nilLogger(),
 			start:       time.Date(2023, time.July, 21, 16, 34, 3, 817, time.UTC),
 			end:         time.Date(2023, time.July, 21, 16, 42, 13, 137, time.UTC),
 			cockroach:   "cockroach",
-			cockroachEA: "cockroach-ea",
+			cockroachEA: "cockroach-short",
 		}
-		ti.ReplaceL(nilLogger())
 
 		testClusterImpl := &clusterImpl{spec: clusterSpec, arch: vm.ArchAMD64, name: "foo"}
 		vo := vm.DefaultCreateOpts()
@@ -178,7 +178,7 @@ func TestCreatePostRequest(t *testing.T) {
 				params := getTestParameters(ti, github.cluster, github.vmCreateOpts)
 				req, err := github.createPostRequest(
 					testName, ti.start, ti.end, testSpec, testCase.failures,
-					message, "https://app.side-eye.io/snapshots/1", roachtestutil.UsingRuntimeAssertions(ti), ti.goCoverEnabled, params,
+					message, tests.UsingRuntimeAssertions(ti), ti.goCoverEnabled, params,
 				)
 				if testCase.loadTeamsFailed {
 					// Assert that if TEAMS.yaml cannot be loaded then function errors.
@@ -260,14 +260,12 @@ func TestCreatePostRequest(t *testing.T) {
 // to open the issue in Github.
 func formatPostRequest(req issues.PostRequest) (string, error) {
 	data := issues.TemplateData{
-		PostRequest:        req,
-		Parameters:         req.ExtraParams,
-		SideEyeSnapshotMsg: req.SideEyeSnapshotMsg,
-		SideEyeSnapshotURL: req.SideEyeSnapshotURL,
-		CondensedMessage:   issues.CondensedMessage(req.Message),
-		Branch:             "test_branch",
-		Commit:             "test_SHA",
-		PackageNameShort:   strings.TrimPrefix(req.PackageName, issues.CockroachPkgPrefix),
+		PostRequest:      req,
+		Parameters:       req.ExtraParams,
+		CondensedMessage: issues.CondensedMessage(req.Message),
+		Branch:           "test_branch",
+		Commit:           "test_SHA",
+		PackageNameShort: strings.TrimPrefix(req.PackageName, issues.CockroachPkgPrefix),
 	}
 
 	formatter := issues.UnitTestFormatter

@@ -33,7 +33,7 @@ type InteractionOpts struct {
 
 	// SetRandomizedElectionTimeout is used to plumb this function down from the
 	// raft test package.
-	SetRandomizedElectionTimeout func(node *raft.RawNode, timeout int64)
+	SetRandomizedElectionTimeout func(node *raft.RawNode, timeout int)
 }
 
 // Node is a member of a raft group tested via an InteractionEnv.
@@ -53,7 +53,6 @@ type InteractionEnv struct {
 	Options  *InteractionOpts
 	Nodes    []Node
 	Messages []pb.Message // in-flight messages
-	Fabric   *livenessFabric
 
 	Output *RedirectLogger
 }
@@ -65,7 +64,6 @@ func NewInteractionEnv(opts *InteractionOpts) *InteractionEnv {
 	}
 	return &InteractionEnv{
 		Options: opts,
-		Fabric:  newLivenessFabric(),
 		Output: &RedirectLogger{
 			Builder: &strings.Builder{},
 		},
@@ -100,11 +98,10 @@ type Storage interface {
 // must be set for each node using the stub as a template.
 func raftConfigStub() raft.Config {
 	return raft.Config{
-		ElectionTick:       3,
-		ElectionJitterTick: 3,
-		HeartbeatTick:      1,
-		MaxSizePerMsg:      math.MaxUint64,
-		MaxInflightMsgs:    math.MaxInt32,
+		ElectionTick:    3,
+		HeartbeatTick:   1,
+		MaxSizePerMsg:   math.MaxUint64,
+		MaxInflightMsgs: math.MaxInt32,
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -114,7 +113,8 @@ func ClearRange(
 	// outside of the cleared range).
 	maxLockConflicts := storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
 	targetLockConflictBytes := storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV)
-	locks, err := storage.ScanLocks(ctx, readWriter, from, to, maxLockConflicts, targetLockConflictBytes)
+	locks, err := storage.ScanLocks(ctx, readWriter, from, to, maxLockConflicts, targetLockConflictBytes,
+		storage.BatchEvalReadCategory)
 	if err != nil {
 		return result.Result{}, err
 	} else if len(locks) > 0 {
@@ -218,7 +218,7 @@ func computeStatsDelta(
 				KeyTypes:     storage.IterKeyTypeRangesOnly,
 				LowerBound:   leftPeekBound,
 				UpperBound:   rightPeekBound,
-				ReadCategory: fs.BatchEvalReadCategory,
+				ReadCategory: storage.BatchEvalReadCategory,
 			})
 			if err != nil {
 				return enginepb.MVCCStats{}, err

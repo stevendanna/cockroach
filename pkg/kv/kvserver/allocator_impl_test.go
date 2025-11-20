@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -294,19 +293,23 @@ func TestAllocatorRebalanceTarget(t *testing.T) {
 		{NodeID: 5, StoreID: 5, ReplicaID: 5},
 	}
 	repl := &Replica{RangeID: firstRangeID}
-	repl.shMu.state.Stats = &enginepb.MVCCStats{}
+
+	repl.mu.Lock()
+	repl.mu.state.Stats = &enginepb.MVCCStats{}
+	repl.mu.Unlock()
+
 	repl.loadStats = load.NewReplicaLoad(clock, nil)
 
 	var rangeUsageInfo allocator.RangeUsageInfo
 
 	status := &raft.Status{
-		Progress: make(map[raftpb.PeerID]tracker.Progress),
+		Progress: make(map[uint64]tracker.Progress),
 	}
 	status.Lead = 1
-	status.RaftState = raftpb.StateLeader
+	status.RaftState = raft.StateLeader
 	status.Commit = 10
 	for _, replica := range replicas {
-		status.Progress[raftpb.PeerID(replica.ReplicaID)] = tracker.Progress{
+		status.Progress[uint64(replica.ReplicaID)] = tracker.Progress{
 			Match: 10,
 			State: tracker.StateReplicate,
 		}

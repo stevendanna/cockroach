@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	pbtypes "github.com/gogo/protobuf/types"
 )
 
@@ -138,8 +137,7 @@ func (s rowLevelTTLExecutor) ExecuteJob(
 	// which may make debugging quite confusing if the label gets out of whack.
 	p, cleanup := cfg.PlanHookMaker(
 		ctx,
-		// TableID is not sensitive.
-		redact.SafeString(fmt.Sprintf("invoke-row-level-ttl-%d", args.TableID)),
+		fmt.Sprintf("invoke-row-level-ttl-%d", args.TableID),
 		txn.KV(),
 		username.NodeUserName(),
 	)
@@ -169,12 +167,12 @@ func (s rowLevelTTLExecutor) NotifyJobTermination(
 	ctx context.Context,
 	txn isql.Txn,
 	jobID jobspb.JobID,
-	jobStatus jobs.State,
+	jobStatus jobs.Status,
 	details jobspb.Details,
 	env scheduledjobs.JobSchedulerEnv,
 	sj *jobs.ScheduledJob,
 ) error {
-	if jobStatus == jobs.StateFailed {
+	if jobStatus == jobs.StatusFailed {
 		jobs.DefaultHandleFailedRun(
 			sj,
 			"row level ttl for table [%d] job failed",
@@ -184,7 +182,7 @@ func (s rowLevelTTLExecutor) NotifyJobTermination(
 		return nil
 	}
 
-	if jobStatus == jobs.StateSucceeded {
+	if jobStatus == jobs.StatusSucceeded {
 		s.metrics.NumSucceeded.Inc(1)
 	}
 

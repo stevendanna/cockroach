@@ -46,7 +46,7 @@ func gcTables(
 
 		var table catalog.TableDescriptor
 		if err := sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
-			table, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, droppedTable.ID)
+			table, err = col.ByID(txn.KV()).Get().Table(ctx, droppedTable.ID)
 			return err
 		}); err != nil {
 			if isMissingDescriptorError(err) {
@@ -285,7 +285,7 @@ func deleteTableDescriptorsAfterGC(
 
 		var table catalog.TableDescriptor
 		if err := sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
-			table, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, droppedTable.ID)
+			table, err = col.ByID(txn.KV()).Get().Table(ctx, droppedTable.ID)
 			return err
 		}); err != nil {
 			if isMissingDescriptorError(err) {

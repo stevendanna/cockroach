@@ -8,10 +8,10 @@ package status
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"runtime/metrics"
 	"time"
 
@@ -113,12 +113,6 @@ var (
 		Measurement: "GC Pause",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
-	metaGCStopNS = metric.Metadata{
-		Name:        "sys.gc.stop.ns",
-		Help:        "Estimated GC stop-the-world stopping latencies",
-		Measurement: "GC Stopping",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
 	metaGCPausePercent = metric.Metadata{
 		Name:        "sys.gc.pause.percent",
 		Help:        "Current GC pause percentage",
@@ -129,18 +123,6 @@ var (
 		Name:        "sys.gc.assist.ns",
 		Help:        "Estimated total CPU time user goroutines spent to assist the GC process",
 		Measurement: "CPU Time",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
-	metaNonGCPauseNS = metric.Metadata{
-		Name:        "sys.go.pause.other.ns",
-		Help:        "Estimated non-GC-related total pause time",
-		Measurement: "Non-GC Pause",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
-	metaNonGCStopNS = metric.Metadata{
-		Name:        "sys.go.stop.other.ns",
-		Help:        "Estimated non-GC-related stop-the-world stopping latencies",
-		Measurement: "Non-GC Stopping",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
 
@@ -340,56 +322,13 @@ var diskMetricsIgnoredDevices = envutil.EnvOrDefaultString("COCKROACH_DISK_METRI
 // allocated uint: bytes allocated by application
 // total     uint: total bytes requested from system
 // error           : any issues fetching stats. This should be a warning only.
-var getCgoMemStats func(context.Context) (cGoAlloc uint, cGoTotal uint, _ error)
-
-// cgoMemMaybePurge checks if the current jemalloc overhead (relative to
-// cgoAllocMem or cgoTargetMem, whichever is higher) is above overheadPercent;
-// if it is, a purge of all arenas is performed. We perform at most a purge per
-// minPeriod.
-var cgoMemMaybePurge func(
-	ctx context.Context,
-	cgoAllocMem, cgoTotalMem, cgoTargetMem uint64,
-	overheadPercent int,
-	minPeriod time.Duration,
-)
-
-// Distribution of individual GC-related stop-the-world pause
-// latencies. This is the time from deciding to stop the world
-// until the world is started again. Some of this time is spent
-// getting all threads to stop (this is measured directly in
-// /sched/pauses/stopping/gc:seconds), during which some threads
-// may still be running. Bucket counts increase monotonically.
-const runtimeMetricGCPauseTotal = "/sched/pauses/total/gc:seconds"
-
-// Distribution of individual GC-related stop-the-world stopping
-// latencies. This is the time it takes from deciding to stop the
-// world until all Ps are stopped. This is a subset of the total
-// GC-related stop-the-world time (/sched/pauses/total/gc:seconds).
-// During this time, some threads may be executing. Bucket counts
-// increase monotonically.
-const runtimeMetricGCStopTotal = "/sched/pauses/stopping/gc:seconds"
+var getCgoMemStats func(context.Context) (uint, uint, error)
 
 // Estimated total CPU time goroutines spent performing GC tasks to assist the
 // GC and prevent it from falling behind the application. This metric is an
 // overestimate, and not directly comparable to system CPU time measurements.
 // Compare only with other /cpu/classes metrics.
 const runtimeMetricGCAssist = "/cpu/classes/gc/mark/assist:cpu-seconds"
-
-// Distribution of individual non-GC-related stop-the-world
-// pause latencies. This is the time from deciding to stop the
-// world until the world is started again. Some of this time
-// is spent getting all threads to stop (measured directly in
-// /sched/pauses/stopping/other:seconds). Bucket counts increase
-// monotonically.
-const runtimeMetricNonGCPauseTotal = "/sched/pauses/total/other:seconds"
-
-// Distribution of individual non-GC-related stop-the-world
-// stopping latencies. This is the time it takes from deciding
-// to stop the world until all Ps are stopped. This is a
-// subset of the total non-GC-related stop-the-world time
-// (/sched/pauses/total/other:seconds). During this time, some
-// threads may be executing. Bucket counts increase monotonically.
-const runtimeMetricNonGCStopTotal = "/sched/pauses/stopping/other:seconds"
 
 // Memory occupied by live objects and dead objects that have not
 // yet been marked free by the garbage collector.
@@ -437,9 +376,6 @@ const runtimeMetricMemStackOSBytes = "/memory/classes/os-stacks:bytes"
 // metrics in /memory/classes.
 const runtimeMetricGoTotal = "/memory/classes/total:bytes"
 
-// Count of all completed GC cycles.
-const runtimeMetricGCCount = "/gc/cycles/total:gc-cycles"
-
 var runtimeMetrics = []string{
 	runtimeMetricGCAssist,
 	runtimeMetricGoTotal,
@@ -450,11 +386,6 @@ var runtimeMetrics = []string{
 	runtimeMetricMemStackHeapBytes,
 	runtimeMetricMemStackOSBytes,
 	runtimeMetricCumulativeAlloc,
-	runtimeMetricGCCount,
-	runtimeMetricGCPauseTotal,
-	runtimeMetricNonGCPauseTotal,
-	runtimeMetricGCStopTotal,
-	runtimeMetricNonGCStopTotal,
 }
 
 // GoRuntimeSampler are a collection of metrics to sample from golang's runtime environment and
@@ -488,45 +419,6 @@ func (grm *GoRuntimeSampler) uint64(name string) uint64 {
 func (grm *GoRuntimeSampler) float64(name string) float64 {
 	i := grm.getIndex(name)
 	return grm.metricSamples[i].Value.Float64()
-}
-
-// float64Histogram gets the sampled value by metrics name as *metrics.Float64Histogram.
-// N.B. This method will panic if the metrics value is not
-// metrics.KindFloat64Histogram.
-func (grm *GoRuntimeSampler) float64Histogram(name string) *metrics.Float64Histogram {
-	i := grm.getIndex(name)
-	return grm.metricSamples[i].Value.Float64Histogram()
-}
-
-// float64HistogramSum performs an estimated sum to the float64histogram.
-// The sum is estimated by taking the average of the bucket boundaries *
-// their count. Buckets with extreme boundary values such as -inf or inf
-// will be normalized to the other non infinity boundary value.
-func float64HistogramSum(h *metrics.Float64Histogram) float64 {
-	estSum := 0.0
-	if len(h.Buckets) == 2 && math.IsInf(h.Buckets[0], -1) && math.IsInf(h.Buckets[1], 1) {
-		panic("unable to estimate from histogram with boundary: [-inf, inf]")
-	}
-	var start, end float64 // start and end of current bucket
-	for i := 0; i <= len(h.Counts)-1; i++ {
-		start, end = h.Buckets[i], h.Buckets[i+1]
-		if math.IsInf(start, -1) { // -Inf
-			// Avoid interpolating with infinity by replacing it with
-			// the right boundary value.
-			start = end
-		}
-		if math.IsInf(end, 1) { // +Inf
-			// Avoid interpolating with infinity by replacing it with
-			// the left boundary value.
-			end = start
-		}
-		estBucketValue := start
-		if end != start {
-			estBucketValue += (end - start) / 2.0
-		}
-		estSum += estBucketValue * float64(h.Counts[i])
-	}
-	return estSum
 }
 
 // sampleRuntimeMetrics reads from metrics.Read api and fill in the value
@@ -626,9 +518,6 @@ type RuntimeStatSampler struct {
 	CgoTotalBytes            *metric.Gauge
 	GcCount                  *metric.Counter
 	GcPauseNS                *metric.Counter
-	NonGcPauseNS             *metric.Gauge
-	GcStopNS                 *metric.Gauge
-	NonGcStopNS              *metric.Gauge
 	GcPausePercent           *metric.GaugeFloat64
 	GcAssistNS               *metric.Counter
 	// CPU stats for the CRDB process usage.
@@ -722,11 +611,8 @@ func NewRuntimeStatSampler(ctx context.Context, clock hlc.WallClock) *RuntimeSta
 		CgoTotalBytes:            metric.NewGauge(metaCgoTotalBytes),
 		GcCount:                  metric.NewCounter(metaGCCount),
 		GcPauseNS:                metric.NewCounter(metaGCPauseNS),
-		GcStopNS:                 metric.NewGauge(metaGCStopNS),
 		GcPausePercent:           metric.NewGaugeFloat64(metaGCPausePercent),
 		GcAssistNS:               metric.NewCounter(metaGCAssistNS),
-		NonGcPauseNS:             metric.NewGauge(metaNonGCPauseNS),
-		NonGcStopNS:              metric.NewGauge(metaNonGCStopNS),
 
 		CPUUserNS:              metric.NewCounter(metaCPUUserNS),
 		CPUUserPercent:         metric.NewGaugeFloat64(metaCPUUserPercent),
@@ -790,23 +676,6 @@ func GetCGoMemStats(ctx context.Context) *CGoMemStats {
 	}
 }
 
-// CGoMemMaybePurge checks if the current allocator overhead (relative to
-// cgoAllocMem or cgoTargetMem, whichever is higher) is above overheadPercent;
-// if it is, a purge of all arenas is performed. We perform at most a purge per
-// minPeriod.
-func CGoMemMaybePurge(
-	ctx context.Context,
-	cgoAllocMem, cgoTotalMem, cgoTargetMem uint64,
-	overheadPercent int,
-	minPeriod time.Duration,
-) {
-	if cgoMemMaybePurge != nil {
-		cgoMemMaybePurge(ctx, cgoAllocMem, cgoTotalMem, cgoTargetMem, overheadPercent, minPeriod)
-	}
-}
-
-var netstatEvery = log.Every(time.Minute)
-
 // SampleEnvironment queries the runtime system for various interesting metrics,
 // storing the resulting values in the set of metric gauges maintained by
 // RuntimeStatSampler. This makes runtime statistics more convenient for
@@ -816,6 +685,12 @@ var netstatEvery = log.Every(time.Minute)
 // to keep runtime statistics current.
 // The CGoMemStats should be provided via GetCGoMemStats().
 func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMemStats) {
+	// Note that debug.ReadGCStats() does not suffer the same problem as
+	// runtime.ReadMemStats(). The only way you can know that is by reading the
+	// source.
+	gc := &debug.GCStats{}
+	debug.ReadGCStats(gc)
+
 	rsr.goRuntimeSampler.sampleRuntimeMetrics()
 
 	numCgoCall := runtime.NumCgoCall()
@@ -878,9 +753,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	var deltaNet net.IOCountersStat
 	netCounters, err := getSummedNetStats(ctx)
 	if err != nil {
-		if netstatEvery.ShouldLog() {
-			log.Ops.Warningf(ctx, "problem fetching net stats: %s; net stats will be empty.", err)
-		}
+		log.Ops.Warningf(ctx, "problem fetching net stats: %s; net stats will be empty.", err)
 	} else {
 		deltaNet = netCounters
 		subtractNetworkCounters(&deltaNet, rsr.last.net)
@@ -918,17 +791,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 
 	combinedNormalizedProcPerc := (procSrate + procUrate) / cpuCapacity
 	combinedNormalizedHostPerc := (hostSrate + hostUrate) / float64(numHostCPUs)
-
-	gcPauseTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricGCPauseTotal))
-	nonGcPauseTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricNonGCPauseTotal))
-	gcStopTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricGCStopTotal))
-	nonGcStopTotal := float64HistogramSum(rsr.goRuntimeSampler.float64Histogram(runtimeMetricNonGCStopTotal))
-	gcPauseTotalNs := uint64(gcPauseTotal * 1.e9)
-	nonGcPauseTotalNs := int64(nonGcPauseTotal * 1.e9)
-	gcStopTotalNs := int64(gcStopTotal * 1.e9)
-	nonGcStopTotalNs := int64(nonGcStopTotal * 1.e9)
-	gcCount := rsr.goRuntimeSampler.uint64(runtimeMetricGCCount)
-	gcPauseRatio := float64(gcPauseTotalNs-rsr.last.gcPauseTime) / dur
+	gcPauseRatio := float64(uint64(gc.PauseTotal)-rsr.last.gcPauseTime) / dur
 	runnableSum := goschedstats.CumulativeNormalizedRunnableGoroutines()
 	gcAssistSeconds := rsr.goRuntimeSampler.float64(runtimeMetricGCAssist)
 	gcAssistNS := int64(gcAssistSeconds * 1e9)
@@ -941,7 +804,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	rsr.last.procStime = procStime
 	rsr.last.hostUtime = hostUtime
 	rsr.last.hostStime = hostStime
-	rsr.last.gcPauseTime = gcPauseTotalNs
+	rsr.last.gcPauseTime = uint64(gc.PauseTotal)
 	rsr.last.runnableSum = runnableSum
 
 	// Log summary of statistics to console.
@@ -970,7 +833,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 		CPUUserPercent:    float32(procUrate) * 100,
 		CPUSysPercent:     float32(procSrate) * 100,
 		GCPausePercent:    float32(gcPauseRatio) * 100,
-		GCRunCount:        gcCount,
+		GCRunCount:        uint64(gc.NumGC),
 		NetHostRecvBytes:  deltaNet.BytesRecv,
 		NetHostSendBytes:  deltaNet.BytesSent,
 	}
@@ -978,7 +841,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	logStats(ctx, stats)
 
 	rsr.last.cgoCall = numCgoCall
-	rsr.last.gcCount = int64(gcCount)
+	rsr.last.gcCount = gc.NumGC
 
 	rsr.GoAllocBytes.Update(int64(goAlloc))
 	rsr.GoTotalBytes.Update(int64(goTotal))
@@ -992,13 +855,10 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(ctx context.Context, cs *CGoMem
 	rsr.RunnableGoroutinesPerCPU.Update(runnableAvg)
 	rsr.CgoAllocBytes.Update(int64(cs.CGoAllocatedBytes))
 	rsr.CgoTotalBytes.Update(int64(cs.CGoTotalBytes))
-	rsr.GcCount.Update(int64(gcCount))
-	rsr.GcPauseNS.Update(int64(gcPauseTotalNs))
-	rsr.GcStopNS.Update(gcStopTotalNs)
+	rsr.GcCount.Update(gc.NumGC)
+	rsr.GcPauseNS.Update(int64(gc.PauseTotal))
 	rsr.GcPausePercent.Update(gcPauseRatio)
 	rsr.GcAssistNS.Update(gcAssistNS)
-	rsr.NonGcPauseNS.Update(nonGcPauseTotalNs)
-	rsr.NonGcStopNS.Update(nonGcStopTotalNs)
 
 	rsr.CPUUserNS.Update(procUtime)
 	rsr.CPUUserPercent.Update(procUrate)

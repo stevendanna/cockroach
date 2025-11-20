@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"sort"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -181,23 +180,6 @@ func (t *TSDB) read(metric string) ([]float64, bool) {
 
 	points, ok := t.mu.points[metric]
 	return points, ok
-}
-
-// RegisteredMetricNames returns a list of all metric names that have been
-// registerd with TSDB via Register(..).
-func (t *TSDB) RegisteredMetricNames() []string {
-	var names []string
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	for metric := range t.mu.points {
-		names = append(names, metric)
-	}
-
-	// For deterministic output.
-	sort.Strings(names)
-
-	return names
 }
 
 func (t *TSDB) registerMetricValue(val reflect.Value, name string, skipNil bool) {

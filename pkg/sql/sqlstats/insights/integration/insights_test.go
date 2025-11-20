@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
-	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/contention"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
@@ -226,10 +225,8 @@ func TestFailedInsights(t *testing.T) {
 		if testRedacted {
 			conn = s.SQLConn(t, serverutils.User("testuser"))
 		}
-		conn.SetMaxOpenConns(1)
-		_, err := conn.Exec("SET autocommit_before_ddl = false")
-		require.NoError(t, err)
-		_, err = conn.Exec("SET SESSION application_name=$1", appName)
+
+		_, err := conn.Exec("SET SESSION application_name=$1", appName)
 		require.NoError(t, err)
 
 		testCases := []struct {
@@ -395,6 +392,7 @@ WHERE query = $1 AND app_name = $2`, tc.fingerprint, appName)
 			require.Equal(t, tc.problems, replacedSlowProblems, "received: %s, used to compare: %s", problems, replacedSlowProblems)
 
 		}
+
 	})
 }
 
@@ -953,43 +951,4 @@ func TestInsightsIndexRecommendationIntegration(t *testing.T) {
 
 		return nil
 	}, 1*time.Second)
-}
-
-// TestInsightsClearsPerSessionMemory ensures that memory allocated
-// for a session is freed when that session is closed.
-func TestInsightsClearsPerSessionMemory(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	sessionClosedCh := make(chan struct{})
-	clearedSessionID := clusterunique.ID{}
-	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			Insights: &insights.TestingKnobs{
-				OnSessionClear: func(sessionID clusterunique.ID) {
-					defer close(sessionClosedCh)
-					clearedSessionID = sessionID
-				},
-			},
-		},
-	})
-	defer ts.Stopper().Stop(ctx)
-	s := ts.ApplicationLayer()
-	conn1 := sqlutils.MakeSQLRunner(s.SQLConn(t))
-	conn2 := sqlutils.MakeSQLRunner(s.SQLConn(t))
-
-	var sessionID1 string
-	conn1.QueryRow(t, "SHOW session_id").Scan(&sessionID1)
-
-	// Start a transaction and cancel the session - ensure that the memory is freed.
-	conn1.Exec(t, "BEGIN")
-	for i := 0; i < 5; i++ {
-		conn1.Exec(t, "SELECT 1")
-	}
-
-	conn2.Exec(t, "CANCEL SESSION $1", sessionID1)
-
-	<-sessionClosedCh
-	require.Equal(t, clearedSessionID.String(), sessionID1)
 }

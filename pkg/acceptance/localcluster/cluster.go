@@ -7,7 +7,6 @@ package localcluster
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	gosql "database/sql"
 	"fmt"
@@ -19,7 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"text/tabwriter"
@@ -233,8 +232,8 @@ func (c *Cluster) joins() []string {
 			})
 		}
 	}
-	slices.SortFunc(joins, func(a, b addrAndSeq) int {
-		return cmp.Compare(a.seq, b.seq)
+	sort.Slice(joins, func(i, j int) bool {
+		return joins[i].seq < joins[j].seq
 	})
 
 	if len(joins) == 0 {
@@ -727,7 +726,6 @@ func (n *Node) waitUntilLive(dur time.Duration) error {
 
 		var uiURL *url.URL
 
-		//nolint:deferloop TODO(#137605)
 		defer func() {
 			log.Infof(ctx, "process %d started (db: %s ui: %s)", pid, pgURL, uiURL)
 		}()

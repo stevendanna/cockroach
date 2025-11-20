@@ -300,7 +300,8 @@ LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 		// Do noting.
 	} else if showNormal {
 		if !showAggregate {
-			buf.WriteString(` AND p.prokind != 'a'`)
+			// TODO(sql-sessions): Use prokind here.
+			buf.WriteString(` AND NOT p.proisagg`)
 		}
 		if !showProcedure {
 			buf.WriteString(` AND (p.prokind IS NULL OR p.prokind <> 'p')`)
@@ -310,13 +311,15 @@ LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 			_ = 0 // disable lint SA9003
 		}
 		if !showWindow {
-			buf.WriteString(` AND p.prokind != 'w'`)
+			// TODO(sql-sessions): Use prokind here.
+			buf.WriteString(` AND NOT p.proiswindow`)
 		}
 	} else {
 		buf.WriteString(` AND (FALSE`)
 		// Note: at least one of these must be true.
 		if showAggregate {
-			buf.WriteString(` OR p.prokind = 'a'`)
+			// TODO(sql-sessions): Use prokind here.
+			buf.WriteString(` OR p.proisagg`)
 		}
 		if showTrigger {
 			// TODO(sql-sessions): Use prorettype here.
@@ -326,7 +329,7 @@ LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 			buf.WriteString(` OR (p.prokind IS NOT NULL AND p.prokind = 'p')`)
 		}
 		if showWindow {
-			buf.WriteString(` OR p.prokind = 'w'`)
+			buf.WriteString(` OR p.proiswindow`)
 		}
 		buf.WriteByte(')')
 	}
@@ -366,6 +369,7 @@ func listTables(tabTypes string, hasPattern bool, verbose, showSystem bool) (str
 
 	if !(showTables || showIndexes || showViews || showMatViews || showSeq || showForeign) {
 		showTables = true
+		showIndexes = true
 		showViews = true
 		showMatViews = true
 		showSeq = true

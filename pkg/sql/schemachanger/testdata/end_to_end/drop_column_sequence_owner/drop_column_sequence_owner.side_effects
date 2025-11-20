@@ -90,7 +90,6 @@ upsert descriptor #104
   +      storeColumnNames:
   +      - k
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -118,7 +117,6 @@ upsert descriptor #104
   +      - k
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -177,8 +175,6 @@ upsert descriptor #104
   +      columns:
   +        "1": i
   +        "3": k
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -244,7 +240,6 @@ upsert descriptor #104
   +      storeColumnNames:
   +      - k
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -272,7 +267,6 @@ upsert descriptor #104
   +      - k
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -487,7 +481,6 @@ upsert descriptor #104
   -      storeColumnNames:
   -      - k
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: WRITE_ONLY
@@ -520,7 +513,6 @@ upsert descriptor #104
          - k
          unique: true
   -      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: DELETE_ONLY
@@ -651,7 +643,6 @@ upsert descriptor #104
   -      - crdb_internal_column_2_name_placeholder
   -      - k
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -692,8 +683,6 @@ upsert descriptor #104
   -      columns:
   -        "1": i
   -        "3": k
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      families:

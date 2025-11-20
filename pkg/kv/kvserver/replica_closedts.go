@@ -49,7 +49,7 @@ func (r *Replica) BumpSideTransportClosed(
 		return res
 	}
 
-	lai := r.shMu.state.LeaseAppliedIndex
+	lai := r.mu.state.LeaseAppliedIndex
 	policy := r.closedTimestampPolicyRLocked()
 	target := targetByPolicy[policy]
 	st := r.leaseStatusForRequestRLocked(ctx, now, hlc.Timestamp{} /* reqTS */)

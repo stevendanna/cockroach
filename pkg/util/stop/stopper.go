@@ -9,14 +9,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"runtime/trace"
+	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
-	"github.com/cockroachdb/cockroach/pkg/util/growstack"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
@@ -43,7 +42,7 @@ func register(s *Stopper) {
 	trackedStoppers.Lock()
 	defer trackedStoppers.Unlock()
 	trackedStoppers.stoppers = append(trackedStoppers.stoppers,
-		stopperWithStack{s: s, createdAt: debugutil.Stack()})
+		stopperWithStack{s: s, createdAt: string(debug.Stack())})
 }
 
 func unregister(s *Stopper) {
@@ -61,7 +60,7 @@ func unregister(s *Stopper) {
 
 type stopperWithStack struct {
 	s         *Stopper
-	createdAt debugutil.SafeStack // stack from NewStopper()
+	createdAt string // stack from NewStopper()
 }
 
 var trackedStoppers struct {
@@ -173,7 +172,7 @@ type Stopper struct {
 		// idAlloc is incremented atomically under the read lock when adding a
 		// context to be canceled.
 		idAlloc  int64 // allocates index into qCancels
-		qCancels syncutil.Map[int64, context.CancelFunc]
+		qCancels sync.Map
 	}
 }
 
@@ -217,7 +216,7 @@ func NewStopper(options ...Option) *Stopper {
 	return s
 }
 
-// recover reports the current panic, if any, and panics again.
+// recover reports the current panic, if any, any panics again.
 //
 // Note: this function _must_ be called with `defer s.recover()`, otherwise
 // the panic recovery won't work.
@@ -275,7 +274,7 @@ func (s *Stopper) AddCloser(c Closer) {
 // Canceling this context releases resources associated with it, so code should
 // call cancel as soon as the operations running in this Context complete.
 func (s *Stopper) WithCancelOnQuiesce(ctx context.Context) (context.Context, func()) {
-	var cancel context.CancelFunc
+	var cancel func()
 	ctx, cancel = context.WithCancel(ctx)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -284,7 +283,7 @@ func (s *Stopper) WithCancelOnQuiesce(ctx context.Context) (context.Context, fun
 		return ctx, func() {}
 	}
 	id := atomic.AddInt64(&s.mu.idAlloc, 1)
-	s.mu.qCancels.Store(id, &cancel)
+	s.mu.qCancels.Store(id, cancel)
 	return ctx, func() {
 		cancel()
 		s.mu.qCancels.Delete(id)
@@ -312,25 +311,9 @@ func (s *Stopper) RunTask(ctx context.Context, taskName string, f func(context.C
 	// Call f.
 	defer s.recover(ctx)
 	defer s.runPostlude()
-	defer s.startRegion(ctx, taskName).End()
 
 	f(ctx)
 	return nil
-}
-
-type region interface {
-	End()
-}
-
-type noopRegion struct{}
-
-func (n noopRegion) End() {}
-
-func (s *Stopper) startRegion(ctx context.Context, taskName string) region {
-	if !trace.IsEnabled() {
-		return noopRegion{}
-	}
-	return trace.StartRegion(ctx, taskName)
 }
 
 // RunTaskWithErr is like RunTask(), but takes in a callback that can return an
@@ -345,7 +328,6 @@ func (s *Stopper) RunTaskWithErr(
 	// Call f.
 	defer s.recover(ctx)
 	defer s.runPostlude()
-	defer s.startRegion(ctx, taskName).End()
 
 	return f(ctx)
 }
@@ -475,9 +457,9 @@ func (s *Stopper) RunAsyncTaskEx(ctx context.Context, opt TaskOpts, f func(conte
 	var sp *tracing.Span
 	switch opt.SpanOpt {
 	case FollowsFromSpan:
-		ctx, sp = tracing.ForkSpan(ctx, opt.TaskName)
+		ctx, sp = tracing.EnsureForkSpan(ctx, s.tracer, opt.TaskName)
 	case ChildSpan:
-		ctx, sp = tracing.ChildSpan(ctx, opt.TaskName)
+		ctx, sp = tracing.EnsureChildSpan(ctx, s.tracer, opt.TaskName)
 	case SterileRootSpan:
 		ctx, sp = s.tracer.StartSpanCtx(ctx, opt.TaskName, tracing.WithSterile())
 	default:
@@ -486,10 +468,8 @@ func (s *Stopper) RunAsyncTaskEx(ctx context.Context, opt TaskOpts, f func(conte
 
 	// Call f on another goroutine.
 	taskStarted = true // Another goroutine now takes ownership of the alloc, if any.
-	go func(taskName string) {
-		growstack.Grow()
+	go func() {
 		defer s.runPostlude()
-		defer s.startRegion(ctx, taskName).End()
 		defer sp.Finish()
 		defer s.recover(ctx)
 		if alloc != nil {
@@ -498,7 +478,7 @@ func (s *Stopper) RunAsyncTaskEx(ctx context.Context, opt TaskOpts, f func(conte
 
 		sp.UpdateGoroutineIDToCurrent()
 		f(ctx)
-	}(opt.TaskName)
+	}()
 	return nil
 }
 
@@ -599,9 +579,10 @@ func (s *Stopper) Quiesce(ctx context.Context) {
 			close(s.quiescer)
 		}
 
-		s.mu.qCancels.Range(func(id int64, cancel *context.CancelFunc) (wantMore bool) {
-			(*cancel)()
-			s.mu.qCancels.Delete(id)
+		s.mu.qCancels.Range(func(k, v interface{}) (wantMore bool) {
+			cancel := v.(func())
+			cancel()
+			s.mu.qCancels.Delete(k)
 			return true
 		})
 		for _, f := range s.mu.quiescers {

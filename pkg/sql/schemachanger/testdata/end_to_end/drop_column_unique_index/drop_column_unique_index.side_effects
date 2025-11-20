@@ -86,7 +86,6 @@ upsert descriptor #106
   +      - v
   +      - x
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -116,7 +115,6 @@ upsert descriptor #106
   +      - x
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -173,8 +171,6 @@ upsert descriptor #106
   +        "1": k
   +        "2": v
   +        "4": x
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      constraints:
@@ -243,7 +239,6 @@ upsert descriptor #106
   +      - v
   +      - x
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -273,7 +268,6 @@ upsert descriptor #106
   +      - x
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -438,7 +432,6 @@ upsert descriptor #106
   -      - v
   -      - x
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: WRITE_ONLY
@@ -472,7 +465,6 @@ upsert descriptor #106
          - x
          unique: true
   -      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: DELETE_ONLY
@@ -545,8 +537,6 @@ upsert descriptor #106
   -        "1": k
   -        "2": v
   -        "4": x
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      constraints:
@@ -619,7 +609,6 @@ upsert descriptor #106
   -      - crdb_internal_column_3_name_placeholder
   -      - x
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY

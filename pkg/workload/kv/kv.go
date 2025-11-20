@@ -8,18 +8,15 @@ package kv
 import (
 	"context"
 	"crypto/sha1"
-	"crypto/sha256"
 	gosql "database/sql"
 	"encoding/binary"
 	"fmt"
 	"hash"
-	"hash/crc64"
 	"math"
 	"math/big"
-	"math/rand/v2"
+	"math/rand"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -85,8 +82,6 @@ type kv struct {
 	writeSeq                             string
 	sequential                           bool
 	zipfian                              bool
-	zipfianS                             float64
-	zipfianV                             float64
 	sfuDelay                             time.Duration
 	splits                               int
 	scatter                              bool
@@ -97,28 +92,10 @@ type kv struct {
 	keySize                              int
 	insertCount                          int
 	txnQoS                               string
-	prepareReadOnly                      bool
 }
 
 func init() {
 	workload.Register(kvMeta)
-}
-
-var (
-	randSeed struct {
-		once       sync.Once
-		chaChaSeed [32]byte
-	}
-)
-
-func randSeedGet() [32]byte {
-	randSeed.once.Do(func() {
-		var seedBytes [8]byte
-		binary.LittleEndian.PutUint64(seedBytes[:], uint64(RandomSeed.Seed()))
-		randSeed.chaChaSeed = sha256.Sum256(seedBytes[:])
-	})
-
-	return randSeed.chaChaSeed
 }
 
 var kvMeta = workload.Meta{
@@ -140,17 +117,16 @@ var kvMeta = workload.Meta{
 		g := &kv{}
 		g.flags.FlagSet = pflag.NewFlagSet(`kv`, pflag.ContinueOnError)
 		g.flags.Meta = map[string]workload.FlagMeta{
-			`batch`:             {RuntimeOnly: true},
-			`sfu-wait-delay`:    {RuntimeOnly: true},
-			`sfu-writes`:        {RuntimeOnly: true},
-			`read-percent`:      {RuntimeOnly: true},
-			`span-percent`:      {RuntimeOnly: true},
-			`span-limit`:        {RuntimeOnly: true},
-			`del-percent`:       {RuntimeOnly: true},
-			`splits`:            {RuntimeOnly: true},
-			`scatter`:           {RuntimeOnly: true},
-			`timeout`:           {RuntimeOnly: true},
-			`prepare-read-only`: {RuntimeOnly: true},
+			`batch`:          {RuntimeOnly: true},
+			`sfu-wait-delay`: {RuntimeOnly: true},
+			`sfu-writes`:     {RuntimeOnly: true},
+			`read-percent`:   {RuntimeOnly: true},
+			`span-percent`:   {RuntimeOnly: true},
+			`span-limit`:     {RuntimeOnly: true},
+			`del-percent`:    {RuntimeOnly: true},
+			`splits`:         {RuntimeOnly: true},
+			`scatter`:        {RuntimeOnly: true},
+			`timeout`:        {RuntimeOnly: true},
 		}
 		g.flags.IntVar(&g.batchSize, `batch`, 1,
 			`Number of blocks to read/insert in a single SQL statement.`)
@@ -172,18 +148,14 @@ var kvMeta = workload.Meta{
 			`LIMIT count for each spanning query, or 0 for no limit`)
 		g.flags.BoolVar(&g.writesUseSelectForUpdate, `sfu-writes`, false,
 			`Use SFU and transactional writes with a sleep after SFU.`)
-		g.flags.BoolVar(&g.zipfian, "zipfian", false,
-			"Allocate keys using a Zipfian distribution (non-uniform random keys).")
-		g.flags.Float64Var(&g.zipfianS, "zipfian-s", 1.1,
-			"Zipf exponent s (>1): controls decay rate (higher → steeper drop-off).")
-		g.flags.Float64Var(&g.zipfianV, "zipfian-v", 1.0,
-			"Zipf offset v (>=1): shifts the distribution (higher → flatter lower end).")
+		g.flags.BoolVar(&g.zipfian, `zipfian`, false,
+			`Pick keys in a zipfian distribution instead of randomly.`)
 		g.flags.BoolVar(&g.sequential, `sequential`, false,
 			`Pick keys sequentially instead of randomly.`)
 		g.flags.StringVar(&g.writeSeq, `write-seq`, "",
 			`Initial write sequence value. Can be used to use the data produced by a previous run. `+
-				`It has to be of the form (R|S|Z)<number>, where S implies that it was taken from a `+
-				`previous --sequential run, R implies a previous random run, and Z implies a previous zipfian run.`)
+				`It has to be of the form (R|S)<number>, where S implies that it was taken from a `+
+				`previous --sequential run and R implies a previous random run.`)
 		g.flags.IntVar(&g.splits, `splits`, 0,
 			`Number of splits to perform before starting normal operations.`)
 		g.flags.BoolVar(&g.scatter, `scatter`, false,
@@ -208,7 +180,6 @@ var kvMeta = workload.Meta{
 		g.flags.StringVar(&g.txnQoS, `txn-qos`, `regular`,
 			`Set default_transaction_quality_of_service session variable, accepted`+
 				`values are 'background', 'regular' and 'critical'.`)
-		g.flags.BoolVar(&g.prepareReadOnly, `prepare-read-only`, false, `Prepare and perform only read statements.`)
 		g.connFlags = workload.NewConnFlags(&g.flags)
 		return g
 	},
@@ -219,9 +190,6 @@ func (*kv) Meta() workload.Meta { return kvMeta }
 
 // Flags implements the Flagser interface.
 func (w *kv) Flags() workload.Flags { return w.flags }
-
-// ConnFlags implements the ConnFlagser interface.
-func (w *kv) ConnFlags() *workload.ConnFlags { return w.connFlags }
 
 // Hooks implements the Hookser interface.
 func (w *kv) Hooks() workload.Hooks {
@@ -271,9 +239,6 @@ func (w *kv) validateConfig() (err error) {
 	}
 	if w.readPercent+w.spanPercent+w.delPercent > 100 {
 		return errors.New("'read-percent', 'span-percent' and 'del-precent' combined exceed 100%")
-	}
-	if w.prepareReadOnly && w.readPercent < 100 {
-		return errors.New("'prepare-read-only' can only be used with 'read-percent' set to 100")
 	}
 	if w.targetCompressionRatio < 1.0 || math.IsNaN(w.targetCompressionRatio) {
 		return errors.New("'target-compression-ratio' must be a number >= 1.0")
@@ -342,7 +307,7 @@ func (w *kv) createKeyGenerator() (func() keyGenerator, *sequence, keyTransforme
 	switch {
 	case w.zipfian:
 		gen = func() keyGenerator {
-			return newZipfianGenerator(seq, rand.New(rand.NewChaCha8(randSeedGet())), w.zipfianS, w.zipfianV)
+			return newZipfianGenerator(seq, rand.New(rand.NewSource(timeutil.Now().UnixNano())))
 		}
 		kr = keyRange{
 			min: 0,
@@ -350,7 +315,7 @@ func (w *kv) createKeyGenerator() (func() keyGenerator, *sequence, keyTransforme
 		}
 	case w.sequential:
 		gen = func() keyGenerator {
-			return newSequentialGenerator(seq, rand.New(rand.NewChaCha8(randSeedGet())))
+			return newSequentialGenerator(seq, rand.New(rand.NewSource(timeutil.Now().UnixNano())))
 		}
 		kr = keyRange{
 			min: 0,
@@ -358,7 +323,7 @@ func (w *kv) createKeyGenerator() (func() keyGenerator, *sequence, keyTransforme
 		}
 	default:
 		gen = func() keyGenerator {
-			return newHashGenerator(seq, rand.New(rand.NewChaCha8(randSeedGet())))
+			return newHashGenerator(seq, rand.New(rand.NewSource(timeutil.Now().UnixNano())))
 		}
 		kr = keyRange{
 			min: math.MinInt64,
@@ -455,7 +420,7 @@ func (w *kv) Tables() []workload.Table {
 				valCol := cb.ColVec(1).Bytes()
 				// coldata.Bytes only allows appends so we have to reset it.
 				valCol.Reset()
-				rndBlock := rand.New(rand.NewChaCha8(randSeedGet()))
+				rndBlock := rand.New(rand.NewSource(RandomSeed.Seed()))
 
 				for rowIdx := rowBegin; rowIdx < rowEnd; rowIdx++ {
 					rowOffset := rowIdx - rowBegin
@@ -476,6 +441,10 @@ func (w *kv) Tables() []workload.Table {
 func (w *kv) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(w, w.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	cfg := workload.NewMultiConnPoolCfgFromFlags(w.connFlags)
 	cfg.MaxTotalConnections = w.connFlags.Concurrency + 1
 	mcp, err := workload.NewMultiConnPool(ctx, cfg, urls...)
@@ -560,7 +529,7 @@ func (w *kv) Ops(
 	delStmtStr := buf.String()
 
 	gen, _, kt, _ := w.createKeyGenerator()
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	var numEmptyResults atomic.Int64
 	for i := 0; i < w.connFlags.Concurrency; i++ {
 		op := &kvOp{
@@ -570,10 +539,8 @@ func (w *kv) Ops(
 		}
 		op.readStmt = op.sr.Define(readStmtStr)
 		op.followerReadStmt = op.sr.Define(followerReadStmtStr)
-		if !op.config.prepareReadOnly {
-			op.writeStmt = op.sr.Define(writeStmtStr)
-		}
-		if len(sfuStmtStr) > 0 && !op.config.prepareReadOnly {
+		op.writeStmt = op.sr.Define(writeStmtStr)
+		if len(sfuStmtStr) > 0 {
 			op.sfuStmt = op.sr.Define(sfuStmtStr)
 		}
 		op.spanStmt = op.sr.Define(spanStmtStr)
@@ -582,9 +549,7 @@ func (w *kv) Ops(
 				" SET default_transaction_quality_of_service = %s", w.txnQoS))
 			op.qosStmt = &stmt
 		}
-		if !op.config.prepareReadOnly {
-			op.delStmt = op.sr.Define(delStmtStr)
-		}
+		op.delStmt = op.sr.Define(delStmtStr)
 		if err := op.sr.Init(ctx, "kv", mcp); err != nil {
 			return workload.QueryLoad{}, err
 		}
@@ -627,7 +592,7 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 			return err
 		}
 	}
-	statementProbability := o.g.rand().IntN(100) // Determines what statement is executed.
+	statementProbability := o.g.rand().Intn(100) // Determines what statement is executed.
 	if statementProbability < o.config.readPercent {
 		args := make([]interface{}, o.config.batchSize)
 		for i := 0; i < o.config.batchSize; i++ {
@@ -635,11 +600,9 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 		}
 		start := timeutil.Now()
 		readStmt := o.readStmt
-		opName := `read`
 
-		if o.g.rand().IntN(100) < o.config.followerReadPercent {
+		if o.g.rand().Intn(100) < o.config.followerReadPercent {
 			readStmt = o.followerReadStmt
-			opName = `follower-read`
 		}
 		rows, err := readStmt.Query(ctx, args...)
 		if err != nil {
@@ -653,7 +616,7 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 			o.numEmptyResults.Add(1)
 		}
 		elapsed := timeutil.Since(start)
-		o.hists.Get(opName).Record(elapsed)
+		o.hists.Get(`read`).Record(elapsed)
 		return rows.Err()
 	}
 	// Since we know the statement is not a read, we recalibrate
@@ -781,7 +744,6 @@ type sequence struct {
 	max int64
 }
 
-// write increments the sequence
 func (s *sequence) write() int64 {
 	return (s.val.Add(1) - 1) % s.max
 }
@@ -926,7 +888,7 @@ func (g *hashGenerator) readKey() int64 {
 	if v == 0 {
 		return 0
 	}
-	return g.hash(g.random.Int64N(v))
+	return g.hash(g.random.Int63n(v))
 }
 
 func (g *hashGenerator) rand() *rand.Rand {
@@ -958,7 +920,7 @@ func (g *sequentialGenerator) readKey() int64 {
 	if v == 0 {
 		return 0
 	}
-	return g.random.Int64N(v)
+	return g.random.Int63n(v)
 }
 
 func (g *sequentialGenerator) rand() *rand.Rand {
@@ -969,128 +931,40 @@ func (g *sequentialGenerator) state() string {
 	return fmt.Sprintf("S%d", g.seq.read())
 }
 
-type writeSequenceSource struct {
-	*sequence
-}
-
-func (wss writeSequenceSource) Int63() int64 {
-	return int64(wss.Uint64() & 0x7fffffffffffffff) // Masks high bit
-}
-
-func (wss writeSequenceSource) Uint64() uint64 {
-	hasher := crc64.New(crc64.MakeTable(crc64.ECMA))
-	buf := []byte{0, 0, 0, 0, 0, 0, 0, 0}
-	// NOTE: the sequence is incremented by wss.write() call
-	binary.BigEndian.PutUint64(buf[:8], uint64(wss.write()))
-	_, _ = hasher.Write(buf[:8])
-	return hasher.Sum64()
-}
-
-func (wss writeSequenceSource) Seed(seed int64) {
-	wss.val.Store(seed)
-}
-
-type readSequenceSource struct {
-	*sequence
-	random *rand.Rand
-}
-
-func (rss readSequenceSource) Int63() int64 {
-	return int64(rss.Uint64() & 0x7fffffffffffffff) // Masks high bit
-}
-
-func (rss readSequenceSource) Uint64() uint64 {
-	hasher := crc64.New(crc64.MakeTable(crc64.ECMA))
-	buf := []byte{0, 0, 0, 0, 0, 0, 0, 0}
-	// Unlike in the writeSequenceSource, fetch the last value in the sequence
-	// (don't increment the sequence).
-	v := rss.read()
-	if v != 0 {
-		// To prevent an immediate read of a recently written value, find a random
-		// value between [0,v) to read.
-		v = rss.random.Int64N(v)
-	}
-	binary.BigEndian.PutUint64(buf[:8], uint64(v))
-	_, _ = hasher.Write(buf[:8])
-	return hasher.Sum64()
-}
-
-func (rss readSequenceSource) Seed(seed int64) {
-	// noop
-}
-
 type zipfGenerator struct {
-	writeZipf *rand.Zipf
-	readZipf  *rand.Zipf
-	random    *rand.Rand
-	seq       *sequence
+	seq    *sequence
+	random *rand.Rand
+	zipf   *zipf
 }
 
-func newZipfianGenerator(
-	seq *sequence, rng *rand.Rand, zipfianS float64, zipfianV float64,
-) *zipfGenerator {
-	// {read,write}SequenceSources share the same sequence.  readSequenceSource
-	// never mutates the sequence, whereas writeSequenceSource does increments the
-	// sequence.
-	readSS := readSequenceSource{
-		sequence: seq,
-		random:   rng,
-	}
-	writeSS := writeSequenceSource{
-		sequence: seq,
-	}
-
-	// rand.NewZipf returns a Zipf variate generator.
-	// The generator produces integer values k in the range [0, imax] according to a Zipf-like distribution,
-	// where the probability mass function is proportional to:
-	//
-	//      P(k) ∝ (v + k)^(-s)
-	//
-	// Parameters:
-	//   - r: a pointer to a Rand source, used for generating underlying random numbers.
-	//   - s: the exponent parameter (must be > 1). This parameter controls the decay of the probability
-	//        distribution. A higher value of s produces a steeper decay, meaning that larger k values are
-	//        much less likely compared to smaller ones. Essentially, s tunes how "heavy-tailed" the distribution is.
-	//   - v: the shift parameter (must be >= 1). This parameter offsets the index k in the probability function.
-	//        When v is 1, the distribution aligns with the classical Zipf law. Increasing v effectively flattens
-	//        the distribution near k = 0 by reducing the relative weight of lower indices, thereby making the
-	//        probabilities more uniform over the range. It “shifts” the starting point of the decay.
-	//   - imax: the maximum value for k. The distribution is defined over the discrete interval [0, imax].
-	//
-	// Requirements:
-	//   - s > 1: ensures that the sum of the probabilities converges.
-	//   - v >= 1: guarantees that the formula (v + k)^(-s) behaves as expected.
-	//
-	// Example usage:
-	//
-	//   r := rand.New(source)
-	//   zipfGen := NewZipf(r, 1.5, 1.0, 100)
-	//   k := zipfGen.Uint64()  // k is distributed according to the Zipf law.
-	//
-	// The parameters s and v allow you to shape the Zipf distribution:
-	//   - **s (exponent):** Adjusts the "tail" of the distribution. Lower values (just above 1) yield a
-	//     less steep drop-off, allowing larger values of k to occur with higher probability. Higher values
-	//     of s cause a rapid decline, concentrating probability on the smallest k values.
-	//   - **v (shift):** Modifies the starting point of the decay. With v = 1, you get the classical behavior,
-	//     but setting v > 1 can reduce the impact of the k = 0 term and spread the probability mass more evenly
-	//     across the range.
-	//
-	// This design gives you control over both the skewness (via s) and the starting offset (via v) of the distribution.
-
+// Creates a new zipfian generator.
+func newZipfianGenerator(seq *sequence, rng *rand.Rand) *zipfGenerator {
 	return &zipfGenerator{
-		writeZipf: rand.NewZipf(rand.New(writeSS), zipfianS, zipfianV, uint64(math.MaxInt64)),
-		readZipf:  rand.NewZipf(rand.New(readSS), zipfianS, zipfianV, uint64(math.MaxInt64)),
-		random:    rng,
-		seq:       seq,
+		seq:    seq,
+		random: rng,
+		zipf:   newZipf(1.1, 1, uint64(math.MaxInt64)),
 	}
 }
 
-func (g *zipfGenerator) writeKey() int64 {
-	return int64(g.writeZipf.Uint64())
+// Get a random number seeded by v that follows the
+// zipfian distribution.
+func (g *zipfGenerator) zipfian(seed int64) int64 {
+	randomWithSeed := rand.New(rand.NewSource(seed))
+	return int64(g.zipf.Uint64(randomWithSeed))
 }
 
+// Get a zipf write key appropriately.
+func (g *zipfGenerator) writeKey() int64 {
+	return g.zipfian(g.seq.write())
+}
+
+// Get a zipf read key appropriately.
 func (g *zipfGenerator) readKey() int64 {
-	return int64(g.readZipf.Uint64())
+	v := g.seq.read()
+	if v == 0 {
+		return 0
+	}
+	return g.zipfian(g.random.Int63n(v))
 }
 
 func (g *zipfGenerator) rand() *rand.Rand {
@@ -1114,7 +988,7 @@ func (w *kv) randBlock(r *rand.Rand) []byte {
 // according to min/max block bytes and the unique bytes given the
 // targetCompressionRatio.
 func (w *kv) randBlockSize(r *rand.Rand) (block int, unique int) {
-	block = r.IntN(w.maxBlockSizeBytes-w.minBlockSizeBytes+1) + w.minBlockSizeBytes
+	block = r.Intn(w.maxBlockSizeBytes-w.minBlockSizeBytes+1) + w.minBlockSizeBytes
 	unique = int(float64(block) / w.targetCompressionRatio)
 	if unique < 1 {
 		unique = 1

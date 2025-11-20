@@ -4,10 +4,8 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-
-import { propsToQueryString } from "../util";
-
 import { fetchData } from "./fetchData";
+import { propsToQueryString } from "../util";
 
 const JOBS_PATH = "_admin/v1/jobs";
 
@@ -16,7 +14,6 @@ export type JobsResponse = cockroach.server.serverpb.JobsResponse;
 
 export type JobRequest = cockroach.server.serverpb.JobRequest;
 export type JobResponse = cockroach.server.serverpb.JobResponse;
-
 export type JobResponseWithKey = {
   jobResponse: JobResponse;
   key: string;

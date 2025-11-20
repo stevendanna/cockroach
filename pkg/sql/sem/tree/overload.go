@@ -38,7 +38,6 @@ const (
 	_ SpecializedVectorizedBuiltin = iota
 	SubstringStringIntInt
 	CrdbInternalRangeStats
-	CrdbInternalRangeStatsWithErrors
 )
 
 // AggregateOverload is an opaque type which is used to box an eval.AggregateOverload.
@@ -299,11 +298,6 @@ type Overload struct {
 	// UDFContainsOnlySignature is false, then DEFAULT expressions are included
 	// into RoutineParams.
 	DefaultExprs Exprs
-
-	// SecurityMode is true when privilege checks during function execution
-	// should be performed against the function owner rather than the invoking
-	// user.
-	SecurityMode RoutineSecurity
 }
 
 // params implements the overloadImpl interface.
@@ -323,7 +317,7 @@ func (b Overload) defaultExprs() Exprs {
 	return b.DefaultExprs
 }
 
-// FixedReturnType returns a fixed type that the function returns, returning AnyElement
+// FixedReturnType returns a fixed type that the function returns, returning Any
 // if the return type is based on the function's arguments.
 func (b Overload) FixedReturnType() *types.T {
 	if b.ReturnType == nil {
@@ -491,7 +485,7 @@ func (p ParamTypes) MatchAt(typ *types.T, i int) bool {
 	// The parameterized types for Tuples are checked in the type checking
 	// routines before getting here, so we only need to check if the parameter
 	// type is p types.TUPLE below. This allows us to avoid defining overloads
-	// for types.Tuple{}, types.Tuple{types.AnyElement}, types.Tuple{types.AnyElement, types.AnyElement},
+	// for types.Tuple{}, types.Tuple{types.Any}, types.Tuple{types.Any, types.Any},
 	// etc. for Tuple operators.
 	if typ.Family() == types.TupleFamily {
 		typ = types.AnyTuple
@@ -601,7 +595,7 @@ func (HomogeneousType) MatchLen(l int) bool {
 
 // GetAt is part of the TypeList interface.
 func (HomogeneousType) GetAt(i int) *types.T {
-	return types.AnyElement
+	return types.Any
 }
 
 // Length is part of the TypeList interface.
@@ -611,7 +605,7 @@ func (HomogeneousType) Length() int {
 
 // Types is part of the TypeList interface.
 func (HomogeneousType) Types() []*types.T {
-	return []*types.T{types.AnyElement}
+	return []*types.T{types.Any}
 }
 
 func (HomogeneousType) String() string {
@@ -764,7 +758,7 @@ func returnTypeToFixedType(s ReturnTyper, inputTyps []TypedExpr) *types.T {
 	if t := s(inputTyps); t != UnknownReturnType {
 		return t
 	}
-	return types.AnyElement
+	return types.Any
 }
 
 type overloadTypeChecker struct {
@@ -924,7 +918,7 @@ func (s *overloadTypeChecker) typeCheckOverloadedExprs(
 	// If no overloads are provided, just type check parameters and return.
 	if numOverloads == 0 {
 		for i, ok := s.resolvableIdxs.Next(0); ok; i, ok = s.resolvableIdxs.Next(i + 1) {
-			typ, err := s.exprs[i].TypeCheck(ctx, semaCtx, types.AnyElement)
+			typ, err := s.exprs[i].TypeCheck(ctx, semaCtx, types.Any)
 			if err != nil {
 				return pgerror.Wrapf(err, pgcode.InvalidParameterValue,
 					"error type checking resolved expression:")
@@ -1028,7 +1022,7 @@ func (s *overloadTypeChecker) typeCheckOverloadedExprs(
 		}
 	}
 	for i, ok := typeableIdxs.Next(0); ok; i, ok = typeableIdxs.Next(i + 1) {
-		paramDesired := types.AnyElement
+		paramDesired := types.Any
 
 		// If all remaining candidates require the same type for this parameter,
 		// begin desiring that type for the corresponding argument expression.
@@ -1069,70 +1063,8 @@ func (s *overloadTypeChecker) typeCheckOverloadedExprs(
 		s.overloadIdxs = filterParams(s.overloadIdxs, s.overloads, s.params, filter)
 	}
 
-	// Remove any overloads with polymorphic parameters for which the supplied
-	// argument types are invalid.
-	s.overloadIdxs = filterOverloads(s.overloadIdxs, s.overloads, func(o overloadImpl) bool {
-		ol, ok := o.(*Overload)
-		if !ok || ol.Type == BuiltinRoutine {
-			// Don't filter builtin routines.
-			return true
-		}
-		params := ol.Types.(ParamTypes)
-		var outParams ParamTypes
-		if ol.Type == ProcedureRoutine && foundOutParams {
-			outParams = ol.OutParamTypes.(ParamTypes)
-		}
-		hasPolymorphicTyp := false
-		for i := range params {
-			if params[i].Typ.IsPolymorphicType() {
-				hasPolymorphicTyp = true
-				break
-			}
-		}
-		if !hasPolymorphicTyp {
-			return true
-		}
-		argTypes := make([]*types.T, 0, len(params))
-		outArgTypes := make([]*types.T, 0, len(outParams))
-		for i := range s.exprs {
-			typedExpr, err := s.exprs[i].TypeCheck(ctx, semaCtx, types.AnyElement)
-			if err != nil {
-				panic(errors.HandleAsAssertionFailure(err))
-			}
-			if ol.Type == ProcedureRoutine && foundOutParams {
-				if _, isOutParam := toParamOrdinal(i, ol.OutParamOrdinals); isOutParam {
-					// A CALL statement must specify an argument for each OUT parameter
-					// of the procedure.
-					outArgTypes = append(outArgTypes, typedExpr.ResolvedType())
-					continue
-				}
-			}
-			argTypes = append(argTypes, typedExpr.ResolvedType())
-		}
-		// Check the concrete types of the arguments supplied for IN parameters.
-		// Only pass the parameters up to len(argTypes), since polymorphic type
-		// checking for default expressions happens later.
-		var anyElemTyp *types.T
-		if ok, _, anyElemTyp = ResolvePolymorphicArgTypes(
-			params[:len(argTypes)], argTypes, nil /* anyElemTyp */, false, /* enforceConsistency */
-		); !ok {
-			return false
-		}
-		if ol.Type != ProcedureRoutine || !foundOutParams {
-			return true
-		}
-		// Check the concrete types of the arguments supplied for OUT parameters.
-		// Use the concrete type previously resolved from ANYELEMENT IN parameters.
-		// Note that DEFAULT expressions cannot be used for OUT parameters, so there
-		// is no need to truncate the outParams slice.
-		ok, _, _ = ResolvePolymorphicArgTypes(
-			outParams, outArgTypes, anyElemTyp, false, /* enforceConsistency */
-		)
-		return ok
-	})
-
 	// If we typed any exprs as AnyCollatedString but have a concrete collated
-	// string type, redo the types using the concrete type. Note we're probably
+	// string type, redo the types using the contrete type. Note we're probably
 	// still lacking full compliance with PG on collation handling:
 	// https://www.postgresql.org/docs/current/collation.html#id-1.6.11.4.4
 	if ambiguousCollatedTypes {
@@ -1334,7 +1266,8 @@ func (s *overloadTypeChecker) typeCheckOverloadedExprs(
 		for i, ok := s.constIdxs.Next(0); ok; i, ok = s.constIdxs.Next(i + 1) {
 			constExpr := s.exprs[i].(Constant)
 			filter := makeFilter(i, func(params TypeList, ordinal int) bool {
-				_, err := constExpr.ResolveAsType(ctx, semaCtx, params.GetAt(ordinal))
+				semaCtx := MakeSemaContext()
+				_, err := constExpr.ResolveAsType(ctx, &semaCtx, params.GetAt(ordinal))
 				return err == nil
 			})
 			s.overloadIdxs = filterParams(s.overloadIdxs, s.overloads, s.params, filter)
@@ -1500,14 +1433,14 @@ func (s *overloadTypeChecker) typeCheckOverloadedExprs(
 			var err error
 			left := s.typedExprs[0]
 			if left == nil {
-				left, err = s.exprs[0].TypeCheck(ctx, semaCtx, types.AnyElement)
+				left, err = s.exprs[0].TypeCheck(ctx, semaCtx, types.Any)
 				if err != nil {
 					return
 				}
 			}
 			right := s.typedExprs[1]
 			if right == nil {
-				right, err = s.exprs[1].TypeCheck(ctx, semaCtx, types.AnyElement)
+				right, err = s.exprs[1].TypeCheck(ctx, semaCtx, types.Any)
 				if err != nil {
 					return
 				}
@@ -1543,14 +1476,14 @@ func (s *overloadTypeChecker) typeCheckOverloadedExprs(
 			var err error
 			left := s.typedExprs[0]
 			if left == nil {
-				left, err = s.exprs[0].TypeCheck(ctx, semaCtx, types.AnyElement)
+				left, err = s.exprs[0].TypeCheck(ctx, semaCtx, types.Any)
 				if err != nil {
 					return
 				}
 			}
 			right := s.typedExprs[1]
 			if right == nil {
-				right, err = s.exprs[1].TypeCheck(ctx, semaCtx, types.AnyElement)
+				right, err = s.exprs[1].TypeCheck(ctx, semaCtx, types.Any)
 				if err != nil {
 					return
 				}
@@ -1639,7 +1572,7 @@ func defaultTypeCheck(
 	ctx context.Context, semaCtx *SemaContext, s *overloadTypeChecker, errorOnPlaceholders bool,
 ) error {
 	for i, ok := s.constIdxs.Next(0); ok; i, ok = s.constIdxs.Next(i + 1) {
-		typ, err := s.exprs[i].TypeCheck(ctx, semaCtx, types.AnyElement)
+		typ, err := s.exprs[i].TypeCheck(ctx, semaCtx, types.Any)
 		if err != nil {
 			return pgerror.Wrapf(err, pgcode.InvalidParameterValue,
 				"error type checking constant value")
@@ -1648,7 +1581,7 @@ func defaultTypeCheck(
 	}
 	for i, ok := s.placeholderIdxs.Next(0); ok; i, ok = s.placeholderIdxs.Next(i + 1) {
 		if errorOnPlaceholders {
-			if _, err := s.exprs[i].TypeCheck(ctx, semaCtx, types.AnyElement); err != nil {
+			if _, err := s.exprs[i].TypeCheck(ctx, semaCtx, types.Any); err != nil {
 				return err
 			}
 		}

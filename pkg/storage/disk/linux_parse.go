@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build linux
+// +build linux
 
 package disk
 
@@ -44,7 +45,7 @@ import (
 //	12  I/Os currently in progress
 //	13  time spent doing I/Os (ms)
 //	14  weighted time spent doing I/Os (ms)
-func parseDiskStats(contents []byte, disks []*monitoredDisk, measuredAt time.Time) error {
+func parseDiskStats(contents []byte, disks []*monitoredDisk) error {
 	for lineNum := 0; len(contents) > 0; lineNum++ {
 		lineBytes, rest := splitLine(contents)
 		line := unsafe.String(&lineBytes[0], len(lineBytes))
@@ -147,7 +148,7 @@ func parseDiskStats(contents []byte, disks []*monitoredDisk, measuredAt time.Tim
 		} else if ok {
 			stats.FlushesDuration = time.Duration(millis) * time.Millisecond
 		}
-		disks[diskIdx].recordStats(measuredAt, stats)
+		disks[diskIdx].recordStats(stats)
 	}
 	return nil
 }

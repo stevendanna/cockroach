@@ -183,6 +183,9 @@ j  b
 statement ok
 SET use_declarative_schema_changer = 'unsafe'
 
+statement error pgcode 0A000 cannot explain a statement which is not supported by the declarative schema changer
+EXPLAIN (DDL) ALTER TABLE bar ALTER COLUMN j TYPE BOOL
+
 statement ok
 DROP TABLE foo, bar
 
@@ -553,7 +556,7 @@ CREATE TABLE defaultdb.ttyp (id INT PRIMARY KEY, name varchar(256), x defaultdb.
 statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 
-statement ok
+statement ok;
 DROP TABLE defaultdb.ttyp;
 
 statement ok
@@ -745,9 +748,6 @@ SET use_declarative_schema_changer = 'unsafe_always'
 # be able to select from tables/views/sequences still
 statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-statement ok
-SET LOCAL autocommit_before_ddl=off;
 
 statement ok
 DROP DATABASE db1 CASCADE
@@ -1479,9 +1479,11 @@ subtest create-schema
 statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 
+skipif config local-mixed-23.1
 statement ok
 CREATE SCHEMA sc
 
+skipif config local-mixed-23.1
 query TT rowsort
 SHOW SCHEMAS
 ----
@@ -1492,9 +1494,11 @@ pg_extension        node
 public              root
 sc                  root
 
+skipif config local-mixed-23.1
 statement ok
 DROP SCHEMA sc
 
+skipif config local-mixed-23.1
 query TT rowsort
 SHOW SCHEMAS
 ----
@@ -1536,6 +1540,7 @@ EXPLAIN (DDL) CREATE SCHEMA schema1
 statement ok
 SET CLUSTER SETTING sql.schema.force_declarative_statements='+CREATE SCHEMA'
 
+skipif config local-mixed-23.1
 statement ok
 EXPLAIN (DDL) CREATE SCHEMA sc1
 

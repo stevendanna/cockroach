@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
+	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -27,10 +28,17 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/rangekey"
-	"github.com/cockroachdb/pebble/vfs"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/redact"
 	prometheusgo "github.com/prometheus/client_model/go"
 )
+
+// DefaultStorageEngine represents the default storage engine to use.
+var DefaultStorageEngine enginepb.EngineType
+
+func init() {
+	_ = DefaultStorageEngine.Set(envutil.EnvOrDefaultString("COCKROACH_STORAGE_ENGINE", "pebble"))
+}
 
 // SimpleMVCCIterator is an interface for iterating over key/value pairs in an
 // engine. SimpleMVCCIterator implementations are thread safe unless otherwise
@@ -446,7 +454,7 @@ type IterOptions struct {
 	RangeKeyMaskingBelow hlc.Timestamp
 	// ReadCategory is used to map to a user-understandable category string, for
 	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory fs.ReadCategory
+	ReadCategory ReadCategory
 	// useL6Filters allows the caller to opt into reading filter blocks for
 	// L6 sstables. Only for use with Prefix = true. Helpful if a lot of prefix
 	// Seeks are expected in quick succession, that are also likely to not
@@ -544,7 +552,7 @@ type Reader interface {
 	// iteration.
 	MVCCIterate(
 		ctx context.Context, start, end roachpb.Key, iterKind MVCCIterKind, keyTypes IterKeyType,
-		readCategory fs.ReadCategory, f func(MVCCKeyValue, MVCCRangeKeyStack) error,
+		readCategory ReadCategory, f func(MVCCKeyValue, MVCCRangeKeyStack) error,
 	) error
 	// NewMVCCIterator returns a new instance of an MVCCIterator over this engine.
 	// The caller must invoke Close() on it when done to free resources.
@@ -588,7 +596,7 @@ type Reader interface {
 	ScanInternal(
 		ctx context.Context, lower, upper roachpb.Key,
 		visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-		visitRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
+		visitRangeDel func(start, end []byte, seqNum uint64) error,
 		visitRangeKey func(start, end []byte, keys []rangekey.Key) error,
 		visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 		visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -610,7 +618,7 @@ type Reader interface {
 	// is somewhere in the time interval between the creation of the Reader and
 	// the first call to PinEngineStateForIterators.
 	// REQUIRES: ConsistentIterators returns true.
-	PinEngineStateForIterators(readCategory fs.ReadCategory) error
+	PinEngineStateForIterators(readCategory ReadCategory) error
 }
 
 // EventuallyFileOnlyReader is a specialized Reader that supports a method to
@@ -810,36 +818,17 @@ type Writer interface {
 	// Writer implementations, this is a no-op.
 	LogLogicalOp(op MVCCLogicalOpType, details MVCCLogicalOpDetails)
 
-	// SingleClearEngineKey removes the most recent write to the item from the
-	// db with the given key, using Pebble's SINGLEDEL operation. This
-	// originally resembled the semantics of RocksDB
-	// (https://github.com/facebook/rocksdb/wiki/Single-Delete), but was
-	// strengthened in Pebble such that sequences (from more recent to older)
-	// like SINGLEDEL#20, SET#17, DEL#15, ... work as intended since there has
-	// been only one SET more recent than the last DEL. These also work if the
-	// DEL is replaced by a RANGEDEL, since RANGEDELs are used extensively to
-	// drop all the data for a replica, which may then be recreated in the
-	// future. The behavior is non-deterministic and definitely not what the
-	// caller wants if there are multiple SETs/MERGEs etc. immediately older
-	// than the SINGLEDEL.
-	//
-	// Note that using SINGLEDEL requires the caller to not duplicate SETs
-	// without knowing about it. That is, the caller cannot rely simply on
-	// idempotent writes for correctness, if they are going to be later deleted
-	// using SINGLEDEL. A current case where duplication without knowledge can
-	// happen is sstable ingestion for "global" keys, say during import and
-	// schema change. SSTable ingestion via the KV-layer's AddSSTable changes
-	// the replicated state machine, but does not atomically update the
-	// RangeAppliedState.RaftAppliedIndex, so on a node crash the SSTable
-	// ingestion will be repeated due to replaying the Raft log. Hence,
-	// SingleClearEngineKey must not be used for global keys e.g. do not
-	// consider using it for MVCC GC.
-	//
-	// This operation actually removes entries from the storage engine, rather
-	// than inserting MVCC tombstones. This is a low-level interface that must
-	// not be called from outside the storage package. It is part of the
-	// interface because there are structs that wrap Writer and implement the
-	// Writer interface, that are not part of the storage package.
+	// SingleClearEngineKey removes the most recent write to the item from the db
+	// with the given key. Whether older writes of the item will come back
+	// to life if not also removed with SingleClear is undefined. See the
+	// following:
+	//   https://github.com/facebook/rocksdb/wiki/Single-Delete
+	// for details on the SingleDelete operation that this method invokes. Note
+	// that clear actually removes entries from the storage engine, rather than
+	// inserting MVCC tombstones. This is a low-level interface that must not be
+	// called from outside the storage package. It is part of the interface
+	// because there are structs that wrap Writer and implement the Writer
+	// interface, that are not part of the storage package.
 	//
 	// It is safe to modify the contents of the arguments after it returns.
 	SingleClearEngineKey(key EngineKey) error
@@ -943,8 +932,6 @@ type Engine interface {
 	Compact() error
 	// Env returns the filesystem environment used by the Engine.
 	Env() *fs.Env
-	// Excise removes all data for the given span from the engine.
-	Excise(ctx context.Context, span roachpb.Span) error
 	// Flush causes the engine to write all in-memory data to disk
 	// immediately.
 	Flush() error
@@ -1032,6 +1019,8 @@ type Engine interface {
 	// in the passed-in keyRanges; reads are not guaranteed to be consistent
 	// outside of these bounds.
 	NewEventuallyFileOnlySnapshot(keyRanges []roachpb.Span) EventuallyFileOnlyReader
+	// Type returns engine type.
+	Type() enginepb.EngineType
 	// IngestLocalFiles atomically links a slice of files into the RocksDB
 	// log-structured merge-tree.
 	IngestLocalFiles(ctx context.Context, paths []string) error
@@ -1113,13 +1102,9 @@ type Engine interface {
 	// version that it must maintain compatibility with.
 	SetMinVersion(version roachpb.Version) error
 
-	// SetCompactionConcurrency is used to set the engine's compaction
-	// concurrency. It returns the previous compaction concurrency.
-	SetCompactionConcurrency(n uint64) uint64
-
-	// AdjustCompactionConcurrency adjusts the compaction concurrency up or down by
-	// the passed delta, down to a minimum of 1.
-	AdjustCompactionConcurrency(delta int64) uint64
+	// SetCompactionConcurrency is used to override the engine's max compaction
+	// concurrency. A value of 0 removes any existing override.
+	SetCompactionConcurrency(n uint64)
 
 	// SetStoreID informs the engine of the store ID, once it is known.
 	// Used to show the store ID in logs and to initialize the shared object
@@ -1134,17 +1119,6 @@ type Engine interface {
 	// just copies the backing bytes to a local file of if it rewrites the file
 	// key-by-key to a new file.
 	Download(ctx context.Context, span roachpb.Span, copy bool) error
-
-	// RegisterDiskSlowCallback registers a callback that will be run when a
-	// write operation on the disk has been seen to be slow. This callback
-	// needs to be thread-safe as it could be called repeatedly in multiple threads
-	// over a short period of time.
-	RegisterDiskSlowCallback(cb func(info pebble.DiskSlowInfo))
-
-	// RegisterLowDiskSpaceCallback registers a callback that will be run when a
-	// disk is running out of space. This callback needs to be thread-safe as it
-	// could be called repeatedly in multiple threads over a short period of time.
-	RegisterLowDiskSpaceCallback(cb func(info pebble.LowDiskSpaceInfo))
 
 	// GetPebbleOptions returns the options used when creating the engine. The
 	// caller must not modify these.
@@ -1275,8 +1249,6 @@ type Metrics struct {
 	// BlockLoadsQueued is the cumulative total number of sstable block reads
 	// that had to wait on the BlockLoadConcurrencyLimit.
 	BlockLoadsQueued int64
-
-	DiskWriteStats []vfs.DiskWriteStatsAggregate
 }
 
 // AggregatedIteratorStats holds cumulative stats, collected and summed over all
@@ -1436,7 +1408,9 @@ func (m *Metrics) AsStoreStatsEvent() eventpb.StoreStats {
 // key, it will return nil rather than an error. Errors are returned for problem
 // at the storage layer, problem decoding the key, problem unmarshalling the
 // intent, missing transaction on the intent, or multiple intents for this key.
-func GetIntent(ctx context.Context, reader Reader, key roachpb.Key) (*roachpb.Intent, error) {
+func GetIntent(
+	ctx context.Context, reader Reader, key roachpb.Key, category ReadCategory,
+) (*roachpb.Intent, error) {
 	// Probe the lock table at key using a lock-table iterator.
 	opts := LockTableIteratorOptions{
 		Prefix: true,
@@ -1512,7 +1486,7 @@ func Scan(
 ) ([]MVCCKeyValue, error) {
 	var kvs []MVCCKeyValue
 	err := reader.MVCCIterate(ctx, start, end, MVCCKeyAndIntentsIterKind, IterKeyTypePointsOnly,
-		fs.UnknownReadCategory,
+		UnknownReadCategory,
 		func(kv MVCCKeyValue, _ MVCCRangeKeyStack) error {
 			if max != 0 && int64(len(kvs)) >= max {
 				return iterutil.StopIteration()
@@ -1526,7 +1500,11 @@ func Scan(
 // ScanLocks scans locks (shared, exclusive, and intent) using only the lock
 // table keyspace. It does not scan over the MVCC keyspace.
 func ScanLocks(
-	ctx context.Context, reader Reader, start, end roachpb.Key, maxLocks, targetBytes int64,
+	ctx context.Context,
+	reader Reader,
+	start, end roachpb.Key,
+	maxLocks, targetBytes int64,
+	category ReadCategory,
 ) ([]roachpb.Lock, error) {
 	var locks []roachpb.Lock
 
@@ -1811,7 +1789,7 @@ func iterateOnReader(
 	start, end roachpb.Key,
 	iterKind MVCCIterKind,
 	keyTypes IterKeyType,
-	readCategory fs.ReadCategory,
+	readCategory ReadCategory,
 	f func(MVCCKeyValue, MVCCRangeKeyStack) error,
 ) error {
 	if reader.Closed() {
@@ -2090,7 +2068,7 @@ func ScanConflictingIntentsForDroppingLatchesEarly(
 		// unreplicated locks is governed by the ExclusiveLocksBlockNonLockingReads
 		// cluster setting.
 		MatchMinStr:  lock.Intent,
-		ReadCategory: fs.BatchEvalReadCategory,
+		ReadCategory: BatchEvalReadCategory,
 	}
 	if upperBoundUnset {
 		opts.Prefix = true
@@ -2190,4 +2168,69 @@ func ScanConflictingIntentsForDroppingLatchesEarly(
 		return false, err
 	}
 	return needIntentHistory, nil /* err */
+}
+
+// ReadCategory is used to export metrics and maps to a QoS understood by
+// Pebble. Categories are being introduced lazily, since more categories
+// result in more metrics.
+type ReadCategory int8
+
+const (
+	// UnknownReadCategory are requests that are not categorized. If the metric
+	// for this category becomes a high fraction of reads, we will need to
+	// investigate and break out more categories.
+	UnknownReadCategory ReadCategory = iota
+	// BatchEvalReadCategory includes evaluation of most BatchRequests. It
+	// excludes scans and reverse scans. If scans and reverse scans are mixed
+	// with other requests in a batch, we may currently assign the category
+	// based on the first request.
+	BatchEvalReadCategory
+	// ScanRegularBatchEvalReadCategory are BatchRequest (reverse) scans that
+	// have admission priority NormalPri or higher.
+	ScanRegularBatchEvalReadCategory
+	// ScanBackgroundBatchEvalReadCategory are BatchRequest (reverse) scans that
+	// have admission priority lower than NormalPri. This includes backfill
+	// scans for changefeeds (see changefeedccl/kvfeed/scanner.go, which sends
+	// ScanRequests).
+	ScanBackgroundBatchEvalReadCategory
+	// MVCCGCReadCategory are reads for MVCC GC.
+	MVCCGCReadCategory
+	// RangeSnapshotReadCategory are reads for sending range snapshots.
+	RangeSnapshotReadCategory
+	// RangefeedReadCategory are reads for rangefeeds, including catchup scans.
+	RangefeedReadCategory
+	// ReplicationReadCategory are reads related to Raft replication.
+	ReplicationReadCategory
+	// IntentResolutionReadCategory are reads for intent resolution.
+	IntentResolutionReadCategory
+	// BackupReadCategory are reads for backups.
+	BackupReadCategory
+)
+
+var readCategoryMap = map[ReadCategory]sstable.CategoryAndQoS{
+	UnknownReadCategory: {Category: "crdb-unknown", QoSLevel: sstable.LatencySensitiveQoSLevel},
+	// TODO(sumeer): consider splitting batch-eval into two categories, for
+	// latency sensitive and non latency sensitive.
+	BatchEvalReadCategory: {Category: "batch-eval", QoSLevel: sstable.LatencySensitiveQoSLevel},
+	ScanRegularBatchEvalReadCategory: {
+		Category: "scan-regular", QoSLevel: sstable.LatencySensitiveQoSLevel},
+	ScanBackgroundBatchEvalReadCategory: {Category: "scan-background", QoSLevel: sstable.NonLatencySensitiveQoSLevel},
+	MVCCGCReadCategory:                  {Category: "mvcc-gc", QoSLevel: sstable.NonLatencySensitiveQoSLevel},
+	RangeSnapshotReadCategory: {
+		Category: "range-snap", QoSLevel: sstable.NonLatencySensitiveQoSLevel},
+	RangefeedReadCategory: {
+		Category: "rangefeed", QoSLevel: sstable.LatencySensitiveQoSLevel},
+	ReplicationReadCategory: {Category: "replication", QoSLevel: sstable.LatencySensitiveQoSLevel},
+	IntentResolutionReadCategory: {
+		Category: "intent-resolution", QoSLevel: sstable.LatencySensitiveQoSLevel},
+	BackupReadCategory: {
+		Category: "backup", QoSLevel: sstable.NonLatencySensitiveQoSLevel},
+}
+
+func getCategoryAndQoS(c ReadCategory) sstable.CategoryAndQoS {
+	categoryAndQoS, ok := readCategoryMap[c]
+	if !ok {
+		panic(errors.AssertionFailedf("unknown category %d", c))
+	}
+	return categoryAndQoS
 }

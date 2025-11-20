@@ -55,7 +55,6 @@ upsert descriptor #104
   +      - i
   +      - k
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -85,7 +84,6 @@ upsert descriptor #104
   +      - k
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -111,7 +109,6 @@ upsert descriptor #104
   +      predicate: i <= 0:::INT8
   +      sharded: {}
   +      storeColumnNames: []
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -137,7 +134,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -161,7 +157,6 @@ upsert descriptor #104
   +      predicate: j <= 0:::INT8
   +      sharded: {}
   +      storeColumnNames: []
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -185,7 +180,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -210,7 +204,6 @@ upsert descriptor #104
   +      partitioning: {}
   +      sharded: {}
   +      storeColumnNames: []
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -235,7 +228,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -273,8 +265,6 @@ upsert descriptor #104
   +        "1": i
   +        "2": j
   +        "3": k
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -326,7 +316,6 @@ upsert descriptor #104
   +      - i
   +      - k
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -356,7 +345,6 @@ upsert descriptor #104
   +      - k
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -382,7 +370,6 @@ upsert descriptor #104
   +      predicate: i <= 0:::INT8
   +      sharded: {}
   +      storeColumnNames: []
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -408,7 +395,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -432,7 +418,6 @@ upsert descriptor #104
   +      predicate: j <= 0:::INT8
   +      sharded: {}
   +      storeColumnNames: []
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -456,7 +441,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -481,7 +465,6 @@ upsert descriptor #104
   +      partitioning: {}
   +      sharded: {}
   +      storeColumnNames: []
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -506,7 +489,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -766,7 +748,6 @@ upsert descriptor #104
        predicate: i <= 0:::INT8
        sharded: {}
   +    storeColumnNames: []
-       vecConfig: {}
        version: 4
   -  - createdAtNanos: "1640995200000000000"
   +  - constraintId: 4
@@ -788,7 +769,6 @@ upsert descriptor #104
        predicate: j <= 0:::INT8
        sharded: {}
   +    storeColumnNames: []
-       vecConfig: {}
        version: 4
   -  - createdAtNanos: "1640995200000000000"
   +  - constraintId: 6
@@ -809,7 +789,6 @@ upsert descriptor #104
        partitioning: {}
        sharded: {}
   +    storeColumnNames: []
-       vecConfig: {}
        version: 4
      modificationTime: {}
      mutations:
@@ -837,7 +816,6 @@ upsert descriptor #104
          - k
          unique: true
   +      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -867,7 +845,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -899,8 +876,7 @@ upsert descriptor #104
   -      unique: true
   +      storeColumnNames: []
          useDeletePreservingEncoding: true
-         vecConfig: {}
-  ...
+         version: 4
        mutationId: 1
        state: DELETE_ONLY
   -  - direction: ADD
@@ -932,7 +908,6 @@ upsert descriptor #104
          sharded: {}
          storeColumnNames: []
   +      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -963,7 +938,6 @@ upsert descriptor #104
   +      - j
   +      - k
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -989,7 +963,6 @@ upsert descriptor #104
          storeColumnNames: []
   -      useDeletePreservingEncoding: true
   +      unique: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: DELETE_ONLY
@@ -1023,7 +996,6 @@ upsert descriptor #104
          storeColumnNames: []
   +      unique: true
   +      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -1054,7 +1026,6 @@ upsert descriptor #104
          sharded: {}
   -      storeColumnNames: []
   -      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: DELETE_ONLY
@@ -1088,8 +1059,8 @@ upsert descriptor #104
   +      predicate: j <= 0:::INT8
          sharded: {}
   -      storeColumnNames: []
-         vecConfig: {}
          version: 4
+       mutationId: 1
   ...
      - direction: DROP
        index:
@@ -1113,7 +1084,6 @@ upsert descriptor #104
          sharded: {}
   -      storeColumnNames: []
   -      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: DELETE_ONLY
@@ -1265,7 +1235,7 @@ upsert descriptor #104
        targetRanks: <redacted>
        targets: <redacted>
   ...
-       vecConfig: {}
+       storeColumnNames: []
        version: 4
   +  - constraintId: 8
   +    createdAtNanos: "1640998800000000000"
@@ -1287,7 +1257,6 @@ upsert descriptor #104
   +    sharded: {}
   +    storeColumnNames: []
   +    unique: true
-  +    vecConfig: {}
   +    version: 4
      modificationTime: {}
      mutations:
@@ -1317,7 +1286,6 @@ upsert descriptor #104
   -      - k
   -      unique: true
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1343,7 +1311,6 @@ upsert descriptor #104
   -      sharded: {}
   -      storeColumnNames: []
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1367,7 +1334,6 @@ upsert descriptor #104
   -      sharded: {}
   -      storeColumnNames: []
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1392,7 +1358,6 @@ upsert descriptor #104
   -      sharded: {}
   -      storeColumnNames: []
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1426,7 +1391,6 @@ upsert descriptor #104
   -      sharded: {}
   -      storeColumnNames: []
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: WRITE_ONLY
@@ -1452,7 +1416,6 @@ upsert descriptor #104
   -      storeColumnNames: []
   -      unique: true
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
        state: DELETE_ONLY
@@ -1465,7 +1428,6 @@ upsert descriptor #104
          partitioning: {}
   -      predicate: i <= 0:::INT8
          sharded: {}
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -1480,7 +1442,6 @@ upsert descriptor #104
          partitioning: {}
   -      predicate: j <= 0:::INT8
          sharded: {}
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -1494,7 +1455,6 @@ upsert descriptor #104
   +      name: crdb_internal_index_6_name_placeholder
          partitioning: {}
          sharded: {}
-  ...
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -1527,8 +1487,6 @@ upsert descriptor #104
   -        "1": i
   -        "2": j
   -        "3": k
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      families:
@@ -1579,7 +1537,6 @@ upsert descriptor #104
   -      - j
   -      - k
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1600,7 +1557,6 @@ upsert descriptor #104
   -      name: crdb_internal_index_2_name_placeholder
   -      partitioning: {}
   -      sharded: {}
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1623,7 +1579,6 @@ upsert descriptor #104
   -      name: crdb_internal_index_4_name_placeholder
   -      partitioning: {}
   -      sharded: {}
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -1646,7 +1601,6 @@ upsert descriptor #104
   -      name: crdb_internal_index_6_name_placeholder
   -      partitioning: {}
   -      sharded: {}
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY

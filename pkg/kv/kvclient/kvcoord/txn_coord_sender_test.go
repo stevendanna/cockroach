@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,9 +37,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
@@ -484,14 +483,14 @@ func TestTxnCoordSenderCommitCanceled(t *testing.T) {
 	// blockCommits is used to block commit responses for a given txn. The key is
 	// a txn ID, and the value is a ready channel (chan struct) that will be
 	// closed when the commit has been received and blocked.
-	var blockCommits syncutil.Map[uuid.UUID, chan struct{}]
+	var blockCommits sync.Map
 	responseFilter := func(_ context.Context, ba *kvpb.BatchRequest, _ *kvpb.BatchResponse) *kvpb.Error {
 		if arg, ok := ba.GetArg(kvpb.EndTxn); ok && ba.Txn != nil {
 			et := arg.(*kvpb.EndTxnRequest)
 			readyC, ok := blockCommits.Load(ba.Txn.ID)
 			if ok && et.Commit && len(et.InFlightWrites) == 0 {
-				close(*readyC) // notify test that commit is received and blocked
-				<-ctx.Done()   // wait for test to complete (NB: not the passed context)
+				close(readyC.(chan struct{})) // notify test that commit is received and blocked
+				<-ctx.Done()                  // wait for test to complete (NB: not the passed context)
 			}
 		}
 		return nil
@@ -522,7 +521,7 @@ func TestTxnCoordSenderCommitCanceled(t *testing.T) {
 	// Commit the transaction, but ask the response filter to block the final
 	// async commit sent by txnCommitter to make the implicit commit explicit.
 	readyC := make(chan struct{})
-	blockCommits.Store(txn.ID(), &readyC)
+	blockCommits.Store(txn.ID(), readyC)
 	require.NoError(t, txn.Commit(ctx))
 	<-readyC
 
@@ -1065,7 +1064,7 @@ func TestTxnMultipleCoord(t *testing.T) {
 	// New create a second, leaf coordinator.
 	leafInputState, err := txn.GetLeafTxnInputState(ctx)
 	require.NoError(t, err)
-	txn2 := kv.NewLeafTxn(ctx, s.DB, 0 /* gatewayNodeID */, leafInputState)
+	txn2 := kv.NewLeafTxn(ctx, s.DB, 0 /* gatewayNodeID */, leafInputState, nil /* header */)
 
 	// Start the second transaction.
 	key2 := roachpb.Key("b")
@@ -2802,7 +2801,7 @@ func TestLeafTxnClientRejectError(t *testing.T) {
 	require.NoError(t, err)
 
 	// New create a second, leaf coordinator.
-	leafTxn := kv.NewLeafTxn(ctx, s.DB, 0 /* gatewayNodeID */, leafInputState)
+	leafTxn := kv.NewLeafTxn(ctx, s.DB, 0 /* gatewayNodeID */, leafInputState, nil /* header */)
 
 	if _, err := leafTxn.Get(ctx, errKey); !testutils.IsError(err, "TransactionAbortedError") {
 		t.Fatalf("expected injected err, got: %v", err)
@@ -2832,7 +2831,7 @@ func TestUpdateRootWithLeafFinalStateInAbortedTxn(t *testing.T) {
 	txn := kv.NewTxn(ctx, s.DB, 0 /* gatewayNodeID */)
 	leafInputState, err := txn.GetLeafTxnInputState(ctx)
 	require.NoError(t, err)
-	leafTxn := kv.NewLeafTxn(ctx, s.DB, 0, leafInputState)
+	leafTxn := kv.NewLeafTxn(ctx, s.DB, 0, leafInputState, nil /* header */)
 
 	finalState, err := leafTxn.GetLeafTxnFinalState(ctx)
 	if err != nil {
@@ -2895,16 +2894,7 @@ func TestPutsInStagingTxn(t *testing.T) {
 	s, _, db := serverutils.StartServer(t,
 		base.TestServerArgs{
 			Settings: settings,
-			Knobs: base.TestingKnobs{
-				Store: &storeKnobs,
-				KVClient: &kvcoord.ClientTestingKnobs{
-					// Disable randomization of the transaction's anchor key so that the
-					// txn record, and by extension the EndTxn request constructed to
-					// commit the transaction, ends up on the same range on which the
-					// first write is performed.
-					DisableTxnAnchorKeyRandomization: true,
-				},
-			},
+			Knobs:    base.TestingKnobs{Store: &storeKnobs},
 		})
 	defer s.Stopper().Stop(ctx)
 
@@ -2921,11 +2911,10 @@ func TestPutsInStagingTxn(t *testing.T) {
 	require.NoError(t, db.Put(ctx, keyB, "b"))
 
 	// Send a batch that will be split into two sub-batches: [Put(a)+EndTxn,
-	// Put(b)] (the EndTxn is grouped with the first write because we've disabled
-	// randomization). These sub-batches are sent serially since we've inhibited
-	// the DistSender's concurrency. The first one will transition the txn to
-	// STAGING, and the DistSender will use that updated txn when sending the 2nd
-	// sub-batch.
+	// Put(b)] (the EndTxn is grouped with the first write). These sub-batches are
+	// sent serially since we've inhibited the DistSender's concurrency. The first
+	// one will transition the txn to STAGING, and the DistSender will use that
+	// updated txn when sending the 2nd sub-batch.
 	b := txn.NewBatch()
 	b.Put(keyA, "a")
 	b.Put(keyB, "b")
@@ -3038,7 +3027,7 @@ func TestTxnTypeCompatibleWithBatchRequest(t *testing.T) {
 	rootTxn := kv.NewTxn(ctx, s.DB, 0 /* gatewayNodeID */)
 	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx)
 	require.NoError(t, err)
-	leafTxn := kv.NewLeafTxn(ctx, s.DB, 0 /* gatewayNodeID */, leafInputState)
+	leafTxn := kv.NewLeafTxn(ctx, s.DB, 0 /* gatewayNodeID */, leafInputState, nil /* header */)
 
 	// A LeafTxn is not compatible with locking requests.
 	// 1. Locking Get requests.

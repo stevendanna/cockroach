@@ -41,11 +41,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/ring"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 )
+
+// readTimeout is the timeout after which readTimeoutConn checks the
+// connection for cancellation.
+const readTimeout = 1 * time.Second
 
 // conn implements a pgwire network connection (version 3 of the protocol,
 // implemented by Postgres v7.4 and later). conn.serve() reads protocol
@@ -343,7 +346,7 @@ func (c *conn) bufferInitialReadyForQuery(queryCancelKey pgwirecancel.BackendKey
 func (c *conn) handleSimpleQuery(
 	ctx context.Context,
 	buf *pgwirebase.ReadBuffer,
-	timeReceived crtime.Mono,
+	timeReceived time.Time,
 	unqualifiedIntSize *types.T,
 ) error {
 	query, err := buf.GetUnsafeString()
@@ -351,7 +354,7 @@ func (c *conn) handleSimpleQuery(
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
 
-	startParse := crtime.NowMono()
+	startParse := timeutil.Now()
 	if c.sessionArgs.ReplicationMode != sessiondatapb.ReplicationMode_REPLICATION_MODE_DISABLED &&
 		pgreplparser.IsReplicationProtocolCommand(query) {
 		stmt, err := pgreplparser.Parse(query)
@@ -367,7 +370,7 @@ func (c *conn) handleSimpleQuery(
 				Err: unimplemented.NewWithIssueDetail(0, fmt.Sprintf("%T", stmt.AST), "replication protocol command not implemented"),
 			})
 		}
-		endParse := crtime.NowMono()
+		endParse := timeutil.Now()
 		return c.stmtBuf.Push(
 			ctx,
 			sql.ExecStmt{
@@ -385,7 +388,7 @@ func (c *conn) handleSimpleQuery(
 		log.SqlExec.Infof(ctx, "could not parse simple query: %s", query)
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
-	endParse := crtime.NowMono()
+	endParse := timeutil.Now()
 
 	if len(stmts) == 0 {
 		return c.stmtBuf.Push(
@@ -515,7 +518,7 @@ func (c *conn) handleParse(ctx context.Context, nakedIntSize *types.T) error {
 		inTypeHints[i] = oid.Oid(typ)
 	}
 
-	startParse := crtime.NowMono()
+	startParse := timeutil.Now()
 	stmts, err := c.parser.ParseWithInt(query, nakedIntSize)
 	if err != nil {
 		log.SqlExec.Infof(ctx, "could not parse: %s", query)
@@ -573,7 +576,7 @@ func (c *conn) handleParse(ctx context.Context, nakedIntSize *types.T) error {
 		}
 	}
 
-	endParse := crtime.NowMono()
+	endParse := timeutil.Now()
 
 	if _, ok := stmt.AST.(*tree.CopyFrom); ok {
 		// We don't support COPY in extended protocol because it'd be complicated:
@@ -773,7 +776,7 @@ func (c *conn) handleBind(ctx context.Context) error {
 // An error is returned iff the statement buffer has been closed. In that case,
 // the connection should be considered toast.
 func (c *conn) handleExecute(
-	ctx context.Context, timeReceived crtime.Mono, followedBySync bool,
+	ctx context.Context, timeReceived time.Time, followedBySync bool,
 ) error {
 	telemetry.Inc(sqltelemetry.ExecuteRequestCounter)
 	portalName, err := c.readBuf.GetUnsafeString()
@@ -1250,11 +1253,26 @@ func (c *conn) Flush(pos sql.CmdPos) error {
 	// the underlying ring buffer memory for reuse.
 	c.writerState.fi.cmdStarts.Reset()
 
-	_ /* n */, err := c.writerState.buf.WriteTo(c.conn)
-	if err != nil {
-		c.setErr(err)
-		return err
+	// When flushing, writes into the socket buffer limit how many bytes
+	// are written into an SSL frame at a time. Stock Postgres will at most
+	// write 8 kilobytes of unencrypted data at a time. libpq can also only
+	// consume 8 kilobytes (via PQConsumeInput), so async clients will hang
+	// if bigger SSL frames are sent.
+	const maxWriteSize = 8192
+	bytesToWrite := c.writerState.buf.Bytes()
+	for i := 0; i < len(bytesToWrite); i += maxWriteSize {
+		targetSize := min(len(bytesToWrite)-i, maxWriteSize)
+		m, err := c.conn.Write(bytesToWrite[i : i+targetSize])
+		if err == nil && m < targetSize {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			c.setErr(err)
+			c.writerState.buf.Reset()
+			return err
+		}
 	}
+	c.writerState.buf.Reset()
 	return nil
 }
 
@@ -1346,7 +1364,14 @@ func (c *conn) CreateStatementResult(
 	implicitTxn bool,
 	portalPausability sql.PortalPausablity,
 ) sql.CommandResult {
-	return c.newCommandResult(descOpt, pos, stmt, formatCodes, conv, location, limit, portalName, implicitTxn, portalPausability)
+	rowLimit := limit
+	if tree.ReturnsAtMostOneRow(stmt) {
+		// When a statement returns at most one row, the result row limit doesn't
+		// matter. We set it to 0 to fetch all rows, which allows us to clean up
+		// resources sooner if using a pausable portal.
+		rowLimit = 0
+	}
+	return c.newCommandResult(descOpt, pos, stmt, formatCodes, conv, location, rowLimit, portalName, implicitTxn, portalPausability)
 }
 
 // CreateSyncResult is part of the sql.ClientComm interface.
@@ -1470,4 +1495,41 @@ var statusReportParams = []string{
 var testingStatusReportParams = map[string]string{
 	"client_encoding":             "UTF8",
 	"standard_conforming_strings": "on",
+}
+
+// readTimeoutConn overloads net.Conn.Read by periodically calling
+// checkExitConds() and aborting the read if an error is returned.
+type readTimeoutConn struct {
+	net.Conn
+	// checkExitConds is called periodically by Read(). If it returns an error,
+	// the Read() returns that error. Future calls to Read() are allowed, in which
+	// case checkExitConds() will be called again.
+	checkExitConds func() error
+}
+
+func (c *readTimeoutConn) Read(b []byte) (int, error) {
+	// readTimeout is the amount of time ReadTimeoutConn should wait on a
+	// read before checking for exit conditions. The tradeoff is between the
+	// time it takes to react to session context cancellation and the overhead
+	// of waking up and checking for exit conditions.
+
+	// Remove the read deadline when returning from this function to avoid
+	// unexpected behavior.
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	for {
+		if err := c.checkExitConds(); err != nil {
+			return 0, err
+		}
+		if err := c.SetReadDeadline(timeutil.Now().Add(readTimeout)); err != nil {
+			return 0, err
+		}
+		n, err := c.Conn.Read(b)
+		if err != nil {
+			// Continue if the error is due to timing out.
+			if ne := (net.Error)(nil); errors.As(err, &ne) && ne.Timeout() {
+				continue
+			}
+		}
+		return n, err
+	}
 }

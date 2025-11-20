@@ -36,14 +36,13 @@ func (env *InteractionEnv) handleDeliverMsgs(t *testing.T, d datadriven.TestData
 			if err != nil {
 				t.Fatal(err)
 			}
-			rs = append(rs, Recipient{ID: raftpb.PeerID(id)})
+			rs = append(rs, Recipient{ID: id})
 		}
 		for i := range arg.Vals {
 			switch arg.Key {
 			case "drop":
-				var rawID uint64
-				arg.Scan(t, i, &rawID)
-				id := raftpb.PeerID(rawID)
+				var id uint64
+				arg.Scan(t, i, &id)
 				var found bool
 				for _, r := range rs {
 					if r.ID == id {
@@ -73,7 +72,7 @@ func (env *InteractionEnv) handleDeliverMsgs(t *testing.T, d datadriven.TestData
 }
 
 type Recipient struct {
-	ID   raftpb.PeerID
+	ID   uint64
 	Drop bool
 }
 

@@ -443,7 +443,6 @@ func (e *stageExecStmt) Exec(
 		if len(stmt) == 0 {
 			continue
 		}
-		t.Logf("Starting execution of statment: %+v", stmt)
 		// Bind any variables for the statement.
 		boundSQL := os.Expand(stmt, func(s string) string {
 			switch s {
@@ -869,21 +868,11 @@ func executeSchemaChangeTxn(
 			_, err = conn.ExecContext(
 				ctx, "SET use_declarative_schema_changer = 'unsafe_always'",
 			)
-			_, err = conn.ExecContext(
-				ctx, "SET experimental_enable_temp_tables=true",
-			)
-			_, err = conn.ExecContext(
-				ctx, "SET enable_row_level_security=true",
-			)
 			if err != nil {
 				return err
 			}
 			var tx *gosql.Tx
 			tx, err = conn.BeginTx(ctx, nil)
-			if err != nil {
-				return err
-			}
-			_, err = tx.ExecContext(ctx, "SET LOCAL autocommit_before_ddl = false")
 			if err != nil {
 				return err
 			}

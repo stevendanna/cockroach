@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/sysutil"
@@ -185,9 +184,9 @@ func (cm *CertificateManager) RegisterSignalHandler(
 				}
 				if err := cm.LoadCertificates(); err != nil {
 					log.Ops.Warningf(ctx, "could not reload certificates: %v", err)
-					log.StructuredEvent(ctx, severity.INFO, &eventpb.CertsReload{Success: false, ErrorMessage: err.Error()})
+					log.StructuredEvent(ctx, &eventpb.CertsReload{Success: false, ErrorMessage: err.Error()})
 				} else {
-					log.StructuredEvent(ctx, severity.INFO, &eventpb.CertsReload{Success: true})
+					log.StructuredEvent(ctx, &eventpb.CertsReload{Success: true})
 				}
 			}
 		}
@@ -204,11 +203,11 @@ func (cm *CertificateManager) RegisterExpirationCache(cache *ClientCertExpiratio
 // given client certificate. An update is contingent on whether the old
 // expiration is after the new expiration.
 func (cm *CertificateManager) MaybeUpsertClientExpiration(
-	ctx context.Context, identity string, expiration int64,
+	ctx context.Context, identity username.SQLUsername, expiration int64,
 ) {
 	if cache := cm.clientCertExpirationCache; cache != nil {
 		cache.MaybeUpsert(ctx,
-			identity,
+			identity.Normalized(),
 			expiration,
 			cm.certMetrics.ClientExpiration,
 			cm.certMetrics.ClientTTL,

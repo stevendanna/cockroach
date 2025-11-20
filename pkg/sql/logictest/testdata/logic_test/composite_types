@@ -1,3 +1,5 @@
+# LogicTest: default-configs
+
 statement ok
 CREATE TYPE t AS (a INT, b INT)
 
@@ -62,7 +64,7 @@ query TT
 SHOW CREATE TABLE atyp
 ----
 atyp  CREATE TABLE public.atyp (
-        a public.t[] NULL,
+        a T[] NULL,
         rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
         CONSTRAINT atyp_pkey PRIMARY KEY (rowid ASC)
       )

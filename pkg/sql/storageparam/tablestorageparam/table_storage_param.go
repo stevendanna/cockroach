@@ -507,28 +507,6 @@ var tableParams = map[string]tableParam{
 		}),
 		onReset: autoStatsTableSettingResetFunc,
 	},
-	catpb.AutoPartialStatsEnabledTableSettingName: {
-		onSet:   autoStatsEnabledSettingFunc,
-		onReset: autoStatsTableSettingResetFunc,
-	},
-	catpb.AutoPartialStatsMinStaleTableSettingName: {
-		onSet: autoStatsMinStaleRowsSettingFunc(func(intVal int64) error {
-			if intVal < 0 {
-				return errors.Newf("cannot be set to a negative value: %d", intVal)
-			}
-			return nil
-		}),
-		onReset: autoStatsTableSettingResetFunc,
-	},
-	catpb.AutoPartialStatsFractionStaleTableSettingName: {
-		onSet: autoStatsFractionStaleRowsSettingFunc(func(floatVal float64) error {
-			if floatVal < 0 {
-				return errors.Newf("cannot set to a negative value: %f", floatVal)
-			}
-			return nil
-		}),
-		onReset: autoStatsTableSettingResetFunc,
-	},
 	`sql_stats_forecasts_enabled`: {
 		onSet: func(
 			ctx context.Context, po *Setter, semaCtx *tree.SemaContext, evalCtx *eval.Context, key string, datum tree.Datum,
@@ -669,16 +647,8 @@ func autoStatsEnabledSettingFunc(
 	if po.TableDesc.AutoStatsSettings == nil {
 		po.TableDesc.AutoStatsSettings = &catpb.AutoStatsSettings{}
 	}
-
-	switch key {
-	case catpb.AutoStatsEnabledTableSettingName:
-		po.TableDesc.AutoStatsSettings.Enabled = &boolVal
-		return nil
-	case catpb.AutoPartialStatsEnabledTableSettingName:
-		po.TableDesc.AutoStatsSettings.PartialEnabled = &boolVal
-		return nil
-	}
-	return errors.AssertionFailedf("unable to set table setting %s", key)
+	po.TableDesc.AutoStatsSettings.Enabled = &boolVal
+	return nil
 }
 
 func autoStatsMinStaleRowsSettingFunc(
@@ -695,16 +665,8 @@ func autoStatsMinStaleRowsSettingFunc(
 		if err = validateFunc(intVal); err != nil {
 			return errors.Wrapf(err, "invalid integer value for %s", key)
 		}
-
-		switch key {
-		case catpb.AutoStatsMinStaleTableSettingName:
-			po.TableDesc.AutoStatsSettings.MinStaleRows = &intVal
-			return nil
-		case catpb.AutoPartialStatsMinStaleTableSettingName:
-			po.TableDesc.AutoStatsSettings.PartialMinStaleRows = &intVal
-			return nil
-		}
-		return errors.AssertionFailedf("unable to set table setting %s", key)
+		po.TableDesc.AutoStatsSettings.MinStaleRows = &intVal
+		return nil
 	}
 }
 
@@ -723,16 +685,8 @@ func autoStatsFractionStaleRowsSettingFunc(
 		if err = validateFunc(floatVal); err != nil {
 			return errors.Wrapf(err, "invalid float value for %s", key)
 		}
-
-		switch key {
-		case catpb.AutoStatsFractionStaleTableSettingName:
-			po.TableDesc.AutoStatsSettings.FractionStaleRows = &floatVal
-			return nil
-		case catpb.AutoPartialStatsFractionStaleTableSettingName:
-			po.TableDesc.AutoStatsSettings.PartialFractionStaleRows = &floatVal
-			return nil
-		}
-		return errors.AssertionFailedf("unable to set table setting %s", key)
+		po.TableDesc.AutoStatsSettings.FractionStaleRows = &floatVal
+		return nil
 	}
 }
 
@@ -753,17 +707,8 @@ func autoStatsTableSettingResetFunc(
 	case catpb.AutoStatsFractionStaleTableSettingName:
 		autoStatsSettings.FractionStaleRows = nil
 		return nil
-	case catpb.AutoPartialStatsEnabledTableSettingName:
-		autoStatsSettings.PartialEnabled = nil
-		return nil
-	case catpb.AutoPartialStatsMinStaleTableSettingName:
-		autoStatsSettings.PartialMinStaleRows = nil
-		return nil
-	case catpb.AutoPartialStatsFractionStaleTableSettingName:
-		autoStatsSettings.PartialFractionStaleRows = nil
-		return nil
 	}
-	return errors.AssertionFailedf("unable to reset table setting %s", key)
+	return errors.Newf("unable to reset table setting %s", key)
 }
 
 // Set implements the Setter interface.

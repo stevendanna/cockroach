@@ -9,8 +9,8 @@ import (
 	"context"
 	"net/url"
 
-	"github.com/cockroachdb/cockroach/pkg/backup/backupresolver"
 	"github.com/cockroachdb/cockroach/pkg/build"
+	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backupresolver"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdceval"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedvalidators"
@@ -76,13 +76,13 @@ var alterChangefeedHeader = colinfo.ResultColumns{
 // alterChangefeedPlanHook implements sql.PlanHookFn.
 func alterChangefeedPlanHook(
 	ctx context.Context, stmt tree.Statement, p sql.PlanHookState,
-) (sql.PlanHookRowFn, colinfo.ResultColumns, bool, error) {
+) (sql.PlanHookRowFn, colinfo.ResultColumns, []sql.PlanNode, bool, error) {
 	alterChangefeedStmt, ok := stmt.(*tree.AlterChangefeed)
 	if !ok {
-		return nil, nil, false, nil
+		return nil, nil, nil, false, nil
 	}
 
-	fn := func(ctx context.Context, resultsCh chan<- tree.Datums) error {
+	fn := func(ctx context.Context, _ []sql.PlanNode, resultsCh chan<- tree.Datums) error {
 		jobID, err := func() (jobspb.JobID, error) {
 			origProps := p.SemaCtx().Properties
 			p.SemaCtx().Properties.Require("cdc", tree.RejectSubqueries)
@@ -110,11 +110,8 @@ func alterChangefeedPlanHook(
 		if err != nil {
 			return err
 		}
-		getLegacyPayload := func(ctx context.Context) (*jobspb.Payload, error) {
-			return &jobPayload, nil
-		}
-		err = jobsauth.AuthorizeAllowLegacyAuth(
-			ctx, p, jobID, getLegacyPayload, jobPayload.UsernameProto.Decode(), jobPayload.Type(), jobsauth.ControlAccess, globalPrivileges,
+		err = jobsauth.Authorize(
+			ctx, p, jobID, &jobPayload, jobsauth.ControlAccess, globalPrivileges,
 		)
 		if err != nil {
 			return err
@@ -125,7 +122,7 @@ func alterChangefeedPlanHook(
 			return errors.Errorf(`job %d is not changefeed job`, jobID)
 		}
 
-		if job.State() != jobs.StatePaused {
+		if job.Status() != jobs.StatusPaused {
 			return errors.Errorf(`job %d is not paused`, jobID)
 		}
 
@@ -264,7 +261,7 @@ func alterChangefeedPlanHook(
 		}
 	}
 
-	return fn, alterChangefeedHeader, false, nil
+	return fn, alterChangefeedHeader, nil, false, nil
 }
 
 func getTargetDesc(
@@ -750,7 +747,6 @@ func validateNewTargets(
 // no_initial_scan), and the current status of the job. If the progress does not
 // need to be updated, we will simply return the previous progress and statement
 // time that is passed into the function.
-// TODO(#140509): Update this function to work with the new span-level checkpoint.
 func generateNewProgress(
 	prevProgress jobspb.Progress,
 	prevStatementTime hlc.Timestamp,
@@ -766,8 +762,8 @@ func generateNewProgress(
 	}
 
 	haveHighwater := !(prevHighWater == nil || prevHighWater.IsEmpty())
-	haveCheckpoint := changefeedProgress != nil &&
-		(!changefeedProgress.Checkpoint.IsEmpty() || !changefeedProgress.SpanLevelCheckpoint.IsEmpty())
+	haveCheckpoint := changefeedProgress != nil && changefeedProgress.Checkpoint != nil &&
+		len(changefeedProgress.Checkpoint.Spans) != 0
 
 	// Check if the progress does not need to be updated. The progress does not
 	// need to be updated if:
@@ -803,11 +799,8 @@ func generateNewProgress(
 			Progress: &jobspb.Progress_HighWater{},
 			Details: &jobspb.Progress_Changefeed{
 				Changefeed: &jobspb.ChangefeedProgress{
-					//lint:ignore SA1019 deprecated usage
 					Checkpoint: &jobspb.ChangefeedProgress_Checkpoint{
 						Spans: existingTargetSpans,
-						// TODO(#140509): ALTER CHANGEFED should handle fine grained
-						// progress and checkpointed timestamp properly.
 					},
 					ProtectedTimestampRecord: ptsRecord,
 				},
@@ -836,7 +829,6 @@ func generateNewProgress(
 		Progress: &jobspb.Progress_HighWater{},
 		Details: &jobspb.Progress_Changefeed{
 			Changefeed: &jobspb.ChangefeedProgress{
-				//lint:ignore SA1019 deprecated usage
 				Checkpoint: &jobspb.ChangefeedProgress_Checkpoint{
 					Spans: mergedSpanGroup.Slice(),
 				},
@@ -847,7 +839,6 @@ func generateNewProgress(
 	return newProgress, prevStatementTime, nil
 }
 
-// TODO(#140509): Update this function to work with the new span-level checkpoint.
 func removeSpansFromProgress(prevProgress jobspb.Progress, spansToRemove []roachpb.Span) {
 	changefeedProgress := prevProgress.GetChangefeed()
 	if changefeedProgress == nil {

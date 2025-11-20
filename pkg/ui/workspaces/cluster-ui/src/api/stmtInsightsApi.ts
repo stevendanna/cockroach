@@ -3,20 +3,6 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
-import {
-  ContentionDetails,
-  InsightExecEnum,
-  StatementStatus,
-  StmtInsightEvent,
-} from "src/insights/types";
-import { INTERNAL_APP_NAME_PREFIX } from "src/util/constants";
-
-import { getInsightsFromProblemsAndCauses } from "../insights/utils";
-import { FixFingerprintHexValue } from "../util";
-
-import { getContentionDetailsApi } from "./contentionApi";
 import {
   SqlApiResponse,
   executeInternalSql,
@@ -27,6 +13,17 @@ import {
   sqlResultsAreEmpty,
   SqlTxnResult,
 } from "./sqlApi";
+import {
+  ContentionDetails,
+  InsightExecEnum,
+  StatementStatus,
+  StmtInsightEvent,
+} from "src/insights/types";
+import moment from "moment-timezone";
+import { INTERNAL_APP_NAME_PREFIX } from "src/util/constants";
+import { FixFingerprintHexValue } from "../util";
+import { getContentionDetailsApi } from "./contentionApi";
+import { getInsightsFromProblemsAndCauses } from "../insights/utils";
 
 export type StmtInsightsReq = {
   start?: moment.Moment;
@@ -54,7 +51,6 @@ export type StmtInsightsResponseRow = {
   priority: string;
   retries: number;
   exec_node_ids: number[];
-  kv_node_ids: number[];
   contention: string; // interval
   contention_events: ContentionDetails[];
   last_retry_reason?: string;
@@ -87,7 +83,6 @@ rows_written,
 priority,
 retries,
 exec_node_ids,
-kv_node_ids,
 contention,
 last_retry_reason,
 causes,

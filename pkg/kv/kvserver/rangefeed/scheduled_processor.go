@@ -7,13 +7,13 @@ package rangefeed
 
 import (
 	"context"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
+	"github.com/cockroachdb/cockroach/pkg/util/future"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -65,11 +65,6 @@ type ScheduledProcessor struct {
 	// stopper passed by start that is used for firing up async work from scheduler.
 	stopper       *stop.Stopper
 	txnPushActive bool
-
-	// pendingUnregistrations indicates that the registry may have registrations
-	// that can be unregistered. This is handled outside of the requestQueue to
-	// avoid blocking clients who only need to signal unregistration.
-	pendingUnregistrations atomic.Bool
 }
 
 // NewScheduledProcessor creates a new scheduler based rangefeed Processor.
@@ -163,16 +158,6 @@ func (p *ScheduledProcessor) processRequests(ctx context.Context) {
 		case e := <-p.requestQueue:
 			e(ctx)
 		default:
-			if p.pendingUnregistrations.Swap(false) {
-				p.reg.unregisterMarkedRegistrations(ctx)
-				// If we have no more registrations, we can stop this processor. Note
-				// that stopInternal sets p.stopping to true so any register requests
-				// being concurrenly enqueued will fail-fast before being added to the
-				// registry.
-				if p.reg.Len() == 0 {
-					p.stopInternal(ctx, nil)
-				}
-			}
 			return
 		}
 	}
@@ -255,10 +240,6 @@ func (p *ScheduledProcessor) cleanup() {
 	p.taskCancel()
 	close(p.stoppedC)
 	p.MemBudget.Close(ctx)
-	if p.UnregisterFromReplica != nil {
-		p.UnregisterFromReplica(p)
-	}
-
 }
 
 // Stop shuts down the processor and closes all registrations. Safe to call on
@@ -291,16 +272,12 @@ func (p *ScheduledProcessor) DisconnectSpanWithErr(span roachpb.Span, pErr *kvpb
 
 func (p *ScheduledProcessor) sendStop(pErr *kvpb.Error) {
 	p.enqueueRequest(func(ctx context.Context) {
-		p.stopInternal(ctx, pErr)
+		p.reg.DisconnectWithErr(ctx, all, pErr)
+		// First set stopping flag to ensure that once all registrations are removed
+		// processor should stop.
+		p.stopping = true
+		p.scheduler.StopProcessor()
 	})
-}
-
-func (p *ScheduledProcessor) stopInternal(ctx context.Context, pErr *kvpb.Error) {
-	p.reg.DisconnectAllOnShutdown(ctx, pErr)
-	// First set stopping flag to ensure that once all registrations are removed
-	// processor should stop.
-	p.stopping = true
-	p.scheduler.StopProcessor()
 }
 
 // Register registers the stream over the specified span of keys.
@@ -320,44 +297,36 @@ func (p *ScheduledProcessor) stopInternal(ctx context.Context, pErr *kvpb.Error)
 //
 // NB: startTS is exclusive; the first possible event will be at startTS.Next().
 func (p *ScheduledProcessor) Register(
-	streamCtx context.Context,
 	span roachpb.RSpan,
 	startTS hlc.Timestamp,
 	catchUpIter *CatchUpIterator,
 	withDiff bool,
 	withFiltering bool,
-	withOmitRemote bool,
 	stream Stream,
-) (bool, Disconnector, *Filter) {
+	disconnectFn func(),
+	done *future.ErrorFuture,
+) (bool, *Filter) {
 	// Synchronize the event channel so that this registration doesn't see any
 	// events that were consumed before this registration was called. Instead,
 	// it should see these events during its catch up scan.
 	p.syncEventC()
 
 	blockWhenFull := p.Config.EventChanTimeout == 0 // for testing
-
-	var r registration
-	bufferedStream, isBufferedStream := stream.(BufferedStream)
-	if isBufferedStream {
-		r = newUnbufferedRegistration(
-			streamCtx, span.AsRawSpanWithNoLocals(), startTS, catchUpIter, withDiff, withFiltering, withOmitRemote,
-			p.Config.EventChanCap, p.Metrics, bufferedStream, p.unregisterClientAsync)
-	} else {
-		r = newBufferedRegistration(
-			streamCtx, span.AsRawSpanWithNoLocals(), startTS, catchUpIter, withDiff, withFiltering, withOmitRemote,
-			p.Config.EventChanCap, blockWhenFull, p.Metrics, stream, p.unregisterClientAsync)
-	}
+	r := newRegistration(
+		span.AsRawSpanWithNoLocals(), startTS, catchUpIter, withDiff, withFiltering,
+		p.Config.EventChanCap, blockWhenFull, p.Metrics, stream, disconnectFn, done,
+	)
 
 	filter := runRequest(p, func(ctx context.Context, p *ScheduledProcessor) *Filter {
 		if p.stopping {
 			return nil
 		}
-		if !p.Span.AsRawSpanWithNoLocals().Contains(r.getSpan()) {
+		if !p.Span.AsRawSpanWithNoLocals().Contains(r.span) {
 			log.Fatalf(ctx, "registration %s not in Processor's key range %v", r, p.Span)
 		}
 
 		// Add the new registration to the registry.
-		p.reg.Register(ctx, r)
+		p.reg.Register(ctx, &r)
 
 		// Prep response with filter that includes the new registration.
 		f := p.reg.NewFilter()
@@ -370,23 +339,37 @@ func (p *ScheduledProcessor) Register(
 		r.publish(ctx, p.newCheckpointEvent(), nil)
 
 		// Run an output loop for the registry.
-		runOutputLoop := func(ctx context.Context) { r.runOutputLoop(ctx, p.RangeID) }
+		runOutputLoop := func(ctx context.Context) {
+			r.runOutputLoop(ctx, p.RangeID)
+			if p.unregisterClient(&r) {
+				// unreg callback is set by replica to tear down processors that have
+				// zero registrations left and to update event filters.
+				if r.unreg != nil {
+					r.unreg()
+				}
+			}
+		}
 		// NB: use ctx, not p.taskCtx, as the registry handles teardown itself.
 		if err := p.Stopper.RunAsyncTask(ctx, "rangefeed: output loop", runOutputLoop); err != nil {
 			// If we can't schedule internally, processor is already stopped which
 			// could only happen on shutdown. Disconnect stream and just remove
 			// registration.
-			r.Disconnect(kvpb.NewError(err))
-			// Normally, ubr.runOutputLoop is responsible for draining catch up
-			// buffer. If it fails to start, we should drain it here.
-			r.drainAllocations(ctx)
+			r.disconnect(kvpb.NewError(err))
+			p.reg.Unregister(ctx, &r)
 		}
 		return f
 	})
 	if filter != nil {
-		return true, r, filter
+		return true, filter
 	}
-	return false, nil, nil
+	return false, nil
+}
+
+func (p *ScheduledProcessor) unregisterClient(r *registration) bool {
+	return runRequest(p, func(ctx context.Context, p *ScheduledProcessor) bool {
+		p.reg.Unregister(ctx, r)
+		return true
+	})
 }
 
 // ConsumeLogicalOps informs the rangefeed processor of the set of logical
@@ -509,7 +492,6 @@ func (p *ScheduledProcessor) enqueueEventInternal(
 		case <-p.stoppedC:
 			// Already stopped. Do nothing.
 		case <-ctx.Done():
-			p.Metrics.RangefeedProcessorQueueTimeout.Inc(1)
 			p.sendStop(newErrBufferCapacityExceeded())
 			return false
 		}
@@ -539,7 +521,6 @@ func (p *ScheduledProcessor) enqueueEventInternal(
 			case <-ctx.Done():
 				// Sending on the eventC channel would have blocked.
 				// Instead, tear down the processor and return immediately.
-				p.Metrics.RangefeedProcessorQueueTimeout.Inc(1)
 				p.sendStop(newErrBufferCapacityExceeded())
 				return false
 			}
@@ -647,29 +628,6 @@ func (p *ScheduledProcessor) enqueueRequest(req request) {
 	}
 }
 
-// unregisterClientAsync instructs the processor to unregister the given
-// registration. This doesn't send an actual request to the request queue to
-// ensure that it is non-blocking.
-//
-// Rather, the registration has its shouldUnregister flag set and the
-// processor's pendingUnregistrations flag is set. During processRequests, if
-// pendingUnregistrations is true, we remove any marked registrations from the
-// registry.
-//
-// We are OK with these being processed out of order since these requests
-// originate from a registration cleanup, so the registration in question is no
-// longer processing events.
-func (p *ScheduledProcessor) unregisterClientAsync(r registration) {
-	select {
-	case <-p.stoppedC:
-		return
-	default:
-	}
-	r.setShouldUnregister()
-	p.pendingUnregistrations.Store(true)
-	p.scheduler.Enqueue(RequestQueued)
-}
-
 func (p *ScheduledProcessor) consumeEvent(ctx context.Context, e *event) {
 	switch {
 	case e.ops != nil:
@@ -705,10 +663,10 @@ func (p *ScheduledProcessor) consumeLogicalOps(
 		// OmitInRangefeeds is relevant only for transactional writes, so it's
 		// propagated only in the case of a MVCCCommitIntentOp and
 		// MVCCWriteValueOp (could be the result of a 1PC write).
-
 		case *enginepb.MVCCWriteValueOp:
 			// Publish the new value directly.
-			p.publishValue(ctx, t.Key, t.Timestamp, t.Value, t.PrevValue, logicalOpMetadata{omitInRangefeeds: t.OmitInRangefeeds, originID: t.OriginID}, alloc)
+			p.publishValue(ctx, t.Key, t.Timestamp, t.Value, t.PrevValue, t.OmitInRangefeeds, alloc)
+
 		case *enginepb.MVCCDeleteRangeOp:
 			// Publish the range deletion directly.
 			p.publishDeleteRange(ctx, t.StartKey, t.EndKey, t.Timestamp, alloc)
@@ -721,7 +679,7 @@ func (p *ScheduledProcessor) consumeLogicalOps(
 
 		case *enginepb.MVCCCommitIntentOp:
 			// Publish the newly committed value.
-			p.publishValue(ctx, t.Key, t.Timestamp, t.Value, t.PrevValue, logicalOpMetadata{omitInRangefeeds: t.OmitInRangefeeds, originID: t.OriginID}, alloc)
+			p.publishValue(ctx, t.Key, t.Timestamp, t.Value, t.PrevValue, t.OmitInRangefeeds, alloc)
 
 		case *enginepb.MVCCAbortIntentOp:
 			// No updates to publish.
@@ -770,7 +728,7 @@ func (p *ScheduledProcessor) publishValue(
 	key roachpb.Key,
 	timestamp hlc.Timestamp,
 	value, prevValue []byte,
-	valueMetadata logicalOpMetadata,
+	omitInRangefeeds bool,
 	alloc *SharedBudgetAllocation,
 ) {
 	if !p.Span.ContainsKey(roachpb.RKey(key)) {
@@ -790,7 +748,7 @@ func (p *ScheduledProcessor) publishValue(
 		},
 		PrevValue: prevVal,
 	})
-	p.reg.PublishToOverlapping(ctx, roachpb.Span{Key: key}, &event, valueMetadata, alloc)
+	p.reg.PublishToOverlapping(ctx, roachpb.Span{Key: key}, &event, omitInRangefeeds, alloc)
 }
 
 func (p *ScheduledProcessor) publishDeleteRange(
@@ -809,7 +767,7 @@ func (p *ScheduledProcessor) publishDeleteRange(
 		Span:      span,
 		Timestamp: timestamp,
 	})
-	p.reg.PublishToOverlapping(ctx, span, &event, logicalOpMetadata{}, alloc)
+	p.reg.PublishToOverlapping(ctx, span, &event, false /* omitInRangefeeds */, alloc)
 }
 
 func (p *ScheduledProcessor) publishSSTable(
@@ -831,7 +789,7 @@ func (p *ScheduledProcessor) publishSSTable(
 			Span:    sstSpan,
 			WriteTS: sstWTS,
 		},
-	}, logicalOpMetadata{}, alloc)
+	}, false /* omitInRangefeeds */, alloc)
 }
 
 func (p *ScheduledProcessor) publishCheckpoint(ctx context.Context, alloc *SharedBudgetAllocation) {
@@ -839,7 +797,7 @@ func (p *ScheduledProcessor) publishCheckpoint(ctx context.Context, alloc *Share
 	// TODO(nvanbenschoten): rate limit these? send them periodically?
 
 	event := p.newCheckpointEvent()
-	p.reg.PublishToOverlapping(ctx, all, event, logicalOpMetadata{}, alloc)
+	p.reg.PublishToOverlapping(ctx, all, event, false /* omitInRangefeeds */, alloc)
 }
 
 func (p *ScheduledProcessor) newCheckpointEvent() *kvpb.RangeFeedEvent {

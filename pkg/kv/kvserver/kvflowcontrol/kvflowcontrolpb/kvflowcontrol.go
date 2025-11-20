@@ -48,20 +48,3 @@ func (a AdmittedRaftLogEntries) SafeFormat(w redact.SafePrinter, _ rune) {
 	w.Printf("admitted-entries (r%s s%s pri=%s up-to-%s)",
 		a.RangeID, a.StoreID, admissionpb.WorkPriority(a.AdmissionPriority), a.UpToRaftLogPosition)
 }
-
-func (a AdmittedState) String() string {
-	return redact.StringWithoutMarkers(a)
-}
-
-func (a AdmittedState) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("admitted=t%d/%v", a.Term, a.Admitted)
-}
-
-func (a PiggybackedAdmittedState) String() string {
-	return redact.StringWithoutMarkers(a)
-}
-
-func (a PiggybackedAdmittedState) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("[r%s,s%s,%d->%d] %s",
-		a.RangeID, a.ToStoreID, a.FromReplicaID, a.ToReplicaID, a.Admitted)
-}

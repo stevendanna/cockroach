@@ -119,10 +119,6 @@ func TestTenantStatusAPI(t *testing.T) {
 		testTenantRangesRPC(ctx, t, testHelper)
 	})
 
-	t.Run("ranges", func(t *testing.T) {
-		testRangesRPC(ctx, t, testHelper)
-	})
-
 	t.Run("tenant_auth_statement", func(t *testing.T) {
 		testTenantAuthOnStatements(ctx, t, testHelper)
 	})
@@ -222,7 +218,6 @@ func testTenantSpanStats(ctx context.Context, t *testing.T, helper serverccl.Ten
 
 		makeKey := func(keys ...[]byte) roachpb.Key {
 			return bytes.Join(keys, nil)
-
 		}
 
 		// Create a new range in this tenant.
@@ -591,16 +586,8 @@ func testResetSQLStatsRPCForTenant(
 			}
 
 			if flushed {
-				testTenantServer := testTenant.TenantSQLServer()
-				testTenantServer.GetSQLStatsProvider().MaybeFlush(
-					ctx,
-					testTenant.GetTenant().AppStopper(),
-				)
-				randomTenantServer := controlCluster.TenantSQLServer(serverccl.RandomServer)
-				randomTenantServer.GetSQLStatsProvider().MaybeFlush(
-					ctx,
-					controlCluster.Tenant(0).GetTenant().AppStopper(),
-				)
+				testTenant.TenantSQLStats().MaybeFlush(ctx, testTenant.GetTenant().AppStopper())
+				controlCluster.TenantSQLStats(serverccl.RandomServer).MaybeFlush(ctx, controlCluster.Tenant(0).GetTenant().AppStopper())
 			}
 
 			status := testTenant.TenantStatusSrv()
@@ -1112,16 +1099,8 @@ func selectClusterSessionIDs(t *testing.T, conn *sqlutils.SQLRunner) []string {
 
 func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelper) {
 	// Open a SQL session on tenant SQL pod 0.
-	ctx := context.Background()
-	// Open two different SQL sessions on tenant SQL pod 0.
-	sqlPod0 := helper.TestCluster().TenantDB(0)
-	sqlPod0SessionToCancel, err := sqlPod0.Conn(ctx)
-	require.NoError(t, err)
-	sqlPod0SessionForIntrospection, err := sqlPod0.Conn(ctx)
-	require.NoError(t, err)
-	_, err = sqlPod0SessionToCancel.ExecContext(ctx, "SELECT 1")
-	require.NoError(t, err)
-	introspectionRunner := sqlutils.MakeSQLRunner(sqlPod0SessionForIntrospection)
+	sqlPod0 := helper.TestCluster().TenantConn(0)
+	sqlPod0.Exec(t, "SELECT 1")
 
 	// See the session over HTTP on tenant SQL pod 1.
 	httpPod1 := helper.TestCluster().TenantAdminHTTPClient(t, 1)
@@ -1140,7 +1119,7 @@ func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelp
 	// See the session over SQL on tenant SQL pod 0.
 	sessionID := hex.EncodeToString(session.ID)
 	require.Eventually(t, func() bool {
-		return strings.Contains(strings.Join(selectClusterSessionIDs(t, introspectionRunner), ","), sessionID)
+		return strings.Contains(strings.Join(selectClusterSessionIDs(t, sqlPod0), ","), sessionID)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	// Cancel the session over HTTP from tenant SQL pod 1.
@@ -1152,7 +1131,7 @@ func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelp
 	// No longer see the session over SQL from tenant SQL pod 0.
 	// (The SQL client maintains an internal connection pool and automatically reconnects.)
 	require.Eventually(t, func() bool {
-		return !strings.Contains(strings.Join(selectClusterSessionIDs(t, introspectionRunner), ","), sessionID)
+		return !strings.Contains(strings.Join(selectClusterSessionIDs(t, sqlPod0), ","), sessionID)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	// Attempt to cancel the session again over HTTP from tenant SQL pod 1, so that we can see the error message.
@@ -1379,7 +1358,8 @@ func testTxnIDResolutionRPC(ctx context.Context, t *testing.T, helper serverccl.
 	t.Run("tenant_cluster", func(t *testing.T) {
 		// Select a different tenant status server here so a pod-to-pod RPC will
 		// happen.
-		status := helper.TestCluster().TenantStatusSrv(2 /* idx */)
+		status :=
+			helper.TestCluster().TenantStatusSrv(2 /* idx */)
 		sqlConn := helper.TestCluster().TenantConn(0 /* idx */)
 		run(sqlConn, status, 1 /* coordinatorNodeID */)
 	})
@@ -1390,10 +1370,20 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 	tenantB := helper.ControlCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
 
 	// Wait for range splits to occur so we get more than just a single range during our tests.
-	waitForRangeSplit(t, tenantA)
-	waitForRangeSplit(t, tenantB)
+	testutils.SucceedsSoon(t, func() error {
+		resp, err := tenantA.TenantRanges(context.Background(), &serverpb.TenantRangesRequest{})
+		if err != nil {
+			return err
+		}
+		for _, ranges := range resp.RangesByLocality {
+			if len(ranges.Ranges) > 1 {
+				return nil
+			}
+		}
+		return errors.New("waiting for tenant range split")
+	})
 
-	t.Run("test TenantRanges respects tenant isolation", func(t *testing.T) {
+	t.Run("test tenant ranges respects tenant isolation", func(t *testing.T) {
 		tenIDA := helper.TestCluster().Tenant(0).GetRPCContext().TenantID
 		tenIDB := helper.ControlCluster().Tenant(0).GetRPCContext().TenantID
 		keySpanForA := keys.MakeTenantSpan(tenIDA)
@@ -1422,7 +1412,7 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 		}
 	})
 
-	t.Run("test TenantRanges pagination", func(t *testing.T) {
+	t.Run("test tenant ranges pagination", func(t *testing.T) {
 		ctx := context.Background()
 		resp1, err := tenantA.TenantRanges(ctx, &serverpb.TenantRangesRequest{
 			Limit: 1,
@@ -1461,54 +1451,6 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 			return nil
 		})
 
-	})
-}
-
-func testRangesRPC(_ context.Context, t *testing.T, helper serverccl.TenantTestHelper) {
-	tenantA := helper.TestCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
-	tenantB := helper.ControlCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
-
-	req := &serverpb.RangesRequest{NodeId: "1"}
-
-	// Wait for range splits to occur so we get more than just a single range during our tests.
-	waitForRangeSplit(t, tenantA)
-	waitForRangeSplit(t, tenantB)
-
-	t.Run("test Ranges respects tenant isolation", func(t *testing.T) {
-		tenIDA := helper.TestCluster().Tenant(0).GetRPCContext().TenantID
-		tenIDB := helper.ControlCluster().Tenant(0).GetRPCContext().TenantID
-		keySpanForA := keys.MakeTenantSpan(tenIDA)
-		keySpanForB := keys.MakeTenantSpan(tenIDB)
-
-		resp, err := tenantA.Ranges(context.Background(), req)
-		require.NoError(t, err)
-		require.NotEmpty(t, resp.Ranges)
-		for _, r := range resp.Ranges {
-			assertStartKeyInRange(t, r.Span.StartKey, keySpanForA.Key)
-			assertEndKeyInRange(t, r.Span.EndKey, keySpanForA.Key, keySpanForA.EndKey)
-		}
-
-		resp, err = tenantB.Ranges(context.Background(), req)
-		require.NoError(t, err)
-		require.NotEmpty(t, resp.Ranges)
-		for _, r := range resp.Ranges {
-			assertStartKeyInRange(t, r.Span.StartKey, keySpanForB.Key)
-			assertEndKeyInRange(t, r.Span.EndKey, keySpanForB.Key, keySpanForB.EndKey)
-		}
-	})
-}
-
-func waitForRangeSplit(t *testing.T, tenant serverpb.TenantStatusServer) {
-	req := &serverpb.RangesRequest{NodeId: "1"}
-	testutils.SucceedsSoon(t, func() error {
-		resp, err := tenant.Ranges(context.Background(), req)
-		if err != nil {
-			return err
-		}
-		if len(resp.Ranges) <= 1 {
-			return errors.New("waiting for tenant range split")
-		}
-		return nil
 	})
 }
 

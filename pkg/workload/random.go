@@ -13,7 +13,7 @@ import (
 
 const (
 	flagName        = "seed"
-	flagDescription = "Random seed. Default changes in each run"
+	flagDescription = "Random seed. Must be the same in 'init' and 'run'. Default changes in each run"
 )
 
 // RandomSeed is the interface used by the workload runner to print

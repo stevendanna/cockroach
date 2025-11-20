@@ -531,9 +531,15 @@ CREATE TABLE users(id UUID DEFAULT gen_random_uuid() PRIMARY KEY, promo_id INT R
 		r.Exec(t, "CREATE TABLE child2 (pk INT PRIMARY KEY, fk INT REFERENCES parent(pk));")
 		r.Exec(t, "CREATE TABLE grandchild1 (pk INT PRIMARY KEY, fk INT REFERENCES child1(pk));")
 		r.Exec(t, "CREATE TABLE grandchild2 (pk INT PRIMARY KEY, fk INT REFERENCES child2(pk));")
+		getFK := func(table string) string {
+			if table == "parent" {
+				return ""
+			}
+			return fmt.Sprintf("ALTER TABLE defaultdb.public.%s ADD CONSTRAINT", table)
+		}
 		// Only the target tables should be included since we perform a
 		// read-only stmt.
-		getContentCheckFn := func(targetTableNames, targetFKs []string) func(name, contents string) error {
+		getContentCheckFn := func(targetTableNames, addFKs, skipFKs []string) func(name, contents string) error {
 			return func(name, contents string) error {
 				if name == "schema.sql" {
 					for _, targetTableName := range targetTableNames {
@@ -558,14 +564,27 @@ CREATE TABLE users(id UUID DEFAULT gen_random_uuid() PRIMARY KEY, promo_id INT R
 								"unexpectedly found non-target table 'USE defaultdb;\nCREATE TABLE public.%s' in schema.sql:\n%s", tableName, contents)
 						}
 					}
-					// Now confirm that only relevant FKs are included.
+					// Sanity-check that all FKs in the output are either in the
+					// "added" or "skipped" set.
 					numFoundFKs := strings.Count(contents, "FOREIGN KEY")
-					if numFoundFKs != len(targetFKs) {
-						return errors.Newf("found %d FKs, expected %d\n%s", numFoundFKs, len(targetFKs), contents)
+					if numFoundFKs != len(addFKs)+len(skipFKs) {
+						return errors.Newf(
+							"found %d FKs total whereas %d added and %d skipped were passed\n%s",
+							numFoundFKs, len(addFKs), len(skipFKs), contents,
+						)
 					}
-					for _, fk := range targetFKs {
-						if !strings.Contains(contents, fk) {
-							return errors.Newf("didn't find target FK: %s\n%s", fk, contents)
+					// Now check that all expected added and skipped FKs are
+					// present.
+					for _, addFK := range addFKs {
+						if !strings.Contains(contents, addFK) {
+							return errors.Newf("didn't find added FK: %s\n%s", addFK, contents)
+						} else if strings.Contains(contents, "-- "+addFK) {
+							return errors.Newf("added FK shouldn't be commented out: %s\n%s", addFK, contents)
+						}
+					}
+					for _, skipFK := range skipFKs {
+						if !strings.Contains(contents, "-- "+skipFK) {
+							return errors.Newf("didn't find skipped FK in commented out form: %s\n%s", skipFK, contents)
 						}
 					}
 				}
@@ -575,8 +594,12 @@ CREATE TABLE users(id UUID DEFAULT gen_random_uuid() PRIMARY KEY, promo_id INT R
 		// First read each table separately.
 		for _, tableName := range tableNames {
 			targetTableName := tableName
-			// There should be no FKs included.
-			contentCheck := getContentCheckFn([]string{targetTableName}, nil /* targetFKs */)
+			// No FKs should be added, but 1 FK might be skipped.
+			var skipFKs []string
+			if skipFK := getFK(tableName); skipFK != "" {
+				skipFKs = []string{skipFK}
+			}
+			contentCheck := getContentCheckFn([]string{targetTableName}, nil /* addFKS */, skipFKs)
 			rows := r.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) SELECT * FROM "+targetTableName)
 			checkBundle(
 				t, fmt.Sprint(rows), targetTableName, contentCheck, false, /* expectErrors */
@@ -585,26 +608,27 @@ CREATE TABLE users(id UUID DEFAULT gen_random_uuid() PRIMARY KEY, promo_id INT R
 			)
 		}
 		// Now read different combinations of tables which will influence
-		// whether ADD CONSTRAINT ... FOREIGN KEY statements are included.
-		contentCheck := getContentCheckFn([]string{"parent", "child1"}, []string{"ALTER TABLE defaultdb.public.child1 ADD CONSTRAINT"})
+		// whether ADD CONSTRAINT ... FOREIGN KEY statements are added or
+		// skipped.
+		contentCheck := getContentCheckFn([]string{"parent", "child1"}, []string{getFK("child1")}, nil)
 		rows := r.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) SELECT * FROM parent, child1")
 		checkBundle(
 			t, fmt.Sprint(rows), "parent", contentCheck, false, /* expectErrors */
 			base, plans, "stats-defaultdb.public.parent.sql stats-defaultdb.public.child1.sql distsql.html vec.txt vec-v.txt",
 		)
 
-		// There should be no FKs since there isn't a direct link between the
-		// tables.
-		contentCheck = getContentCheckFn([]string{"parent", "grandchild1"}, nil /* targetFKs */)
+		// There should be no added FKs since there isn't a direct link between
+		// the tables.
+		contentCheck = getContentCheckFn([]string{"parent", "grandchild1"}, nil /* addFKS */, []string{getFK("grandchild1")})
 		rows = r.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) SELECT * FROM parent, grandchild1")
 		checkBundle(
 			t, fmt.Sprint(rows), "parent", contentCheck, false, /* expectErrors */
 			base, plans, "stats-defaultdb.public.parent.sql stats-defaultdb.public.grandchild1.sql distsql.html vec.txt vec-v.txt",
 		)
 
-		// Note that we omit the FK from grandchild1 since the FK referenced
+		// Note that we skip the FK from grandchild1 since the FK referenced
 		// table isn't being read.
-		contentCheck = getContentCheckFn([]string{"parent", "child2", "grandchild1"}, []string{"ALTER TABLE defaultdb.public.child2 ADD CONSTRAINT"})
+		contentCheck = getContentCheckFn([]string{"parent", "child2", "grandchild1"}, []string{getFK("child2")}, []string{getFK("grandchild1")})
 		rows = r.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) SELECT * FROM parent, child2, grandchild1")
 		checkBundle(
 			t, fmt.Sprint(rows), "parent", contentCheck, false, /* expectErrors */
@@ -613,10 +637,9 @@ CREATE TABLE users(id UUID DEFAULT gen_random_uuid() PRIMARY KEY, promo_id INT R
 
 		contentCheck = getContentCheckFn(
 			[]string{"parent", "child1", "grandchild1"},
-			[]string{
-				"ALTER TABLE defaultdb.public.child1 ADD CONSTRAINT",
-				"ALTER TABLE defaultdb.public.grandchild1 ADD CONSTRAINT",
-			})
+			[]string{getFK("child1"), getFK("grandchild1")},
+			nil, /* skipFKs */
+		)
 		rows = r.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) SELECT * FROM parent, child1, grandchild1")
 		checkBundle(
 			t, fmt.Sprint(rows), "parent", contentCheck, false, /* expectErrors */
@@ -624,69 +647,28 @@ CREATE TABLE users(id UUID DEFAULT gen_random_uuid() PRIMARY KEY, promo_id INT R
 		)
 	})
 
-	// getBundleThroughBuiltin is a helper function that returns an url to
-	// download a stmt bundle that was collected in response to a diagnostics
-	// request inserted by the builtin.
-	getBundleThroughBuiltin := func(fprint, query, planGist string, redacted bool) string {
-		// Delete all old diagnostics to make this test easier.
-		r.Exec(t, "DELETE FROM system.statement_diagnostics WHERE true")
-
-		// Insert the diagnostics request via the builtin function.
-		row := r.QueryRow(t, `SELECT crdb_internal.request_statement_bundle($1, $2, 0::FLOAT, 0::INTERVAL, 0::INTERVAL, $3);`, fprint, planGist, redacted)
-		var inserted bool
-		row.Scan(&inserted)
-		require.True(t, inserted)
-
-		// Now actually execute the query so that the bundle is collected.
-		r.Exec(t, query)
-
-		// Get ID of our bundle.
-		var id int
-		var bundleFingerprint string
-		row = r.QueryRow(t, "SELECT id, statement_fingerprint FROM system.statement_diagnostics LIMIT 1")
-		row.Scan(&id, &bundleFingerprint)
-		require.Equal(t, fprint, bundleFingerprint)
-
-		// We need to come up with the url to download the bundle from.
-		return findBundleDownloadURL(t, r, id)
-	}
-
 	t.Run("redact", func(t *testing.T) {
 		r.Exec(t, "CREATE TYPE plesiosaur AS ENUM ('pterodactyl', '5555555555554444');")
 		r.Exec(t, "CREATE TABLE pterosaur (cardholder STRING PRIMARY KEY, cardno INT, INDEX (cardno));")
 		r.Exec(t, "INSERT INTO pterosaur VALUES ('pterodactyl', 5555555555554444);")
 		r.Exec(t, "CREATE STATISTICS jurassic FROM pterosaur;")
 		r.Exec(t, "CREATE FUNCTION test_redact() RETURNS STRING AS $body$ SELECT 'pterodactyl' $body$ LANGUAGE sql;")
-		for _, viaBuiltin := range []bool{false, true} {
-			t.Run(fmt.Sprintf("viaBuiltin=%t", viaBuiltin), func(t *testing.T) {
-				var url string
-				if viaBuiltin {
-					fprint := "SELECT max(cardno), test_redact() FROM pterosaur WHERE cardholder = _"
-					query := "SELECT max(cardno), test_redact() FROM pterosaur WHERE cardholder = 'pterodactyl';"
-					// Collect a bundle in response to a diagnostics request
-					// inserted by the builtin.
-					url = getBundleThroughBuiltin(fprint, query, "" /* planGist */, true /* redacted */)
-				} else {
-					rows := r.QueryStr(t,
-						"EXPLAIN ANALYZE (DEBUG, REDACT) SELECT max(cardno), test_redact() FROM pterosaur WHERE cardholder = 'pterodactyl'",
-					)
-					url = getBundleDownloadURL(t, fmt.Sprint(rows))
+		rows := r.QueryStr(t,
+			"EXPLAIN ANALYZE (DEBUG, REDACT) SELECT max(cardno), test_redact() FROM pterosaur WHERE cardholder = 'pterodactyl'",
+		)
+		verboten := []string{"pterodactyl", "5555555555554444", fmt.Sprintf("%x", 5555555555554444)}
+		checkBundle(
+			t, fmt.Sprint(rows), "", func(name, contents string) error {
+				lowerContents := strings.ToLower(contents)
+				for _, pii := range verboten {
+					if strings.Contains(lowerContents, pii) {
+						return errors.Newf("file %s contained %q:\n%s\n", name, pii, contents)
+					}
 				}
-				verboten := []string{"pterodactyl", "5555555555554444", fmt.Sprintf("%x", 5555555555554444)}
-				checkBundleContents(
-					t, url, "", func(name, contents string) error {
-						lowerContents := strings.ToLower(contents)
-						for _, pii := range verboten {
-							if strings.Contains(lowerContents, pii) {
-								return errors.Newf("file %s contained %q:\n%s\n", name, pii, contents)
-							}
-						}
-						return nil
-					}, false, /* expectErrors */
-					plans, "statement.sql stats-defaultdb.public.pterosaur.sql env.sql vec.txt vec-v.txt",
-				)
-			})
-		}
+				return nil
+			}, false, /* expectErrors */
+			plans, "statement.sql stats-defaultdb.public.pterosaur.sql env.sql vec.txt vec-v.txt",
+		)
 	})
 
 	t.Run("types", func(t *testing.T) {
@@ -907,43 +889,6 @@ CREATE TABLE users(id UUID DEFAULT gen_random_uuid() PRIMARY KEY, promo_id INT R
 			base, plans, `distsql.html vec.txt vec-v.txt stats-"db.name"."sc.name".t.sql stats-"db'name"."sc'name".t.sql`,
 		)
 	})
-
-	t.Run("plan-gist matching", func(t *testing.T) {
-		r.Exec(t, "CREATE TABLE gist (k INT PRIMARY KEY);")
-		r.Exec(t, "INSERT INTO gist SELECT generate_series(1, 10)")
-		const fprint = `SELECT * FROM gist`
-
-		// Come up with a target gist.
-		row := r.QueryRow(t, "EXPLAIN (GIST) "+fprint)
-		var gist string
-		row.Scan(&gist)
-
-		url := getBundleThroughBuiltin(fprint, fprint, gist, false /* redacted */)
-		checkBundleContents(
-			t, url, "gist", func(name, contents string) error {
-				if name != "plan.txt" {
-					return nil
-				}
-				// We don't hard-code the full expected output here so that it
-				// doesn't need an update every time we change EXPLAIN ANALYZE
-				// output format. Instead, we only assert that a few lines are
-				// present in the output.
-				for _, expectedLine := range []string{
-					"• scan",
-					"  sql nodes: n1",
-					"  actual row count: 10",
-					"  table: gist@gist_pkey",
-					"  spans: FULL SCAN",
-				} {
-					if !strings.Contains(contents, expectedLine) {
-						return errors.Newf("didn't find %q in the output: %v", expectedLine, contents)
-					}
-				}
-				return nil
-			}, false, /* expectErrors */
-			base, plans, "distsql.html vec.txt vec-v.txt stats-defaultdb.public.gist.sql",
-		)
-	})
 }
 
 func getBundleDownloadURL(t *testing.T, text string) string {
@@ -953,19 +898,6 @@ func getBundleDownloadURL(t *testing.T, text string) string {
 		t.Fatalf("couldn't find URL in response '%s'", text)
 	}
 	return url
-}
-
-func findBundleDownloadURL(t *testing.T, runner *sqlutils.SQLRunner, id int) string {
-	// To come up with the url to download the bundle from, we collect another
-	// stmt bundle, and in the output we'll have the url to this other stmt
-	// bundle of the form:
-	//   Direct link: http://127.0.0.1:65031/_admin/v1/stmtbundle/936793560822546433
-	// We'll need to replace the last part with the ID of our bundle to get our
-	// url.
-	rows := runner.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) SELECT 1")
-	urlTemplate := getBundleDownloadURL(t, sqlutils.MatrixToStr(rows))
-	prefixLength := strings.LastIndex(urlTemplate, "/")
-	return urlTemplate[:prefixLength] + "/" + strconv.Itoa(id)
 }
 
 func downloadBundle(t *testing.T, url string, dest io.Writer) {
@@ -1023,18 +955,8 @@ func checkBundle(
 ) {
 	t.Helper()
 	url := getBundleDownloadURL(t, text)
-	checkBundleContents(t, url, tableName, contentCheck, expectErrors, expectedFiles...)
-}
-
-func checkBundleContents(
-	t *testing.T,
-	url string,
-	tableName string,
-	contentCheck func(name string, contents string) error,
-	expectErrors bool,
-	expectedFiles ...string,
-) {
 	unzip := downloadAndUnzipBundle(t, url)
+
 	// Make sure the bundle contains the expected list of files.
 	var files []string
 	foundSchema := false
@@ -1162,8 +1084,17 @@ func TestExplainClientTime(t *testing.T) {
 	// Sanity check that we got the ID for our bundle.
 	require.Equal(t, testQuery, stmtFingerprint)
 
-	// We need to come up with the url to download the bundle from.
-	url := findBundleDownloadURL(t, runner, id)
+	// We need to come up with the url to download the bundle from. To do that,
+	// we collect another stmt bundle, and in the output we'll have the url to
+	// this other stmt bundle of the form:
+	//   Direct link: http://127.0.0.1:65031/_admin/v1/stmtbundle/936793560822546433
+	// We'll need to replace the last part with the ID of our bundle to get our
+	// url.
+	rows := runner.QueryStr(t, "EXPLAIN ANALYZE (DEBUG) SELECT 1")
+	urlTemplate := getBundleDownloadURL(t, sqlutils.MatrixToStr(rows))
+	prefixLength := strings.LastIndex(urlTemplate, "/")
+	url := urlTemplate[:prefixLength] + "/" + strconv.Itoa(id)
+
 	// Now download the stmt bundle, unzip it and find plan.txt file.
 	unzip := downloadAndUnzipBundle(t, url)
 	var contents string

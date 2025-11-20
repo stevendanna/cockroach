@@ -7,11 +7,9 @@ package rpc
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/grpcutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/circuit"
@@ -38,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
-	"github.com/gogo/protobuf/types"
 	gogostatus "github.com/gogo/status"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -206,7 +202,7 @@ func testClockOffsetInPingRequestInternal(t *testing.T, clientOnly bool) {
 	clientOpts := opts
 	// Experimentally, values below 50ms seem to incur flakiness.
 	clientOpts.RPCHeartbeatInterval = 100 * time.Millisecond
-	clientOpts.RPCHeartbeatTimeout = 200 * time.Millisecond
+	clientOpts.RPCHeartbeatTimeout = 100 * time.Millisecond
 	clientOpts.ClientOnly = clientOnly
 	clientOpts.OnOutgoingPing = func(ctx context.Context, req *PingRequest) error {
 		select {
@@ -234,12 +230,8 @@ func testClockOffsetInPingRequestInternal(t *testing.T, clientOnly bool) {
 	t.Logf("client dial")
 	// Dial: this causes the heartbeats to start.
 	remoteAddr := ln.Addr().String()
-	testutils.SucceedsSoon(t, func() error {
-		_, err = rpcCtxClient.GRPCDialNode(
-			remoteAddr, 1, roachpb.Locality{}, SystemClass,
-		).Connect(ctx)
-		return err
-	})
+	_, err = rpcCtxClient.GRPCDialNode(remoteAddr, 1, roachpb.Locality{}, SystemClass).Connect(ctx)
+	require.NoError(t, err)
 
 	// The first ping establishes the TCP+TLS connection and uses a blocking dialback,
 	// so it's usually pretty noisy in terms of detecting clock offsets. The second
@@ -277,6 +269,7 @@ var _ kvpb.InternalServer = &internalServer{}
 type internalServer struct {
 	// rangeFeedEvents are returned on RangeFeed() calls.
 	rangeFeedEvents   []kvpb.RangeFeedEvent
+	rfServerStream    kvpb.Internal_RangeFeedServer
 	muxRfServerStream kvpb.Internal_MuxRangeFeedServer
 }
 
@@ -287,12 +280,11 @@ type rangefeedEventSink struct {
 
 var _ kvpb.RangeFeedEventSink = (*rangefeedEventSink)(nil)
 
-// Note that SendUnbuffered itself is not thread-safe (grpc stream is not
-// thread-safe), but tests were written in a way that sends sequentially,
-// ensuring thread-safety for SendUnbuffered.
-func (s *rangefeedEventSink) SendUnbufferedIsThreadSafe() {}
+func (s *rangefeedEventSink) Context() context.Context {
+	return s.ctx
+}
 
-func (s *rangefeedEventSink) SendUnbuffered(event *kvpb.RangeFeedEvent) error {
+func (s *rangefeedEventSink) Send(event *kvpb.RangeFeedEvent) error {
 	return s.stream.Send(&kvpb.MuxRangeFeedEvent{RangeFeedEvent: *event})
 }
 
@@ -310,20 +302,27 @@ func (*internalServer) Batch(context.Context, *kvpb.BatchRequest) (*kvpb.BatchRe
 	return nil, nil
 }
 
-func (*internalServer) BatchStream(stream kvpb.Internal_BatchStreamServer) error {
-	panic("unimplemented")
-}
-
 func (*internalServer) RangeLookup(
 	context.Context, *kvpb.RangeLookupRequest,
 ) (*kvpb.RangeLookupResponse, error) {
 	panic("unimplemented")
 }
 
+func (s *internalServer) RangeFeed(
+	_ *kvpb.RangeFeedRequest, stream kvpb.Internal_RangeFeedServer,
+) error {
+	s.rfServerStream = stream
+	err := s.singleRangeFeed(stream)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *internalServer) singleRangeFeed(sink kvpb.RangeFeedEventSink) error {
 	for _, ev := range s.rangeFeedEvents {
 		evCpy := ev
-		if err := sink.SendUnbuffered(&evCpy); err != nil {
+		if err := sink.Send(&evCpy); err != nil {
 			return err
 		}
 	}
@@ -434,7 +433,7 @@ func TestInternalClientAdapterRunsInterceptors(t *testing.T) {
 	serverCtx.AdvertiseAddr = "127.0.0.1:8888"
 	serverCtx.NodeID.Set(context.Background(), 1)
 
-	_ /* gRPC server */, _ /* drpc server */, serverInterceptors, err := NewServerEx(ctx, serverCtx)
+	_ /* server */, serverInterceptors, err := NewServerEx(ctx, serverCtx)
 	require.NoError(t, err)
 
 	// Pile on one more interceptor to make sure it's called.
@@ -506,9 +505,8 @@ func TestInternalClientAdapterRunsInterceptors(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		serverStreamInterceptor1Called, serverStreamInterceptor2Called = false, false
 		clientStreamInterceptor1Called, clientStreamInterceptor2Called = false, false
-		stream, err := lic.MuxRangeFeed(ctx)
+		stream, err := lic.RangeFeed(ctx, &kvpb.RangeFeedRequest{})
 		require.NoError(t, err)
-		require.NoError(t, stream.Send(&kvpb.RangeFeedRequest{}))
 		_, err = stream.Recv()
 		require.ErrorIs(t, err, io.EOF)
 		require.True(t, clientStreamInterceptor1Called)
@@ -535,50 +533,62 @@ func TestInternalClientAdapterWithClientStreamInterceptors(t *testing.T) {
 	serverCtx.AdvertiseAddr = "127.0.0.1:8888"
 	serverCtx.NodeID.Set(context.Background(), 1)
 
-	_ /* gRPC server */, _ /* drpc server */, serverInterceptors, err := NewServerEx(ctx, serverCtx)
+	_ /* server */, serverInterceptors, err := NewServerEx(ctx, serverCtx)
 	require.NoError(t, err)
-	var clientInterceptors ClientInterceptorInfo
-	var s *testClientStream
-	clientInterceptors.StreamInterceptors = append(clientInterceptors.StreamInterceptors,
-		func(
-			ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn,
-			method string, streamer grpc.Streamer, opts ...grpc.CallOption,
-		) (grpc.ClientStream, error) {
-			clientStream, err := streamer(ctx, desc, cc, method, opts...)
-			if err != nil {
-				return nil, err
+
+	testutils.RunTrueAndFalse(t, "use_mux_rangefeed", func(t *testing.T, useMux bool) {
+		var clientInterceptors ClientInterceptorInfo
+		var s *testClientStream
+		clientInterceptors.StreamInterceptors = append(clientInterceptors.StreamInterceptors,
+			func(
+				ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn,
+				method string, streamer grpc.Streamer, opts ...grpc.CallOption,
+			) (grpc.ClientStream, error) {
+				clientStream, err := streamer(ctx, desc, cc, method, opts...)
+				if err != nil {
+					return nil, err
+				}
+				s = &testClientStream{inner: clientStream}
+				return s, nil
+			})
+
+		internal := &internalServer{rangeFeedEvents: []kvpb.RangeFeedEvent{{}, {}}}
+		serverCtx.SetLocalInternalServer(
+			internal,
+			serverInterceptors, clientInterceptors)
+		ic := serverCtx.GetLocalInternalClientForAddr(1)
+		lic, ok := ic.(internalClientAdapter)
+		require.True(t, ok)
+		require.Equal(t, internal, lic.server)
+
+		var receiveEvent func() error
+		if useMux {
+			stream, err := lic.MuxRangeFeed(ctx)
+			require.NoError(t, err)
+			require.NoError(t, stream.Send(&kvpb.RangeFeedRequest{}))
+			receiveEvent = func() error {
+				e, err := stream.Recv()
+				_ = e
+				return err
 			}
-			s = &testClientStream{inner: clientStream}
-			return s, nil
-		})
-
-	internal := &internalServer{rangeFeedEvents: []kvpb.RangeFeedEvent{{}, {}}}
-	serverCtx.SetLocalInternalServer(
-		internal,
-		serverInterceptors, clientInterceptors)
-	ic := serverCtx.GetLocalInternalClientForAddr(1)
-	lic, ok := ic.(internalClientAdapter)
-	require.True(t, ok)
-	require.Equal(t, internal, lic.server)
-
-	var receiveEvent func() error
-	stream, err := lic.MuxRangeFeed(ctx)
-	require.NoError(t, err)
-	require.NoError(t, stream.Send(&kvpb.RangeFeedRequest{}))
-	receiveEvent = func() error {
-		e, err := stream.Recv()
-		_ = e
-		return err
-	}
-	// Consume the stream.
-	for {
-		err := receiveEvent()
-		if err == io.EOF {
-			break
+		} else {
+			stream, err := lic.RangeFeed(ctx, &kvpb.RangeFeedRequest{})
+			require.NoError(t, err)
+			receiveEvent = func() error {
+				_, err := stream.Recv()
+				return err
+			}
 		}
-		require.NoError(t, err)
-	}
-	require.Equal(t, len(internal.rangeFeedEvents)+1, s.recvCount)
+		// Consume the stream.
+		for {
+			err := receiveEvent()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+		}
+		require.Equal(t, len(internal.rangeFeedEvents)+1, s.recvCount)
+	})
 }
 
 // Test that a server stream interceptor can wrap the ServerStream when the
@@ -598,68 +608,84 @@ func TestInternalClientAdapterWithServerStreamInterceptors(t *testing.T) {
 	serverCtx.AdvertiseAddr = "127.0.0.1:8888"
 	serverCtx.NodeID.Set(context.Background(), 1)
 
-	_ /* gRPC server */, _ /* drpc server */, serverInterceptors, err := NewServerEx(ctx, serverCtx)
+	_ /* server */, serverInterceptors, err := NewServerEx(ctx, serverCtx)
 	require.NoError(t, err)
 
-	const int1Name = "interceptor 1"
-	serverInterceptors.StreamInterceptors = append(serverInterceptors.StreamInterceptors,
-		func(
-			srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler,
-		) error {
-			serverStream := &testServerStream{name: "interceptor 1", inner: ss}
-			return handler(srv, serverStream)
-		})
-	var secondInterceptorWrapped grpc.ServerStream
-	const int2Name = "interceptor 2"
-	serverInterceptors.StreamInterceptors = append(serverInterceptors.StreamInterceptors,
-		func(
-			srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler,
-		) error {
-			secondInterceptorWrapped = ss
-			serverStream := &testServerStream{name: int2Name, inner: ss}
-			return handler(srv, serverStream)
-		})
+	testutils.RunTrueAndFalse(t, "use_mux_rangefeed", func(t *testing.T, useMux bool) {
+		const int1Name = "interceptor 1"
+		serverInterceptors.StreamInterceptors = append(serverInterceptors.StreamInterceptors,
+			func(
+				srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler,
+			) error {
+				serverStream := &testServerStream{name: "interceptor 1", inner: ss}
+				return handler(srv, serverStream)
+			})
+		var secondInterceptorWrapped grpc.ServerStream
+		const int2Name = "interceptor 2"
+		serverInterceptors.StreamInterceptors = append(serverInterceptors.StreamInterceptors,
+			func(
+				srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler,
+			) error {
+				secondInterceptorWrapped = ss
+				serverStream := &testServerStream{name: int2Name, inner: ss}
+				return handler(srv, serverStream)
+			})
 
-	internal := &internalServer{rangeFeedEvents: []kvpb.RangeFeedEvent{{}, {}}}
-	serverCtx.SetLocalInternalServer(
-		internal,
-		serverInterceptors, ClientInterceptorInfo{})
-	ic := serverCtx.GetLocalInternalClientForAddr(1)
-	lic, ok := ic.(internalClientAdapter)
-	require.True(t, ok)
-	require.Equal(t, internal, lic.server)
+		internal := &internalServer{rangeFeedEvents: []kvpb.RangeFeedEvent{{}, {}}}
+		serverCtx.SetLocalInternalServer(
+			internal,
+			serverInterceptors, ClientInterceptorInfo{})
+		ic := serverCtx.GetLocalInternalClientForAddr(1)
+		lic, ok := ic.(internalClientAdapter)
+		require.True(t, ok)
+		require.Equal(t, internal, lic.server)
 
-	var receiveEvent func() error
-	stream, err := lic.MuxRangeFeed(ctx)
-	require.NoError(t, err)
-	require.NoError(t, stream.Send(&kvpb.RangeFeedRequest{}))
-	receiveEvent = func() error {
-		_, err := stream.Recv()
-		return err
-	}
-
-	// Consume the stream. This will synchronize with the server RPC handler
-	// goroutine, ensuring that the server-side interceptors run.
-	for {
-		err := receiveEvent()
-		if err == io.EOF {
-			break
+		var receiveEvent func() error
+		if useMux {
+			stream, err := lic.MuxRangeFeed(ctx)
+			require.NoError(t, err)
+			require.NoError(t, stream.Send(&kvpb.RangeFeedRequest{}))
+			receiveEvent = func() error {
+				_, err := stream.Recv()
+				return err
+			}
+		} else {
+			stream, err := lic.RangeFeed(ctx, &kvpb.RangeFeedRequest{})
+			require.NoError(t, err)
+			receiveEvent = func() error {
+				_, err := stream.Recv()
+				return err
+			}
 		}
-		require.NoError(t, err)
-	}
 
-	require.IsType(t, &testServerStream{}, secondInterceptorWrapped)
+		// Consume the stream. This will synchronize with the server RPC handler
+		// goroutine, ensuring that the server-side interceptors run.
+		for {
+			err := receiveEvent()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+		}
 
-	require.Equal(t, int1Name, secondInterceptorWrapped.(*testServerStream).name)
-	var ss grpc.ServerStream
-	require.IsType(t, muxRangeFeedServerAdapter{}, internal.muxRfServerStream)
-	ss = internal.muxRfServerStream.(muxRangeFeedServerAdapter).ServerStream
-	require.IsType(t, &testServerStream{}, ss)
-	topStream := ss.(*testServerStream)
-	require.Equal(t, int2Name, topStream.name)
-	require.IsType(t, &testServerStream{}, topStream.inner)
-	bottomStream := topStream.inner.(*testServerStream)
-	require.Equal(t, int1Name, bottomStream.name)
+		require.IsType(t, &testServerStream{}, secondInterceptorWrapped)
+
+		require.Equal(t, int1Name, secondInterceptorWrapped.(*testServerStream).name)
+		var ss grpc.ServerStream
+		if useMux {
+			require.IsType(t, muxRangeFeedServerAdapter{}, internal.muxRfServerStream)
+			ss = internal.muxRfServerStream.(muxRangeFeedServerAdapter).ServerStream
+		} else {
+			require.IsType(t, rangeFeedServerAdapter{}, internal.rfServerStream)
+			ss = internal.rfServerStream.(rangeFeedServerAdapter).ServerStream
+		}
+		require.IsType(t, &testServerStream{}, ss)
+		topStream := ss.(*testServerStream)
+		require.Equal(t, int2Name, topStream.name)
+		require.IsType(t, &testServerStream{}, topStream.inner)
+		bottomStream := topStream.inner.(*testServerStream)
+		require.Equal(t, int1Name, bottomStream.name)
+	})
 }
 
 type testClientStream struct {
@@ -736,7 +762,7 @@ func BenchmarkInternalClientAdapter(b *testing.B) {
 	serverCtx.AdvertiseAddr = "127.0.0.1:8888"
 	serverCtx.NodeID.Set(context.Background(), 1)
 
-	_ /* gRPC server */, _ /* drpc server */, interceptors, err := NewServerEx(ctx, serverCtx)
+	_, interceptors, err := NewServerEx(ctx, serverCtx)
 	require.NoError(b, err)
 
 	internal := &internalServer{}
@@ -837,10 +863,10 @@ func TestOffsetMeasurement(t *testing.T) {
 	remoteAddr := ln.Addr().String()
 
 	// Create a client clock that is behind the server clock.
-	clientClock := NewAdvancingClock(timeutil.Unix(0, 10))
+	clientClock := &AdvancingClock{time: timeutil.Unix(0, 10)}
 	clientMaxOffset := time.Duration(0)
 	clientCtx := newTestContext(clusterID, clientClock, clientMaxOffset, stopper)
-	clientCtx.RemoteClocks.offsetTTL = 1 * time.Nanosecond
+	clientCtx.RemoteClocks.offsetTTL = 5 * clientClock.getAdvancementInterval()
 	if _, err := clientCtx.GRPCDialNode(remoteAddr, serverNodeID, roachpb.Locality{}, DefaultClass).Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +886,8 @@ func TestOffsetMeasurement(t *testing.T) {
 
 	// Change the client such that it receives a heartbeat right after the
 	// maximum clock reading delay.
-	clientClock.setAdvancementInterval(1 * time.Nanosecond)
+	clientClock.setAdvancementInterval(
+		maximumPingDurationMult*clientMaxOffset + 1*time.Nanosecond)
 
 	testutils.SucceedsSoon(t, func() error {
 		clientCtx.RemoteClocks.mu.Lock()
@@ -979,7 +1006,7 @@ func TestLatencyInfoCleanupOnClosedConnection(t *testing.T) {
 	remoteAddr := ln.Addr().String()
 
 	// Create a client clock that is behind the server clock.
-	clientClock := NewAdvancingClock(timeutil.Unix(0, 10))
+	clientClock := &AdvancingClock{time: timeutil.Unix(0, 10)}
 	clientMaxOffset := time.Duration(0)
 	clientCtx := newTestContext(clusterID, clientClock, clientMaxOffset, stopper)
 
@@ -1004,7 +1031,8 @@ func TestLatencyInfoCleanupOnClosedConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	clientClock.setAdvancementInterval(1 * time.Nanosecond)
+	clientClock.setAdvancementInterval(
+		maximumPingDurationMult*clientMaxOffset + 1*time.Nanosecond)
 
 	testutils.SucceedsSoon(t, func() error {
 		clientCtx.RemoteClocks.mu.Lock()
@@ -1044,32 +1072,32 @@ func TestLatencyInfoCleanupOnClosedConnection(t *testing.T) {
 	})
 }
 
-// AdvancingClock is a clock that advances by a fixed interval each time it is
-// read. The advancement interval starts at 0.
 type AdvancingClock struct {
-	clock               *timeutil.ManualTime
-	advancementInterval atomic.Int64 // time.Duration
+	syncutil.Mutex
+	time                time.Time
+	advancementInterval atomic.Value // time.Duration
 }
 
 var _ hlc.WallClock = &AdvancingClock{}
 
-func NewAdvancingClock(initialTime time.Time) *AdvancingClock {
-	return &AdvancingClock{
-		clock: timeutil.NewManualTime(initialTime),
-	}
-}
-
 func (ac *AdvancingClock) setAdvancementInterval(d time.Duration) {
-	ac.advancementInterval.Store(int64(d))
+	ac.advancementInterval.Store(d)
 }
 
 func (ac *AdvancingClock) getAdvancementInterval() time.Duration {
-	return time.Duration(ac.advancementInterval.Load())
+	v := ac.advancementInterval.Load()
+	if v == nil {
+		return 0
+	}
+	return v.(time.Duration)
 }
 
 func (ac *AdvancingClock) Now() time.Time {
-	ac.clock.Advance(ac.getAdvancementInterval())
-	return ac.clock.Now()
+	ac.Lock()
+	now := ac.time
+	ac.time = now.Add(ac.getAdvancementInterval())
+	ac.Unlock()
+	return now
 }
 
 func TestRemoteOffsetUnhealthy(t *testing.T) {
@@ -1105,12 +1133,8 @@ func TestRemoteOffsetUnhealthy(t *testing.T) {
 		clock := timeutil.NewManualTime(timeutil.Unix(0, start.Add(nodeCtxs[i].offset).UnixNano()))
 		nodeCtxs[i].errChan = make(chan error, 1)
 		nodeCtxs[i].ctx = newTestContext(clusterID, clock, maxOffset, stopper)
-		// Make the test faster.
-		nodeCtxs[i].ctx.RPCHeartbeatInterval = 10 * time.Millisecond
-		// Disable RPC heartbeat timeouts to avoid flakiness in the test. If a
-		// heartbeat were to time out, its RPC connection would be closed and its
-		// clock offset information would be lost.
-		nodeCtxs[i].ctx.RPCHeartbeatTimeout = 0
+		nodeCtxs[i].ctx.RPCHeartbeatInterval = maxOffset
+		nodeCtxs[i].ctx.RPCHeartbeatTimeout = maxOffset
 		nodeCtxs[i].ctx.NodeID.Set(context.Background(), roachpb.NodeID(i+1))
 
 		s := newTestServer(t, nodeCtxs[i].ctx)
@@ -2237,109 +2261,4 @@ func TestInitialHeartbeatFailedError(t *testing.T) {
 		}
 		return err
 	})
-}
-
-func BenchmarkGRPCPing(b *testing.B) {
-	for _, bytes := range []int{1, 1 << 8, 1 << 10, 1 << 11, 1 << 12, 1 << 13, 1 << 14, 1 << 15, 1 << 16, 1 << 18, 1 << 20} {
-		bstr := fmt.Sprintf("%d", bytes)
-		bname := strings.Repeat("_", 7-len(bstr)) + bstr
-		b.Run("bytes="+bname, func(b *testing.B) {
-			stopper := stop.NewStopper()
-			ctx := context.Background()
-			defer stopper.Stop(ctx)
-
-			clock := &timeutil.DefaultTimeSource{}
-			maxOffset := 250 * time.Millisecond
-			srvRPCCtx := newTestContext(uuid.MakeV4(), clock, maxOffset, stopper)
-			const serverNodeID = 1
-			srvRPCCtx.NodeID.Set(ctx, serverNodeID)
-			s := newTestServer(b, srvRPCCtx)
-
-			randBytes := make([]byte, bytes)
-			_, err := rand.Read(randBytes)
-			require.NoError(b, err)
-
-			req := &PingRequest{Ping: string(randBytes)}
-			resp := &PingResponse{Pong: string(randBytes)}
-			anyreq, err := types.MarshalAny(req)
-			require.NoError(b, err)
-			anyresp, err := types.MarshalAny(resp)
-			require.NoError(b, err)
-
-			require.NoError(b, err)
-			b.Logf("marshaled request size: %d bytes (%d bytes of overhead)", req.Size(), req.Size()-bytes)
-
-			tsi := &grpcutils.TestServerImpl{
-				UU: func(ctx context.Context, req *types.Any) (*types.Any, error) {
-					return anyresp, nil
-				},
-				SS: func(srv grpcutils.GRPCTest_StreamStreamServer) error {
-					for {
-						if _, err := srv.Recv(); err != nil {
-							return err
-						}
-						if err := srv.Send(anyresp); err != nil {
-							return err
-						}
-					}
-				},
-			}
-
-			grpcutils.RegisterGRPCTestServer(s, tsi)
-
-			ln, err := netutil.ListenAndServeGRPC(srvRPCCtx.Stopper, s, util.TestAddr)
-			if err != nil {
-				b.Fatal(err)
-			}
-			remoteAddr := ln.Addr().String()
-
-			cliRPCCtx := newTestContext(uuid.MakeV4(), clock, maxOffset, stopper)
-			cliRPCCtx.NodeID.Set(ctx, 2)
-			cc, err := cliRPCCtx.grpcDialRaw(ctx, remoteAddr, DefaultClass)
-			require.NoError(b, err)
-
-			for _, tc := range []struct {
-				name   string
-				invoke func(c grpcutils.GRPCTestClient, N int) error
-			}{
-				{"UnaryUnary", func(c grpcutils.GRPCTestClient, N int) error {
-					for i := 0; i < N; i++ {
-						_, err := c.UnaryUnary(ctx, anyreq)
-						if err != nil {
-							return err
-						}
-					}
-					return nil
-				}},
-				{
-					"StreamStream", func(c grpcutils.GRPCTestClient, N int) error {
-						sc, err := c.StreamStream(ctx)
-						if err != nil {
-							return err
-						}
-						for i := 0; i < N; i++ {
-							if err := sc.Send(anyreq); err != nil {
-								return err
-							}
-							if _, err := sc.Recv(); err != nil {
-								return err
-							}
-						}
-						return nil
-					}},
-			} {
-
-				b.Run("rpc="+tc.name, func(b *testing.B) {
-
-					c := grpcutils.NewGRPCTestClient(cc)
-
-					b.SetBytes(int64(req.Size() + resp.Size()))
-					b.ResetTimer()
-					if err := tc.invoke(c, b.N); err != nil {
-						b.Fatal(err)
-					}
-				})
-			}
-		})
-	}
 }

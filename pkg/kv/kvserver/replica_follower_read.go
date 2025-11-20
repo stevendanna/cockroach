@@ -14,8 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/redact"
 )
 
@@ -34,7 +32,7 @@ var FollowerReadsEnabled = settings.RegisterBoolSetting(
 // BatchCanBeEvaluatedOnFollower determines if a batch consists exclusively of
 // requests that can be evaluated on a follower replica, given a sufficiently
 // advanced closed timestamp.
-func BatchCanBeEvaluatedOnFollower(ctx context.Context, ba *kvpb.BatchRequest) bool {
+func BatchCanBeEvaluatedOnFollower(ba *kvpb.BatchRequest) bool {
 	// Various restrictions apply to a batch for it to be successfully considered
 	// for evaluation on a follower replica, which are described inline.
 	//
@@ -66,19 +64,9 @@ func BatchCanBeEvaluatedOnFollower(ctx context.Context, ba *kvpb.BatchRequest) b
 				return false
 			}
 		case r.Method() == kvpb.Export:
-			// Export requests also have clear semantics when served under the closed
-			// timestamp as well, even though they are non-transactional, as they
-			// define the start and end timestamp to export data over.
-			if r.(*kvpb.ExportRequest).ExportFingerprint {
-				// Fingerprint reuses a lot of the backup code by sending export requests,
-				// but unlike backup requests, doesn't have a job and multiple backup processors
-				// to spread the workload around the cluster. In a 3-node cluster, the request
-				// routing logic will determine that all replicas exist on the gateway node and
-				// with following reads allowed, will attempt to route all the export requests to
-				// the gateway node. This leads to one node doing all the work while the others sit
-				// idle. Return false to prevent follower reads for fingerprinting
-				return false
-			}
+		// Export requests also have clear semantics when served under the closed
+		// timestamp as well, even though they are non-transactional, as they
+		// define the start and end timestamp to export data over.
 		default:
 			return false
 		}
@@ -92,7 +80,7 @@ func BatchCanBeEvaluatedOnFollower(ctx context.Context, ba *kvpb.BatchRequest) b
 // must be transactional and composed exclusively of this kind of request to be
 // accepted as a follower read.
 func (r *Replica) canServeFollowerReadRLocked(ctx context.Context, ba *kvpb.BatchRequest) bool {
-	eligible := BatchCanBeEvaluatedOnFollower(ctx, ba) && FollowerReadsEnabled.Get(&r.store.cfg.Settings.SV)
+	eligible := BatchCanBeEvaluatedOnFollower(ba) && FollowerReadsEnabled.Get(&r.store.cfg.Settings.SV)
 	if !eligible {
 		// We couldn't do anything with the error, propagate it.
 		return false
@@ -133,9 +121,6 @@ func (r *Replica) canServeFollowerReadRLocked(ctx context.Context, ba *kvpb.Batc
 	// serve reads for that and smaller timestamps forever.
 	log.Eventf(ctx, "%s; query timestamp below closed timestamp by %s", redact.Safe(kvbase.FollowerReadServingMsg), -tsDiff)
 	r.store.metrics.FollowerReadsCount.Inc(1)
-	if sp := tracing.SpanFromContext(ctx); sp.RecordingType() != tracingpb.RecordingOff {
-		sp.RecordStructured(&kvpb.UsedFollowerRead{})
-	}
 	return true
 }
 
@@ -148,9 +133,9 @@ func (r *Replica) canServeFollowerReadRLocked(ctx context.Context, ba *kvpb.Batc
 func (r *Replica) getCurrentClosedTimestampLocked(
 	ctx context.Context, sufficient hlc.Timestamp,
 ) hlc.Timestamp {
-	appliedLAI := r.shMu.state.LeaseAppliedIndex
-	leaseholder := r.shMu.state.Lease.Replica.NodeID
-	raftClosed := r.shMu.state.RaftClosedTimestamp
+	appliedLAI := r.mu.state.LeaseAppliedIndex
+	leaseholder := r.mu.state.Lease.Replica.NodeID
+	raftClosed := r.mu.state.RaftClosedTimestamp
 	sideTransportClosed := r.sideTransportClosedTimestamp.get(ctx, leaseholder, appliedLAI, sufficient)
 
 	var maxClosed hlc.Timestamp

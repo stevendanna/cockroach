@@ -5,19 +5,33 @@
 # Use of this software is governed by the CockroachDB Software License
 # included in the /LICENSE file.
 
-
 set -xeuo pipefail
+
+service_account=$(curl --header "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email" || echo "")
+if [[ $service_account != "signing-agent@crl-teamcity-agents.iam.gserviceaccount.com" ]]; then
+  echo "Not running on a signing agent, skipping signing"
+  exit 1
+fi
 
 dir="$(dirname $(dirname $(dirname $(dirname $(dirname $(dirname "${0}"))))))"
 source "$dir/teamcity-support.sh"  # For log_into_gcloud
+source "$dir/shlib.sh"
 
 curr_dir=$(pwd)
 
 remove_files_on_exit() {
   rm -f "$curr_dir/.google-credentials.json"
-  rm -f "$curr_dir/.secrets"
+  rm -rf "$curr_dir/.secrets"
 }
 trap remove_files_on_exit EXIT
+
+mkdir -p .secrets
+# Explicitly set the account to the signing agent. This is helpful if one of the previous
+# commands failed and left the account set to something else.
+gcloud config set account "signing-agent@crl-teamcity-agents.iam.gserviceaccount.com"
+gcloud secrets versions access latest --secret=apple-signing-cert | base64 -d > "$curr_dir/.secrets/cert.p12"
+gcloud secrets versions access latest --secret=apple-signing-cert-password > "$curr_dir/.secrets/cert.pass"
+gcloud secrets versions access latest --secret=appstoreconnect-api-key > "$curr_dir/.secrets/api_key.json"
 
 # By default, set dry-run variables
 google_credentials="$GCS_CREDENTIALS_DEV"
@@ -32,11 +46,6 @@ if [[ -z "${DRY_RUN}" ]] ; then
 fi
 
 log_into_gcloud
-
-mkdir -p .secrets
-gcloud secrets versions access latest --secret=apple-signing-cert | base64 -d > "$curr_dir/.secrets/cert.p12"
-gcloud secrets versions access latest --secret=apple-signing-cert-password > "$curr_dir/.secrets/cert.pass"
-gcloud secrets versions access latest --secret=appstoreconnect-api-key > "$curr_dir/.secrets/api_key.json"
 
 mkdir -p artifacts
 cd artifacts
@@ -64,7 +73,7 @@ for product in cockroach cockroach-sql; do
     tar -czf "$target" "$base"
 
     zip crl.zip "$base/$product"
-    rcodesign notary-submit \
+    retry rcodesign notary-submit \
       --api-key-file "$curr_dir/.secrets/api_key.json" \
       --wait \
       crl.zip

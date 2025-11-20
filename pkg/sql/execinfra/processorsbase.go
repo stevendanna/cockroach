@@ -25,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
+	"github.com/cockroachdb/redact/interfaces"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -52,11 +53,6 @@ type Processor interface {
 	// NB: this method doesn't take the context as parameter because the context
 	// was already captured on Run().
 	Resume(output RowReceiver)
-
-	// Close releases the resources of the processor and possibly its inputs.
-	// Must be called at least once on a given Processor and can be called
-	// multiple times.
-	Close(context.Context)
 }
 
 // DoesNotUseTxn is an interface implemented by some processors to mark that
@@ -123,16 +119,12 @@ func (h *ProcOutputHelper) Reset() {
 // omitted if there is no filtering expression.
 // Note that the types slice may be stored directly; the caller should not
 // modify it.
-//
-// If the provided evalCtx is the same as flowCtx.EvalCtx, then a copy will be
-// made internally when there are render expressions.
 func (h *ProcOutputHelper) Init(
 	ctx context.Context,
 	post *execinfrapb.PostProcessSpec,
 	coreOutputTypes []*types.T,
 	semaCtx *tree.SemaContext,
 	evalCtx *eval.Context,
-	flowCtx *FlowCtx,
 ) error {
 	if !post.Projection && len(post.OutputColumns) > 0 {
 		return errors.Errorf("post-processing has projection unset but output columns set: %s", post)
@@ -161,12 +153,6 @@ func (h *ProcOutputHelper) Init(
 			h.OutputTypes[i] = coreOutputTypes[c]
 		}
 	} else if nRenders := len(post.RenderExprs); nRenders > 0 {
-		if evalCtx == flowCtx.EvalCtx {
-			// We haven't created a copy of the eval context, and we have some
-			// renders, then we'll need to create a copy ourselves since we're
-			// going to use the ExprHelper which might mutate the eval context.
-			evalCtx = flowCtx.NewEvalCtx()
-		}
 		if cap(h.OutputTypes) >= nRenders {
 			h.OutputTypes = h.OutputTypes[:nRenders]
 		} else {
@@ -356,6 +342,9 @@ type ProcessorBaseNoHelper struct {
 
 	FlowCtx *FlowCtx
 
+	// EvalCtx is used for expression evaluation. It overrides the one in flowCtx.
+	EvalCtx *eval.Context
+
 	// Closed is set by InternalClose(). Once set, the processor's tracing span
 	// has been closed.
 	Closed bool
@@ -368,6 +357,9 @@ type ProcessorBaseNoHelper struct {
 	// origCtx is the context from which ctx was derived. InternalClose() resets
 	// ctx to this.
 	origCtx context.Context
+	// evalOrigCtx is the original context that was stored in the eval.Context.
+	// InternalClose() uses it to correctly reset the eval.Context.
+	evalOrigCtx context.Context
 
 	State procState
 
@@ -444,6 +436,21 @@ func (pb *ProcessorBase) Reset() {
 // states are relevant when the processor is using the draining utilities in
 // ProcessorBase.
 type procState int
+
+func (i procState) SafeFormat(s interfaces.SafePrinter, verb rune) {
+	switch i {
+	case StateRunning:
+		s.Print("StateRunning")
+	case StateDraining:
+		s.Print("StateDraining")
+	case StateTrailingMeta:
+		s.Print("StateTrailingMeta")
+	case StateExhausted:
+		s.Print("StateExhausted")
+	}
+}
+
+var _ redact.SafeFormatter = procState(0)
 
 //go:generate stringer -type=procState
 const (
@@ -735,11 +742,6 @@ func (pb *ProcessorBaseNoHelper) Resume(output RowReceiver) {
 	Run(pb.ctx, pb.self, output)
 }
 
-// Close is part of the Processor interface.
-func (pb *ProcessorBaseNoHelper) Close(context.Context) {
-	pb.self.ConsumerClosed()
-}
-
 // ProcStateOpts contains fields used by the ProcessorBase's family of functions
 // that deal with draining and trailing metadata: the ProcessorBase implements
 // generic useful functionality that needs to call back into the Processor.
@@ -757,8 +759,6 @@ type ProcStateOpts struct {
 // - coreOutputTypes are the type schema of the rows output by the processor
 // core (i.e. the "internal schema" of the processor, see
 // execinfrapb.ProcessorSpec for more details).
-//
-// NB: it is assumed that the caller will not modify the eval context.
 func (pb *ProcessorBase) Init(
 	ctx context.Context,
 	self RowSource,
@@ -770,7 +770,7 @@ func (pb *ProcessorBase) Init(
 	opts ProcStateOpts,
 ) error {
 	return pb.InitWithEvalCtx(
-		ctx, self, post, coreOutputTypes, flowCtx, flowCtx.EvalCtx, processorID, memMonitor, opts,
+		ctx, self, post, coreOutputTypes, flowCtx, flowCtx.NewEvalCtx(), processorID, memMonitor, opts,
 	)
 }
 
@@ -789,7 +789,7 @@ func (pb *ProcessorBase) InitWithEvalCtx(
 	memMonitor *mon.BytesMonitor,
 	opts ProcStateOpts,
 ) error {
-	pb.ProcessorBaseNoHelper.Init(self, flowCtx, processorID, opts)
+	pb.ProcessorBaseNoHelper.Init(self, flowCtx, evalCtx, processorID, opts)
 	pb.MemMonitor = memMonitor
 
 	// Hydrate all types used in the processor.
@@ -797,17 +797,19 @@ func (pb *ProcessorBase) InitWithEvalCtx(
 	if err := resolver.HydrateTypeSlice(ctx, coreOutputTypes); err != nil {
 		return err
 	}
+	pb.SemaCtx = tree.MakeSemaContext()
+	pb.SemaCtx.TypeResolver = &resolver
 
-	pb.SemaCtx = tree.MakeSemaContext(&resolver)
-	return pb.OutputHelper.Init(ctx, post, coreOutputTypes, &pb.SemaCtx, evalCtx, flowCtx)
+	return pb.OutputHelper.Init(ctx, post, coreOutputTypes, &pb.SemaCtx, pb.EvalCtx)
 }
 
 // Init initializes the ProcessorBaseNoHelper.
 func (pb *ProcessorBaseNoHelper) Init(
-	self RowSource, flowCtx *FlowCtx, processorID int32, opts ProcStateOpts,
+	self RowSource, flowCtx *FlowCtx, evalCtx *eval.Context, processorID int32, opts ProcStateOpts,
 ) {
 	pb.self = self
 	pb.FlowCtx = flowCtx
+	pb.EvalCtx = evalCtx
 	pb.ProcessorID = processorID
 	pb.trailingMetaCallback = opts.TrailingMetaCallback
 	if opts.InputsToDrain != nil {
@@ -891,6 +893,7 @@ func (pb *ProcessorBaseNoHelper) StartInternal(
 	if !noSpan {
 		pb.ctx, pb.span = ProcessorSpan(ctx, pb.FlowCtx, name, pb.ProcessorID, eventListeners...)
 	}
+	pb.evalOrigCtx = pb.EvalCtx.SetDeprecatedContext(pb.ctx)
 	return pb.ctx
 }
 
@@ -930,6 +933,7 @@ func (pb *ProcessorBaseNoHelper) InternalClose() bool {
 	// Reset the context so that any incidental uses after this point do not
 	// access the finished span.
 	pb.ctx = pb.origCtx
+	pb.EvalCtx.SetDeprecatedContext(pb.evalOrigCtx)
 	return true
 }
 
@@ -948,9 +952,9 @@ func (pb *ProcessorBaseNoHelper) ConsumerClosed() {
 // memory monitor with the given name and start it. The returned monitor must
 // be closed.
 func NewMonitor(
-	ctx context.Context, parent *mon.BytesMonitor, name redact.SafeString,
+	ctx context.Context, parent *mon.BytesMonitor, name redact.RedactableString,
 ) *mon.BytesMonitor {
-	monitor := mon.NewMonitorInheritWithLimit(name, 0 /* limit */, parent, false /* longLiving */)
+	monitor := mon.NewMonitorInheritWithLimit(name, 0 /* limit */, parent)
 	monitor.StartNoReserved(ctx, parent)
 	return monitor
 }
@@ -962,9 +966,9 @@ func NewMonitor(
 // ServerConfig.TestingKnobs.ForceDiskSpill is set or
 // ServerConfig.TestingKnobs.MemoryLimitBytes if not.
 func NewLimitedMonitor(
-	ctx context.Context, parent *mon.BytesMonitor, flowCtx *FlowCtx, name redact.SafeString,
+	ctx context.Context, parent *mon.BytesMonitor, flowCtx *FlowCtx, name redact.RedactableString,
 ) *mon.BytesMonitor {
-	limitedMon := mon.NewMonitorInheritWithLimit(name, GetWorkMemLimit(flowCtx), parent, false /* longLiving */)
+	limitedMon := mon.NewMonitorInheritWithLimit(name, GetWorkMemLimit(flowCtx), parent)
 	limitedMon.StartNoReserved(ctx, parent)
 	return limitedMon
 }
@@ -973,13 +977,13 @@ func NewLimitedMonitor(
 // guarantees that the monitor's limit is at least minMemoryLimit bytes.
 // flowCtx.Mon is used as the parent for the new monitor.
 func NewLimitedMonitorWithLowerBound(
-	ctx context.Context, flowCtx *FlowCtx, name redact.SafeString, minMemoryLimit int64,
+	ctx context.Context, flowCtx *FlowCtx, name redact.RedactableString, minMemoryLimit int64,
 ) *mon.BytesMonitor {
 	memoryLimit := GetWorkMemLimit(flowCtx)
 	if memoryLimit < minMemoryLimit {
 		memoryLimit = minMemoryLimit
 	}
-	limitedMon := mon.NewMonitorInheritWithLimit(name, memoryLimit, flowCtx.Mon, false /* longLiving */)
+	limitedMon := mon.NewMonitorInheritWithLimit(name, memoryLimit, flowCtx.Mon)
 	limitedMon.StartNoReserved(ctx, flowCtx.Mon)
 	return limitedMon
 }
@@ -991,7 +995,7 @@ func NewLimitedMonitorNoFlowCtx(
 	parent *mon.BytesMonitor,
 	config *ServerConfig,
 	sd *sessiondata.SessionData,
-	name redact.SafeString,
+	name redact.RedactableString,
 ) *mon.BytesMonitor {
 	// Create a fake FlowCtx populating only the required fields.
 	flowCtx := &FlowCtx{

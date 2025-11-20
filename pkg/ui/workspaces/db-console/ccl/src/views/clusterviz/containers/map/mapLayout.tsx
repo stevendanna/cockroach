@@ -3,16 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import _ from "lodash";
 import * as d3 from "d3";
-import isEmpty from "lodash/isEmpty";
-import isEqual from "lodash/isEqual";
-import map from "lodash/map";
 import React from "react";
 
 import * as protos from "src/js/protos";
 import { LocalityTree } from "src/redux/localities";
 import { LocationTree } from "src/redux/locations";
-import { LivenessStatus } from "src/redux/nodes";
 import { getChildLocalities } from "src/util/localities";
 import { findOrCalculateLocation } from "src/util/locations";
 import * as vector from "src/util/vector";
@@ -20,6 +17,7 @@ import * as vector from "src/util/vector";
 import { LocalityView } from "./localityView";
 import { WorldMap } from "./worldmap";
 import { Box, ZoomTransformer } from "./zoom";
+import { LivenessStatus } from "src/redux/nodes";
 
 import "./mapLayout.styl";
 
@@ -116,7 +114,7 @@ export class MapLayout extends React.Component<MapLayoutProps, MapLayoutState> {
   rezoomToLocalities(zoomTransform: ZoomTransformer) {
     const { prevLocations } = this.state;
     const { localityTree, locationTree } = this.props;
-    const locations = map(getChildLocalities(localityTree), l =>
+    const locations = _.map(getChildLocalities(localityTree), l =>
       findOrCalculateLocation(locationTree, l),
     );
 
@@ -124,7 +122,7 @@ export class MapLayout extends React.Component<MapLayoutProps, MapLayoutState> {
     // this indicates that the user has navigated to a different level of the
     // locality tree OR that new data has been added to the currently visible
     // locality.
-    if (isEqual(locations, prevLocations)) {
+    if (_.isEqual(locations, prevLocations)) {
       return;
     }
 
@@ -143,7 +141,7 @@ export class MapLayout extends React.Component<MapLayoutProps, MapLayoutState> {
       prevLocations: locations,
     });
 
-    this.updateZoom(zoomTransform, !isEmpty(prevLocations));
+    this.updateZoom(zoomTransform, !_.isEmpty(prevLocations));
   }
 
   componentDidMount() {
@@ -155,7 +153,7 @@ export class MapLayout extends React.Component<MapLayoutProps, MapLayoutState> {
     const zoomTransform = this.state.zoomTransform.withViewportSize(
       this.props.viewportSize,
     );
-    if (!isEqual(this.state.zoomTransform, zoomTransform)) {
+    if (!_.isEqual(this.state.zoomTransform, zoomTransform)) {
       this.setState({
         zoomTransform,
       });
@@ -165,7 +163,7 @@ export class MapLayout extends React.Component<MapLayoutProps, MapLayoutState> {
 
   renderChildLocalities(projection: d3.geo.Projection) {
     const { localityTree, locationTree } = this.props;
-    return map(getChildLocalities(localityTree), locality => {
+    return _.map(getChildLocalities(localityTree), locality => {
       const location = findOrCalculateLocation(locationTree, locality);
       const center = projection([location.longitude, location.latitude]);
 

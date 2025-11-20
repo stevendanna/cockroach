@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -169,10 +168,10 @@ func TestComputeTruncateDecision(t *testing.T) {
 	for i, c := range testCases {
 		t.Run("", func(t *testing.T) {
 			status := raft.Status{
-				Progress: make(map[raftpb.PeerID]tracker.Progress),
+				Progress: make(map[uint64]tracker.Progress),
 			}
 			for j, v := range c.progress {
-				status.Progress[raftpb.PeerID(j)] = tracker.Progress{
+				status.Progress[uint64(j)] = tracker.Progress{
 					RecentActive: true,
 					State:        tracker.StateReplicate,
 					Match:        v,
@@ -205,7 +204,7 @@ func TestComputeTruncateDecision(t *testing.T) {
 			assert.False(t, recompute)
 			assert.Equal(t, decision.ShouldTruncate(), prio != 0)
 			input.LogSizeTrusted = false
-			input.RaftStatus.RaftState = raftpb.StateLeader
+			input.RaftStatus.RaftState = raft.StateLeader
 			if input.LastIndex <= input.FirstIndex {
 				input.LastIndex = input.FirstIndex + 1
 			}
@@ -242,7 +241,7 @@ func TestComputeTruncateDecisionProgressStatusProbe(t *testing.T) {
 	testutils.RunTrueAndFalse(t, "tooLarge", func(t *testing.T, tooLarge bool) {
 		testutils.RunTrueAndFalse(t, "active", func(t *testing.T, active bool) {
 			status := raft.Status{
-				Progress: make(map[raftpb.PeerID]tracker.Progress),
+				Progress: make(map[uint64]tracker.Progress),
 			}
 			progress := []kvpb.RaftIndex{100, 200, 300, 400, 500}
 			lastIndex := kvpb.RaftIndex(500)
@@ -268,7 +267,7 @@ func TestComputeTruncateDecisionProgressStatusProbe(t *testing.T) {
 						State:        tracker.StateReplicate,
 					}
 				}
-				status.Progress[raftpb.PeerID(i)] = pr
+				status.Progress[uint64(i)] = pr
 			}
 
 			input := truncateDecisionInput{
@@ -306,7 +305,7 @@ func TestTruncateDecisionNumSnapshots(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	status := raft.Status{
-		Progress: map[raftpb.PeerID]tracker.Progress{
+		Progress: map[uint64]tracker.Progress{
 			// Fully caught up.
 			5: {State: tracker.StateReplicate, Match: 11, Next: 12},
 			// Behind.
@@ -329,10 +328,16 @@ func verifyLogSizeInSync(t *testing.T, r *Replica) {
 	t.Helper()
 	r.raftMu.Lock()
 	defer r.raftMu.Unlock()
-	raftLogSize := r.shMu.raftLogSize
-	actualRaftLogSize, err := r.raftMu.logStorage.ComputeSize(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, actualRaftLogSize, raftLogSize)
+	r.mu.Lock()
+	raftLogSize := r.mu.raftLogSize
+	r.mu.Unlock()
+	actualRaftLogSize, err := ComputeRaftLogSize(context.Background(), r.RangeID, r.store.TODOEngine(), r.SideloadedRaftMuLocked())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actualRaftLogSize != raftLogSize {
+		t.Fatalf("replica claims raft log size %d, but computed %d", raftLogSize, actualRaftLogSize)
+	}
 }
 
 func TestUpdateRaftStatusActivity(t *testing.T) {
@@ -385,13 +390,13 @@ func TestUpdateRaftStatusActivity(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Run("", func(t *testing.T) {
-			prs := make(map[raftpb.PeerID]tracker.Progress)
+			prs := make(map[uint64]tracker.Progress)
 			for i, pr := range tc.prs {
-				prs[raftpb.PeerID(i+1)] = pr
+				prs[uint64(i+1)] = pr
 			}
-			expPRs := make(map[raftpb.PeerID]tracker.Progress)
+			expPRs := make(map[uint64]tracker.Progress)
 			for i, pr := range tc.exp {
-				expPRs[raftpb.PeerID(i+1)] = pr
+				expPRs[uint64(i+1)] = pr
 			}
 			updateRaftProgressFromActivity(ctx, prs, tc.replicas,
 				func(replicaID roachpb.ReplicaID) bool {
@@ -635,7 +640,7 @@ func TestSnapshotLogTruncationConstraints(t *testing.T) {
 		index2 = 60
 	)
 
-	r.shMu.state.RaftAppliedIndex = index1
+	r.mu.state.RaftAppliedIndex = index1
 	// Add first constraint.
 	_, cleanup1 := r.addSnapshotLogTruncationConstraint(ctx, id1, false /* initial */, storeID)
 	exp1 := map[uuid.UUID]snapTruncationInfo{id1: {index: index1}}
@@ -643,7 +648,7 @@ func TestSnapshotLogTruncationConstraints(t *testing.T) {
 	// Make sure it registered.
 	assert.Equal(t, r.mu.snapshotLogTruncationConstraints, exp1)
 
-	r.shMu.state.RaftAppliedIndex = index2
+	r.mu.state.RaftAppliedIndex = index2
 	// Add another constraint with the same id. Extremely unlikely in practice
 	// but we want to make sure it doesn't blow anything up. Collisions are
 	// handled by ignoring the colliding update.
@@ -664,7 +669,7 @@ func TestSnapshotLogTruncationConstraints(t *testing.T) {
 	// colliding update at index2 is not represented.
 	assertMin(index1, time.Time{})
 
-	r.shMu.state.RaftAppliedIndex = index2
+	r.mu.state.RaftAppliedIndex = index2
 	// Add another, higher, index. We're not going to notice it's around
 	// until the lower one disappears.
 	_, cleanup3 := r.addSnapshotLogTruncationConstraint(ctx, id2, false /* initial */, storeID)
@@ -853,9 +858,9 @@ func TestTruncateLogRecompute(t *testing.T) {
 	repl := tc.store.LookupReplica(keys.MustAddr(key))
 
 	trusted := func() bool {
-		repl.mu.RLock()
-		defer repl.mu.RUnlock()
-		return repl.shMu.raftLogSizeTrusted
+		repl.mu.Lock()
+		defer repl.mu.Unlock()
+		return repl.mu.raftLogSizeTrusted
 	}
 
 	put := func() {
@@ -879,13 +884,11 @@ func TestTruncateLogRecompute(t *testing.T) {
 	// Should never trust initially, until recomputed at least once.
 	assert.False(t, trusted())
 
-	repl.raftMu.Lock()
 	repl.mu.Lock()
-	repl.shMu.raftLogSizeTrusted = false
-	repl.shMu.raftLogSize += 12          // garbage
-	repl.shMu.raftLogLastCheckSize += 12 // garbage
+	repl.mu.raftLogSizeTrusted = false
+	repl.mu.raftLogSize += 12          // garbage
+	repl.mu.raftLogLastCheckSize += 12 // garbage
 	repl.mu.Unlock()
-	repl.raftMu.Unlock()
 
 	// Force a raft log queue run. The result should be a nonzero Raft log of
 	// size below the threshold (though we won't check that since it could have

@@ -10,7 +10,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	rafttracker "github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -58,7 +57,7 @@ func (rf *replicaFlowControl) getBehindFollowers() map[roachpb.ReplicaID]struct{
 	rf.assertLocked()
 	// Lazily allocate the map, since expected to be empty.
 	var behindFollowers map[roachpb.ReplicaID]struct{}
-	rf.mu.internalRaftGroup.WithProgress(func(id raftpb.PeerID, _ raft.ProgressType, progress rafttracker.Progress) {
+	rf.mu.internalRaftGroup.WithProgress(func(id uint64, _ raft.ProgressType, progress rafttracker.Progress) {
 		if progress.State == rafttracker.StateReplicate {
 			return
 		}
@@ -81,7 +80,7 @@ func (rf *replicaFlowControl) getBehindFollowers() map[roachpb.ReplicaID]struct{
 		// time for it to catch up and then later return those tokens to us.
 		// This is I3a again; do it as part of #95563.
 		_ = progress.RecentActive
-		_ = progress.MsgAppProbesPaused
+		_ = progress.MsgAppFlowPaused
 		_ = progress.Match
 	})
 	return behindFollowers

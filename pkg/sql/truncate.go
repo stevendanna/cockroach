@@ -29,7 +29,6 @@ import (
 )
 
 type truncateNode struct {
-	zeroInputPlanNode
 	n *tree.Truncate
 }
 
@@ -117,7 +116,7 @@ func (t *truncateNode) startExec(params runParams) error {
 	}
 
 	for id, name := range toTruncate {
-		if err := p.truncateTable(ctx, id, tree.AsStringWithFQNames(t.n, params.Ann())); err != nil {
+		if err := p.truncateTable(ctx, id, tree.AsStringWithFQNames(t.n, params.Ann()), t.n); err != nil {
 			return err
 		}
 
@@ -158,11 +157,18 @@ var PreservedSplitCountMultiple = settings.RegisterIntSetting(
 // so by dropping all existing indexes on the table and creating new ones without
 // backfilling any data into the new indexes. The old indexes are cleaned up
 // asynchronously by the SchemaChangeGCJob.
-func (p *planner) truncateTable(ctx context.Context, id descpb.ID, jobDesc string) error {
+func (p *planner) truncateTable(
+	ctx context.Context, id descpb.ID, jobDesc string, truncate *tree.Truncate,
+) error {
 	// Read the table descriptor because it might have changed
 	// while another table in the truncation list was truncated.
 	tableDesc, err := p.Descriptors().MutableByID(p.txn).Table(ctx, id)
 	if err != nil {
+		return err
+	}
+
+	// Check if this operation is blocked due to schema_locked.
+	if err := checkTableSchemaUnlocked(tableDesc); err != nil {
 		return err
 	}
 
@@ -209,24 +215,30 @@ func (p *planner) truncateTable(ctx context.Context, id descpb.ID, jobDesc strin
 		}
 	}
 
-	// Create new ID's for all of the indexes in the table.
-	{
-		version := p.ExecCfg().Settings.Version.ActiveVersion(ctx)
-		// Temporarily empty the mutation jobs slice otherwise the descriptor
-		// validation performed by AllocateIDs will fail: the Mutations slice
-		// has been emptied but MutationJobs only gets emptied later on.
-		mutationJobs := tableDesc.MutationJobs
-		tableDesc.MutationJobs = nil
-		if err := tableDesc.AllocateIDs(ctx, version); err != nil {
-			return err
-		}
-		tableDesc.MutationJobs = mutationJobs
+	// Allocate new IDs for all indexes in the table descriptor. We use the
+	// AllocateIDsWithoutValidation variant because some DependedOnBy references
+	// may still point to the old index IDs, which we haven't remapped yet.
+	// Full validation will occur later when writeSchemaChange is called.
+	if err := tableDesc.AllocateIDsWithoutValidation(ctx, true /*createMissingPrimaryKey*/); err != nil {
+		return err
 	}
 
 	// Construct a mapping from old index ID's to new index ID's.
 	indexIDMapping := make(map[descpb.IndexID]descpb.IndexID, len(oldIndexes))
 	for _, idx := range tableDesc.ActiveIndexes() {
 		indexIDMapping[oldIndexes[idx.Ordinal()].ID] = idx.GetID()
+	}
+
+	// Remap index IDs in the DependedOnBy references using the new index ID mapping.
+	for i := range tableDesc.DependedOnBy {
+		ref := &tableDesc.DependedOnBy[i]
+		if ref.IndexID != 0 {
+			var ok bool
+			ref.IndexID, ok = indexIDMapping[ref.IndexID]
+			if !ok {
+				return errors.AssertionFailedf("could not find index ID %d in mapping", ref.IndexID)
+			}
+		}
 	}
 
 	// Create schema change GC jobs for all of the indexes.
@@ -286,8 +298,7 @@ func (p *planner) truncateTable(ctx context.Context, id descpb.ID, jobDesc strin
 		NewIndexes:        newIndexIDs[1:],
 	}
 	if err := maybeUpdateZoneConfigsForPKChange(
-		ctx, p.InternalSQLTxn(), p.ExecCfg(), p.ExtendedEvalContext().Tracing.KVTracingEnabled(),
-		tableDesc, swapInfo, true, /* forceSwap */
+		ctx, p.InternalSQLTxn(), p.ExecCfg(), p.ExtendedEvalContext().Tracing.KVTracingEnabled(), tableDesc, swapInfo,
 	); err != nil {
 		return err
 	}

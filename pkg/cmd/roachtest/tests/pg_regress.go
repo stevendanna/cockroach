@@ -218,8 +218,7 @@ func runPGRegress(ctx context.Context, t test.Test, c cluster.Cluster) {
 		"expressions " +
 		"mvcc " +
 		"regex " +
-		// TODO(#123651): re-enable when pg_catalog.pg_proc is fixed up.
-		// "opr_sanity " +
+		"opr_sanity " +
 		"copyselect " +
 		"copydml " +
 		"copy " +
@@ -432,12 +431,6 @@ func runPGRegress(ctx context.Context, t test.Test, c cluster.Cluster) {
 	if err != nil {
 		t.L().Printf("Failed to read %s: %s", testdata, err)
 	}
-
-	// Replace specific versions in URIs with a generic "_version_".
-	issueURI := regexp.MustCompile(`https:\/\/go\.crdb\.dev\/issue-v\/(\d+)\/[^\/|^\s]+`)
-	actualB = issueURI.ReplaceAll(actualB, []byte("https://go.crdb.dev/issue-v/$1/_version_"))
-	docsURI := regexp.MustCompile(`https:\/\/www\.cockroachlabs.com\/docs\/[^\/|^\s]+`)
-	actualB = docsURI.ReplaceAll(actualB, []byte("https://www.cockroachlabs.com/docs/_version_"))
 	actual := string(actualB)
 
 	if expected != actual {
@@ -469,6 +462,7 @@ func registerPGRegress(r registry.Registry) {
 		// some diffs include line numbers, so we don't treat failures as
 		// blockers for now.
 		NonReleaseBlocker: true,
+		RequiresLicense:   true,
 		CompatibleClouds:  registry.AllExceptAWS,
 		Suites:            registry.Suites(registry.Weekly),
 		Leases:            registry.MetamorphicLeases,
@@ -814,10 +808,6 @@ index 1b2d434683..d371fe3f63 100644
 +--     return substr(encode(sha256($1::bytea), '"'"'hex'"'"'), 1, 32);
 `},
 	// Add ordering for some statements.
-	// TODO(#123705): remove the patch to comment out a query against
-	// pg_catalog.pg_am vtable.
-	// TODO(#123706): remove the patch to comment out a query against
-	// pg_catalog.pg_attribute vtable.
 	{"type_sanity.sql", `diff --git a/src/test/regress/sql/type_sanity.sql b/src/test/regress/sql/type_sanity.sql
 index 79ec410a6c..417d3dcdb2 100644
 --- a/src/test/regress/sql/type_sanity.sql
@@ -851,35 +841,6 @@ index 79ec410a6c..417d3dcdb2 100644
 +ORDER BY t1.oid;
 
  -- Look for array types whose typalign isn'"'"'t sufficient
-
-@@ -385,10 +388,10 @@ WHERE pc.relkind IN ('"'"'i'"'"', '"'"'I'"'"') and
-     pa.amtype != '"'"'i'"'"';
-
- -- Tables, matviews etc should have AMs of type '"'"'t'"'"'
--SELECT pc.oid, pc.relname, pa.amname, pa.amtype
--FROM pg_class as pc JOIN pg_am AS pa ON (pc.relam = pa.oid)
--WHERE pc.relkind IN ('"'"'r'"'"', '"'"'t'"'"', '"'"'m'"'"') and
--    pa.amtype != '"'"'t'"'"';
-+-- SELECT pc.oid, pc.relname, pa.amname, pa.amtype
-+-- FROM pg_class as pc JOIN pg_am AS pa ON (pc.relam = pa.oid)
-+-- WHERE pc.relkind IN ('"'"'r'"'"', '"'"'t'"'"', '"'"'m'"'"') and
-+--     pa.amtype != '"'"'t'"'"';
-
- -- **************** pg_attribute ****************
-
-@@ -402,9 +405,9 @@ WHERE a1.attrelid = 0 OR a1.atttypid = 0 OR a1.attnum = 0 OR
-
- -- Cross-check attnum against parent relation
-
--SELECT a1.attrelid, a1.attname, c1.oid, c1.relname
--FROM pg_attribute AS a1, pg_class AS c1
--WHERE a1.attrelid = c1.oid AND a1.attnum > c1.relnatts;
-+-- SELECT a1.attrelid, a1.attname, c1.oid, c1.relname
-+-- FROM pg_attribute AS a1, pg_class AS c1
-+-- WHERE a1.attrelid = c1.oid AND a1.attnum > c1.relnatts;
-
- -- Detect missing pg_attribute entries: should have as many non-system
- -- attributes as parent relation expects
 `},
 	// Add ordering for some statements.
 	{"opr_sanity.sql", `diff --git a/src/test/regress/sql/opr_sanity.sql b/src/test/regress/sql/opr_sanity.sql
@@ -1042,6 +1003,28 @@ index d29e98d2ac..b3184dfb63 100644
      continent        text not null
  );
  `},
+	// CRDB does not support setseed, so random is not deterministic.
+	{"random.sql", `diff --git a/src/test/regress/sql/random.sql b/src/test/regress/sql/random.sql
+index 14cc76bc3c..6f9a70dce6 100644
+--- a/src/test/regress/sql/random.sql
++++ b/src/test/regress/sql/random.sql
+@@ -104,12 +104,12 @@ SELECT ks_test_normal_random() OR
+ 
+ SELECT setseed(0.5);
+ 
+-SELECT random() FROM generate_series(1, 10);
++-- SELECT random() FROM generate_series(1, 10);
+ 
+ -- Likewise for random_normal(); however, since its implementation relies
+ -- on libm functions that have different roundoff behaviors on different
+ -- machines, we have to round off the results a bit to get consistent output.
+ SET extra_float_digits = -1;
+ 
+-SELECT random_normal() FROM generate_series(1, 10);
+-SELECT random_normal(mean => 1, stddev => 0.1) r FROM generate_series(1, 10);
++-- SELECT random_normal() FROM generate_series(1, 10);
++-- SELECT random_normal(mean => 1, stddev => 0.1) r FROM generate_series(1, 10);
+`},
 	// Add order to some statements so that CRDB output is deterministic.
 	{"aggregates.sql", `diff --git a/src/test/regress/sql/aggregates.sql b/src/test/regress/sql/aggregates.sql
 index 75c78be640..00b543bf45 100644

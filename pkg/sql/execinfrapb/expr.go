@@ -177,7 +177,7 @@ func (eh *MultiExprHelper) Reset() {
 	eh.exprs = eh.exprs[:0]
 }
 
-// exprHelper is a base implementation of an expression helper used by both
+// exprHelper is a base implementation of an expressoin helper used by both
 // ExprHelper and MultiExprHelper.
 type exprHelper struct {
 	evalCtx    *eval.Context
@@ -256,7 +256,7 @@ func (eh *exprHelper) deserializeExpr(ctx context.Context, e Expression) (tree.T
 	defer func() { eh.semaCtx.IVarContainer = originalIVarContainer }()
 
 	// Type-check the expression.
-	typedExpr, err := tree.TypeCheck(ctx, expr, eh.semaCtx, types.AnyElement)
+	typedExpr, err := tree.TypeCheck(ctx, expr, eh.semaCtx, types.Any)
 	if err != nil {
 		// Type checking must succeed.
 		return nil, errors.NewAssertionErrorWithWrappedErrf(err, "%s", expr)

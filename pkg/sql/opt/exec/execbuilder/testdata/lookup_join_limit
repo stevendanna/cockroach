@@ -16,23 +16,23 @@ query T
 EXPLAIN (OPT, VERBOSE) SELECT * FROM (SELECT * FROM a WHERE y = 1 UNION ALL SELECT * FROM a WHERE y = 2) LIMIT 1
 ----
 limit
- ├── columns: x:15 y:16 z:17
+ ├── columns: x:11 y:12 z:13
  ├── cardinality: [0 - 1]
  ├── stats: [rows=1]
  ├── cost: 160.090001
  ├── key: ()
- ├── fd: ()-->(15-17)
+ ├── fd: ()-->(11-13)
  ├── distribution: test
- ├── prune: (15,17)
+ ├── prune: (11,13)
  ├── union-all
- │    ├── columns: x:15 y:16 z:17
+ │    ├── columns: x:11 y:12 z:13
  │    ├── left columns: a.x:1 a.y:2 a.z:3
- │    ├── right columns: a.x:8 a.y:9 a.z:10
+ │    ├── right columns: a.x:6 a.y:7 a.z:8
  │    ├── stats: [rows=20]
  │    ├── cost: 160.070001
  │    ├── limit hint: 1.00
  │    ├── distribution: test
- │    ├── prune: (15,17)
+ │    ├── prune: (11,13)
  │    ├── index-join a
  │    │    ├── columns: a.x:1 a.y:2 a.z:3
  │    │    ├── stats: [rows=10, distinct(2)=1, null(2)=0]
@@ -52,21 +52,21 @@ limit
  │    │         ├── limit hint: 1.00
  │    │         └── distribution: test
  │    └── index-join a
- │         ├── columns: a.x:8 a.y:9 a.z:10
- │         ├── stats: [rows=10, distinct(9)=1, null(9)=0]
+ │         ├── columns: a.x:6 a.y:7 a.z:8
+ │         ├── stats: [rows=10, distinct(7)=1, null(7)=0]
  │         ├── cost: 80.0200006
- │         ├── key: (8)
- │         ├── fd: ()-->(9), (8)-->(10)
+ │         ├── key: (6)
+ │         ├── fd: ()-->(7), (6)-->(8)
  │         ├── limit hint: 1.00
  │         ├── distribution: test
- │         ├── prune: (8,10)
+ │         ├── prune: (6,8)
  │         └── scan a@a_y_idx
- │              ├── columns: a.x:8 a.y:9
- │              ├── constraint: /9/8: [/2 - /2]
- │              ├── stats: [rows=10, distinct(9)=1, null(9)=0]
+ │              ├── columns: a.x:6 a.y:7
+ │              ├── constraint: /7/6: [/2 - /2]
+ │              ├── stats: [rows=10, distinct(7)=1, null(7)=0]
  │              ├── cost: 19.1
- │              ├── key: (8)
- │              ├── fd: ()-->(9)
+ │              ├── key: (6)
+ │              ├── fd: ()-->(7)
  │              ├── limit hint: 1.00
  │              └── distribution: test
  └── 1
@@ -93,13 +93,12 @@ quality of service: regular
 │ count: 1
 │
 └── • union all
-    │ sql nodes: <hidden>
+    │ nodes: <hidden>
     │ regions: <hidden>
     │ actual row count: 1
     │
     ├── • index join (streamer)
-    │   │ sql nodes: <hidden>
-    │   │ kv nodes: <hidden>
+    │   │ nodes: <hidden>
     │   │ regions: <hidden>
     │   │ actual row count: 1
     │   │ KV time: 0µs
@@ -113,8 +112,7 @@ quality of service: regular
     │   │ table: a@a_pkey
     │   │
     │   └── • scan
-    │         sql nodes: <hidden>
-    │         kv nodes: <hidden>
+    │         nodes: <hidden>
     │         regions: <hidden>
     │         actual row count: 1
     │         KV time: 0µs
@@ -129,7 +127,7 @@ quality of service: regular
     │         spans: [/1 - /1]
     │
     └── • index join (streamer)
-        │ sql nodes: <hidden>
+        │ nodes: <hidden>
         │ regions: <hidden>
         │ actual row count: 0
         │ KV time: 0µs
@@ -142,7 +140,7 @@ quality of service: regular
         │ table: a@a_pkey
         │
         └── • scan
-              sql nodes: <hidden>
+              nodes: <hidden>
               regions: <hidden>
               actual row count: 0
               KV time: 0µs
@@ -180,13 +178,12 @@ quality of service: regular
 │ count: 1
 │
 └── • union all
-    │ sql nodes: <hidden>
+    │ nodes: <hidden>
     │ regions: <hidden>
     │ actual row count: 1
     │
     ├── • index join (streamer)
-    │   │ sql nodes: <hidden>
-    │   │ kv nodes: <hidden>
+    │   │ nodes: <hidden>
     │   │ regions: <hidden>
     │   │ actual row count: 1
     │   │ KV time: 0µs
@@ -199,8 +196,7 @@ quality of service: regular
     │   │ table: a@a_pkey
     │   │
     │   └── • scan
-    │         sql nodes: <hidden>
-    │         kv nodes: <hidden>
+    │         nodes: <hidden>
     │         regions: <hidden>
     │         actual row count: 1
     │         KV time: 0µs
@@ -214,7 +210,7 @@ quality of service: regular
     │         spans: [/1 - /1]
     │
     └── • index join (streamer)
-        │ sql nodes: <hidden>
+        │ nodes: <hidden>
         │ regions: <hidden>
         │ actual row count: 0
         │ KV time: 0µs
@@ -226,7 +222,7 @@ quality of service: regular
         │ table: a@a_pkey
         │
         └── • scan
-              sql nodes: <hidden>
+              nodes: <hidden>
               regions: <hidden>
               actual row count: 0
               KV time: 0µs
@@ -279,30 +275,30 @@ query T
 EXPLAIN (OPT, VERBOSE) SELECT b.x FROM a, b WHERE a.x = b.x LIMIT 1
 ----
 project
- ├── columns: x:8
+ ├── columns: x:6
  ├── cardinality: [0 - 1]
  ├── stats: [rows=1]
  ├── cost: 29.145
  ├── key: ()
- ├── fd: ()-->(8)
+ ├── fd: ()-->(6)
  ├── distribution: test
- ├── prune: (8)
+ ├── prune: (6)
  └── limit
-      ├── columns: a.x:1 b.x:8
+      ├── columns: a.x:1 b.x:6
       ├── cardinality: [0 - 1]
       ├── stats: [rows=1]
       ├── cost: 29.125
       ├── key: ()
-      ├── fd: ()-->(1,8), (1)==(8), (8)==(1)
+      ├── fd: ()-->(1,6), (6)==(1), (1)==(6)
       ├── distribution: test
       ├── inner-join (lookup b)
-      │    ├── columns: a.x:1 b.x:8
-      │    ├── key columns: [1] = [8]
+      │    ├── columns: a.x:1 b.x:6
+      │    ├── key columns: [1] = [6]
       │    ├── lookup columns are key
-      │    ├── stats: [rows=1, distinct(1)=1, null(1)=0, distinct(8)=1, null(8)=0]
+      │    ├── stats: [rows=1, distinct(1)=1, null(1)=0, distinct(6)=1, null(6)=0]
       │    ├── cost: 29.105
-      │    ├── key: (8)
-      │    ├── fd: (1)==(8), (8)==(1)
+      │    ├── key: (6)
+      │    ├── fd: (1)==(6), (6)==(1)
       │    ├── limit hint: 1.00
       │    ├── distribution: test
       │    ├── scan a@a_y_idx
@@ -314,7 +310,7 @@ project
       │    │    ├── distribution: test
       │    │    ├── prune: (1)
       │    │    ├── interesting orderings: (+1)
-      │    │    └── unfiltered-cols: (1-7)
+      │    │    └── unfiltered-cols: (1-5)
       │    └── filters (true)
       └── 1
 
@@ -340,8 +336,7 @@ quality of service: regular
 │ count: 1
 │
 └── • lookup join (streamer)
-    │ sql nodes: <hidden>
-    │ kv nodes: <hidden>
+    │ nodes: <hidden>
     │ regions: <hidden>
     │ actual row count: 1
     │ KV time: 0µs
@@ -356,8 +351,7 @@ quality of service: regular
     │ equality cols are key
     │
     └── • scan
-          sql nodes: <hidden>
-          kv nodes: <hidden>
+          nodes: <hidden>
           regions: <hidden>
           actual row count: 1
           KV time: 0µs
@@ -377,30 +371,30 @@ query T
 EXPLAIN (OPT, VERBOSE) SELECT a.x, a.y, xy.x, xy.y FROM a INNER LOOKUP JOIN xy ON xy.x = a.x ORDER BY a.y, a.x LIMIT 2
 ----
 limit
- ├── columns: x:1 y:2 x:8 y:9
- ├── internal-ordering: +2,+(1|8)
+ ├── columns: x:1 y:2 x:6 y:7
+ ├── internal-ordering: +2,+(1|6)
  ├── cardinality: [0 - 2]
  ├── stats: [rows=2]
  ├── cost: 63.99
- ├── key: (8,9)
- ├── fd: (1)-->(2), (1)==(8), (8)==(1)
- ├── ordering: +2,+(1|8) [actual: +2,+1]
+ ├── key: (6,7)
+ ├── fd: (1)-->(2), (1)==(6), (6)==(1)
+ ├── ordering: +2,+(1|6) [actual: +2,+1]
  ├── distribution: test
- ├── prune: (9)
+ ├── prune: (7)
  ├── interesting orderings: (+2,+1)
  ├── inner-join (lookup xy)
- │    ├── columns: a.x:1 a.y:2 xy.x:8 xy.y:9
+ │    ├── columns: a.x:1 a.y:2 xy.x:6 xy.y:7
  │    ├── flags: force lookup join (into right side)
- │    ├── key columns: [1] = [8]
- │    ├── stats: [rows=10, distinct(1)=1, null(1)=0, distinct(8)=1, null(8)=0]
+ │    ├── key columns: [1] = [6]
+ │    ├── stats: [rows=10, distinct(1)=1, null(1)=0, distinct(6)=1, null(6)=0]
  │    ├── cost: 63.96
- │    ├── key: (8,9)
- │    ├── fd: (1)-->(2), (1)==(8), (8)==(1)
- │    ├── ordering: +2,+(1|8) [actual: +2,+1]
+ │    ├── key: (6,7)
+ │    ├── fd: (1)-->(2), (1)==(6), (6)==(1)
+ │    ├── ordering: +2,+(1|6) [actual: +2,+1]
  │    ├── limit hint: 2.00
  │    ├── distribution: test
- │    ├── prune: (2,9)
- │    ├── interesting orderings: (+1) (+2,+1) (+8,+9)
+ │    ├── prune: (2,7)
+ │    ├── interesting orderings: (+1) (+2,+1) (+6,+7)
  │    ├── scan a@a_y_idx
  │    │    ├── columns: a.x:1 a.y:2
  │    │    ├── stats: [rows=1, distinct(1)=1, null(1)=0]
@@ -412,7 +406,7 @@ limit
  │    │    ├── distribution: test
  │    │    ├── prune: (1,2)
  │    │    ├── interesting orderings: (+1) (+2,+1)
- │    │    └── unfiltered-cols: (1-7)
+ │    │    └── unfiltered-cols: (1-5)
  │    └── filters (true)
  └── 2
 
@@ -438,8 +432,7 @@ quality of service: regular
 │ count: 2
 │
 └── • lookup join (streamer)
-    │ sql nodes: <hidden>
-    │ kv nodes: <hidden>
+    │ nodes: <hidden>
     │ regions: <hidden>
     │ actual row count: 2
     │ KV time: 0µs
@@ -454,8 +447,7 @@ quality of service: regular
     │ equality: (x) = (x)
     │
     └── • scan
-          sql nodes: <hidden>
-          kv nodes: <hidden>
+          nodes: <hidden>
           regions: <hidden>
           actual row count: 2
           KV time: 0µs

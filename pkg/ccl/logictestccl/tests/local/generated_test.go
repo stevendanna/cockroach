@@ -145,6 +145,13 @@ func TestCCLLogic_fk_read_committed(
 	runCCLLogicTest(t, "fk_read_committed")
 }
 
+func TestCCLLogic_generic(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runCCLLogicTest(t, "generic")
+}
+
 func TestCCLLogic_hash_sharded_index_read_committed(
 	t *testing.T,
 ) {
@@ -201,13 +208,6 @@ func TestCCLLogic_partitioning_implicit(
 	runCCLLogicTest(t, "partitioning_implicit")
 }
 
-func TestCCLLogic_partitioning_implicit_read_committed(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "partitioning_implicit_read_committed")
-}
-
 func TestCCLLogic_partitioning_index(
 	t *testing.T,
 ) {
@@ -222,13 +222,6 @@ func TestCCLLogic_pgcrypto_builtins(
 	runCCLLogicTest(t, "pgcrypto_builtins")
 }
 
-func TestCCLLogic_plpgsql_assign(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_assign")
-}
-
 func TestCCLLogic_plpgsql_block(
 	t *testing.T,
 ) {
@@ -241,13 +234,6 @@ func TestCCLLogic_plpgsql_call(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_call")
-}
-
-func TestCCLLogic_plpgsql_cte(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_cte")
 }
 
 func TestCCLLogic_plpgsql_cursor(
@@ -369,20 +355,6 @@ func TestCCLLogic_tenant_usage(
 	runCCLLogicTest(t, "tenant_usage")
 }
 
-func TestCCLLogic_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "triggers")
-}
-
-func TestCCLLogic_triggers_explain(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "triggers_explain")
-}
-
 func TestCCLLogic_udf_params(
 	t *testing.T,
 ) {
@@ -416,11 +388,4 @@ func TestCCLLogic_unique_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "unique_read_committed")
-}
-
-func TestCCLLogic_vector(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "vector")
 }

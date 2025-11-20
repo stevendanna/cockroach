@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/pebble"
@@ -31,7 +30,7 @@ type ReplicaDataIteratorOptions struct {
 	// ExcludeUserKeySpan removes UserKeySpace span portion.
 	ExcludeUserKeySpan bool
 	// ReadCategory is used for stats etc.
-	ReadCategory fs.ReadCategory
+	ReadCategory storage.ReadCategory
 }
 
 // ReplicaMVCCDataIterator provides a complete iteration over MVCC or unversioned
@@ -455,7 +454,7 @@ var IterateReplicaKeySpansShared func(
 	clusterID uuid.UUID,
 	reader storage.Reader,
 	visitPoint func(key *pebble.InternalKey, val pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start, end []byte, seqNum uint64) error,
 	visitRangeKey func(start, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -469,7 +468,7 @@ type IterateOptions struct {
 	CombineRangesAndPoints bool
 	Reverse                bool
 	ExcludeUserKeySpan     bool
-	ReadCategory           fs.ReadCategory
+	ReadCategory           storage.ReadCategory
 }
 
 // IterateMVCCReplicaKeySpans iterates over replica's key spans in the similar

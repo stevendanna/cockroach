@@ -130,7 +130,7 @@ func deleteTableData(
 	for _, droppedTable := range progress.Tables {
 		var table catalog.TableDescriptor
 		if err := sql.DescsTxn(ctx, cfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
-			table, err = col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, droppedTable.ID)
+			table, err = col.ByID(txn.KV()).Get().Table(ctx, droppedTable.ID)
 			return err
 		}); err != nil {
 			if isMissingDescriptorError(err) {
@@ -331,7 +331,7 @@ func maybeUnsplitRanges(
 	}
 
 	progress.RangesUnsplitDone = true
-	persistProgress(ctx, execCfg, job, progress, statusGC(progress))
+	persistProgress(ctx, execCfg, job, progress, runningStatusGC(progress))
 
 	return nil
 }
@@ -383,7 +383,7 @@ func (r schemaChangeGCResumer) deleteDataAndWaitForGC(
 	progress *jobspb.SchemaChangeGCProgress,
 ) error {
 	persistProgress(ctx, &execCfg, r.job, progress,
-		sql.StatusDeletingData)
+		sql.RunningStatusDeletingData)
 	if fn := execCfg.GCJobTestingKnobs.RunBeforePerformGC; fn != nil {
 		if err := fn(r.job.ID()); err != nil {
 			return err
@@ -392,7 +392,7 @@ func (r schemaChangeGCResumer) deleteDataAndWaitForGC(
 	if err := deleteData(ctx, &execCfg, details, progress); err != nil {
 		return err
 	}
-	persistProgress(ctx, &execCfg, r.job, progress, sql.StatusWaitingForMVCCGC)
+	persistProgress(ctx, &execCfg, r.job, progress, sql.RunningStatusWaitingForMVCCGC)
 	r.job.MarkIdle(true)
 	return waitForGC(ctx, &execCfg, details, progress)
 }
@@ -536,7 +536,7 @@ func (r schemaChangeGCResumer) legacyWaitAndClearTableData(
 
 		if expired {
 			// Some elements have been marked as DELETING to save the progress.
-			persistProgress(ctx, &execCfg, r.job, progress, statusGC(progress))
+			persistProgress(ctx, &execCfg, r.job, progress, runningStatusGC(progress))
 			if fn := execCfg.GCJobTestingKnobs.RunBeforePerformGC; fn != nil {
 				if err := fn(r.job.ID()); err != nil {
 					return err
@@ -545,7 +545,7 @@ func (r schemaChangeGCResumer) legacyWaitAndClearTableData(
 			if err := performGC(ctx, &execCfg, details, progress); err != nil {
 				return err
 			}
-			persistProgress(ctx, &execCfg, r.job, progress, sql.StatusWaitingGC)
+			persistProgress(ctx, &execCfg, r.job, progress, sql.RunningStatusWaitingGC)
 
 			// Trigger immediate re-run in case of more expired elements.
 			timerDuration = 0

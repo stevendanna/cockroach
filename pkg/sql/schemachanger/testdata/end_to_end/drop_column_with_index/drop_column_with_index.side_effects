@@ -60,7 +60,6 @@ upsert descriptor #104
   -    name: t_j_idx
   -    partitioning: {}
   -    sharded: {}
-  -    vecConfig: {}
   -    version: 3
   +  indexes: []
      modificationTime: {}
@@ -83,7 +82,6 @@ upsert descriptor #104
   +      name: t_j_idx
   +      partitioning: {}
   +      sharded: {}
-  +      vecConfig: {}
   +      version: 3
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -107,7 +105,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -132,7 +129,6 @@ upsert descriptor #104
   +      storeColumnNames: []
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -162,7 +158,7 @@ upsert descriptor #104
   -    - j
   +    - crdb_internal_column_2_name_placeholder
        unique: true
-       vecConfig: {}
+       version: 4
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -195,8 +191,6 @@ upsert descriptor #104
   +    nameMapping:
   +      columns:
   +        "1": i
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -241,7 +235,6 @@ upsert descriptor #104
   -    name: t_j_idx
   -    partitioning: {}
   -    sharded: {}
-  -    vecConfig: {}
   -    version: 3
   +  indexes: []
      modificationTime: {}
@@ -264,7 +257,6 @@ upsert descriptor #104
   +      name: t_j_idx
   +      partitioning: {}
   +      sharded: {}
-  +      vecConfig: {}
   +      version: 3
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -288,7 +280,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -313,7 +304,6 @@ upsert descriptor #104
   +      storeColumnNames: []
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -343,7 +333,7 @@ upsert descriptor #104
   -    - j
   +    - crdb_internal_column_2_name_placeholder
        unique: true
-       vecConfig: {}
+       version: 4
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -467,7 +457,6 @@ upsert descriptor #104
   +      name: crdb_internal_index_2_name_placeholder
          partitioning: {}
          sharded: {}
-  ...
          version: 3
        mutationId: 1
   -    state: WRITE_ONLY
@@ -491,7 +480,6 @@ upsert descriptor #104
   -      sharded: {}
   -      storeColumnNames: []
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   +    state: DELETE_ONLY
   +  - column:
@@ -533,7 +521,6 @@ upsert descriptor #104
   +      - crdb_internal_column_2_name_placeholder
          unique: true
   -      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: DELETE_ONLY
@@ -572,7 +559,7 @@ upsert descriptor #104
   -    - crdb_internal_column_2_name_placeholder
   +    storeColumnNames: []
        unique: true
-       vecConfig: {}
+       version: 4
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -606,7 +593,6 @@ upsert descriptor #104
   -      name: crdb_internal_index_2_name_placeholder
   -      partitioning: {}
   -      sharded: {}
-  -      vecConfig: {}
   -      version: 3
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -641,8 +627,6 @@ upsert descriptor #104
   -    nameMapping:
   -      columns:
   -        "1": i
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      families:
@@ -705,7 +689,6 @@ upsert descriptor #104
   -      storeColumnNames:
   -      - crdb_internal_column_2_name_placeholder
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY

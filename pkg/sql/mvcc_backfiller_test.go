@@ -59,7 +59,7 @@ func TestIndexBackfillMergeRetry(t *testing.T) {
 
 	skip.UnderDuress(t, "this test fails under duress")
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 
 	writesPopulated := false
 	var writesFn func() error
@@ -176,7 +176,7 @@ func TestIndexBackfillFractionTracking(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 
 	const (
 		rowCount  = 2000
@@ -197,13 +197,8 @@ func TestIndexBackfillFractionTracking(t *testing.T) {
 		require.NoError(t, splitIndex(tc, tableDesc, idx, sps))
 	}
 
-	// Chunks are processed concurrently, so we need to synchronize access to
-	// lastPercentage.
-	var mu syncutil.Mutex
 	var lastPercentage float32
 	assertFractionBetween := func(op string, min float32, max float32) {
-		mu.Lock()
-		defer mu.Unlock()
 		var fraction float32
 		sqlRunner.QueryRow(t, "SELECT fraction_completed FROM [SHOW JOBS] WHERE job_id = $1", jobID).Scan(&fraction)
 		t.Logf("fraction during %s: %f", op, fraction)
@@ -213,13 +208,12 @@ func TestIndexBackfillFractionTracking(t *testing.T) {
 		lastPercentage = fraction
 	}
 
-	var codec keys.SQLCodec
 	params.Knobs = base.TestingKnobs{
 		SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
 			BackfillChunkSize: chunkSize,
 			RunBeforeResume: func(id jobspb.JobID) error {
 				jobID = id
-				tableDesc := desctestutils.TestingGetTableDescriptor(kvDB, codec, "t", "public", "test")
+				tableDesc := desctestutils.TestingGetTableDescriptor(kvDB, keys.SystemSQLCodec, "t", "public", "test")
 				split(tableDesc, tableDesc.GetPrimaryIndex())
 				return nil
 			},
@@ -227,7 +221,7 @@ func TestIndexBackfillFractionTracking(t *testing.T) {
 				for i := rowCount + 1; i < (rowCount*2)+1; i++ {
 					sqlRunner.Exec(t, "INSERT INTO t.test VALUES ($1, $1)", i)
 				}
-				tableDesc := desctestutils.TestingGetTableDescriptor(kvDB, codec, "t", "public", "test")
+				tableDesc := desctestutils.TestingGetTableDescriptor(kvDB, keys.SystemSQLCodec, "t", "public", "test")
 				tempIdx, err := findCorrespondingTemporaryIndex(tableDesc, "new_idx")
 				require.NoError(t, err)
 				split(tableDesc, tempIdx)
@@ -255,7 +249,6 @@ func TestIndexBackfillFractionTracking(t *testing.T) {
 	})
 	defer tc.Stopper().Stop(context.Background())
 	kvDB = tc.Server(0).DB()
-	codec = tc.Server(0).Codec()
 	sqlDB := tc.ServerConn(0)
 	_, err := sqlDB.Exec("SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer='off';")
 	require.NoError(t, err)
@@ -291,7 +284,7 @@ func TestRaceWithIndexBackfillMerge(t *testing.T) {
 		maxValue = 200
 	}
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	initMergeNotification := func() chan struct{} {
 		mu.Lock()
 		defer mu.Unlock()
@@ -486,7 +479,7 @@ func TestInvertedIndexMergeEveryStateWrite(t *testing.T) {
 	var initialRows = 10000
 	rowIdx := 0
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	var writeMore func() error
 	params.Knobs = base.TestingKnobs{
 		SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
@@ -662,8 +655,7 @@ func splitIndex(
 	rkts := make(map[roachpb.RangeID]rangeAndKT)
 	for _, sp := range sps {
 
-		pik, err := randgen.TestingMakeSecondaryIndexKey(
-			desc, index, tc.Server(0).Codec(), sp.Vals...)
+		pik, err := randgen.TestingMakeSecondaryIndexKey(desc, index, keys.SystemSQLCodec, sp.Vals...)
 		if err != nil {
 			return err
 		}
@@ -744,7 +736,7 @@ func TestIndexMergeEveryChunkWrite(t *testing.T) {
 	rowIdx := 0
 	mergeSerializeCh := make(chan struct{}, 1)
 
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	var writeMore func() error
 	params.Knobs = base.TestingKnobs{
 		DistSQL: &execinfra.TestingKnobs{
@@ -850,7 +842,7 @@ CREATE TABLE t.test (k INT PRIMARY KEY, v int);`
 	// Wait for the beginning of the Merge step of the schema change.
 	// Write data to the temp index and split it at the hazardous
 	// points.
-	params, _ := createTestServerParamsAllowTenants()
+	params, _ := createTestServerParams()
 	params.Knobs = base.TestingKnobs{
 		SQLDeclarativeSchemaChanger: &scexec.TestingKnobs{
 			BeforeStage: func(p scplan.Plan, stageIdx int) error {

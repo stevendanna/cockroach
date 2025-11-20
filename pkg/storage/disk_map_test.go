@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/diskmap"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/disk"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -26,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/vfs"
 )
 
 // Helper function to run a datadriven test for a provided diskMap
@@ -177,7 +175,7 @@ func TestPebbleMap(t *testing.T) {
 	e, _, err := NewPebbleTempEngine(ctx, base.TempStorageConfig{
 		Path:     dir,
 		Settings: cluster.MakeClusterSettings(),
-	}, base.StoreSpec{}, disk.NewWriteStatsManager(vfs.Default))
+	}, base.StoreSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +194,7 @@ func TestPebbleMultiMap(t *testing.T) {
 	e, _, err := NewPebbleTempEngine(ctx, base.TempStorageConfig{
 		Path:     dir,
 		Settings: cluster.MakeClusterSettings(),
-	}, base.StoreSpec{}, disk.NewWriteStatsManager(vfs.Default))
+	}, base.StoreSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +213,7 @@ func TestPebbleMapClose(t *testing.T) {
 	e, _, err := newPebbleTempEngine(ctx, base.TempStorageConfig{
 		Path:     dir,
 		Settings: cluster.MakeClusterSettings(),
-	}, base.StoreSpec{}, disk.NewWriteStatsManager(vfs.Default))
+	}, base.StoreSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +320,7 @@ func BenchmarkPebbleMapWrite(b *testing.B) {
 	tempEngine, _, err := NewPebbleTempEngine(ctx, base.TempStorageConfig{
 		Path:     dir,
 		Settings: cluster.MakeClusterSettings(),
-	}, base.DefaultTestStoreSpec, disk.NewWriteStatsManager(vfs.Default))
+	}, base.DefaultTestStoreSpec)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -363,7 +361,7 @@ func BenchmarkPebbleMapIteration(b *testing.B) {
 	tempEngine, _, err := NewPebbleTempEngine(ctx, base.TempStorageConfig{
 		Path:     dir,
 		Settings: cluster.MakeClusterSettings(),
-	}, base.DefaultTestStoreSpec, disk.NewWriteStatsManager(vfs.Default))
+	}, base.DefaultTestStoreSpec)
 	if err != nil {
 		b.Fatal(err)
 	}

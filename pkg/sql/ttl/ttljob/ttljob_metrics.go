@@ -21,21 +21,19 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/redact"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
 // RowLevelTTLAggMetrics are the row-level TTL job agg metrics.
 type RowLevelTTLAggMetrics struct {
-	SpanTotalDuration     *aggmetric.AggHistogram
-	SelectDuration        *aggmetric.AggHistogram
-	DeleteDuration        *aggmetric.AggHistogram
-	RowSelections         *aggmetric.AggCounter
-	RowDeletions          *aggmetric.AggCounter
-	NumDeleteBatchRetries *aggmetric.AggCounter
-	NumActiveSpans        *aggmetric.AggGauge
-	TotalRows             *aggmetric.AggGauge
-	TotalExpiredRows      *aggmetric.AggGauge
+	SpanTotalDuration *aggmetric.AggHistogram
+	SelectDuration    *aggmetric.AggHistogram
+	DeleteDuration    *aggmetric.AggHistogram
+	RowSelections     *aggmetric.AggCounter
+	RowDeletions      *aggmetric.AggCounter
+	NumActiveSpans    *aggmetric.AggGauge
+	TotalRows         *aggmetric.AggGauge
+	TotalExpiredRows  *aggmetric.AggGauge
 
 	defaultRowLevelMetrics rowLevelTTLMetrics
 	mu                     struct {
@@ -47,15 +45,14 @@ type RowLevelTTLAggMetrics struct {
 var _ metric.Struct = (*RowLevelTTLAggMetrics)(nil)
 
 type rowLevelTTLMetrics struct {
-	SpanTotalDuration     *aggmetric.Histogram
-	SelectDuration        *aggmetric.Histogram
-	DeleteDuration        *aggmetric.Histogram
-	RowSelections         *aggmetric.Counter
-	RowDeletions          *aggmetric.Counter
-	NumDeleteBatchRetries *aggmetric.Counter
-	NumActiveSpans        *aggmetric.Gauge
-	TotalRows             *aggmetric.Gauge
-	TotalExpiredRows      *aggmetric.Gauge
+	SpanTotalDuration *aggmetric.Histogram
+	SelectDuration    *aggmetric.Histogram
+	DeleteDuration    *aggmetric.Histogram
+	RowSelections     *aggmetric.Counter
+	RowDeletions      *aggmetric.Counter
+	NumActiveSpans    *aggmetric.Gauge
+	TotalRows         *aggmetric.Gauge
+	TotalExpiredRows  *aggmetric.Gauge
 }
 
 // MetricStruct implements the metric.Struct interface.
@@ -63,15 +60,14 @@ func (m *RowLevelTTLAggMetrics) MetricStruct() {}
 
 func (m *RowLevelTTLAggMetrics) metricsWithChildren(children ...string) rowLevelTTLMetrics {
 	return rowLevelTTLMetrics{
-		SpanTotalDuration:     m.SpanTotalDuration.AddChild(children...),
-		SelectDuration:        m.SelectDuration.AddChild(children...),
-		DeleteDuration:        m.DeleteDuration.AddChild(children...),
-		RowSelections:         m.RowSelections.AddChild(children...),
-		RowDeletions:          m.RowDeletions.AddChild(children...),
-		NumDeleteBatchRetries: m.NumDeleteBatchRetries.AddChild(children...),
-		NumActiveSpans:        m.NumActiveSpans.AddChild(children...),
-		TotalRows:             m.TotalRows.AddChild(children...),
-		TotalExpiredRows:      m.TotalExpiredRows.AddChild(children...),
+		SpanTotalDuration: m.SpanTotalDuration.AddChild(children...),
+		SelectDuration:    m.SelectDuration.AddChild(children...),
+		DeleteDuration:    m.DeleteDuration.AddChild(children...),
+		RowSelections:     m.RowSelections.AddChild(children...),
+		RowDeletions:      m.RowDeletions.AddChild(children...),
+		NumActiveSpans:    m.NumActiveSpans.AddChild(children...),
+		TotalRows:         m.TotalRows.AddChild(children...),
+		TotalExpiredRows:  m.TotalExpiredRows.AddChild(children...),
 	}
 }
 
@@ -153,14 +149,6 @@ func makeRowLevelTTLAggMetrics(histogramWindowInterval time.Duration) metric.Str
 				MetricType:  io_prometheus_client.MetricType_COUNTER,
 			},
 		),
-		NumDeleteBatchRetries: b.Counter(
-			metric.Metadata{
-				Name:        "jobs.row_level_ttl.num_delete_batch_retries",
-				Help:        "Number of times the row level TTL job had to reduce the delete batch size and retry.",
-				Measurement: "num_retries",
-				Unit:        metric.Unit_COUNT,
-			},
-		),
 		NumActiveSpans: b.Gauge(
 			metric.Metadata{
 				Name:        "jobs.row_level_ttl.num_active_spans",
@@ -205,7 +193,7 @@ func (m *rowLevelTTLMetrics) fetchStatistics(
 	}
 
 	type statsQuery struct {
-		opName redact.RedactableString
+		opName string
 		query  string
 		args   []interface{}
 		gauge  *aggmetric.Gauge
@@ -213,14 +201,14 @@ func (m *rowLevelTTLMetrics) fetchStatistics(
 	var statsQueries []statsQuery
 	if ttlKnobs := execCfg.TTLTestingKnobs; ttlKnobs != nil && ttlKnobs.ExtraStatsQuery != "" {
 		statsQueries = append(statsQueries, statsQuery{
-			opName: redact.Sprintf("ttl extra stats query %s", relationName),
+			opName: fmt.Sprintf("ttl extra stats query %s", relationName),
 			query:  ttlKnobs.ExtraStatsQuery,
 		},
 		)
 	}
 	statsQueries = append(statsQueries,
 		statsQuery{
-			opName: redact.Sprintf("ttl num rows stats %s", relationName),
+			opName: fmt.Sprintf("ttl num rows stats %s", relationName),
 			query: fmt.Sprintf(
 				`SELECT count(1) FROM [%d AS t] AS OF SYSTEM TIME %s`,
 				details.TableID, aost.String(),
@@ -228,7 +216,7 @@ func (m *rowLevelTTLMetrics) fetchStatistics(
 			gauge: m.TotalRows,
 		},
 		statsQuery{
-			opName: redact.Sprintf("ttl num expired rows stats %s", relationName),
+			opName: fmt.Sprintf("ttl num expired rows stats %s", relationName),
 			query: fmt.Sprintf(
 				`SELECT count(1) FROM [%d AS t] AS OF SYSTEM TIME %s WHERE (`+string(ttlExpr)+`) < $1`,
 				details.TableID, aost.String(),
@@ -242,11 +230,12 @@ func (m *rowLevelTTLMetrics) fetchStatistics(
 		// User a super low quality of service (lower than TTL low), as we don't
 		// really care if statistics gets left behind and prefer the TTL job to
 		// have priority.
+		qosLevel := sessiondatapb.SystemLow
 		datums, err := execCfg.InternalDB.Executor().QueryRowEx(
 			ctx,
 			c.opName,
 			nil,
-			getInternalExecutorOverride(sessiondatapb.SystemLowQoS),
+			getInternalExecutorOverride(qosLevel),
 			c.query,
 			c.args...,
 		)

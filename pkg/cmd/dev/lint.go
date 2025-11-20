@@ -52,7 +52,7 @@ func (d *dev) lint(cmd *cobra.Command, commandLine []string) error {
 	args = append(args, "test", "//pkg/testutils/lint:lint_test")
 	addCommonBazelArguments(&args)
 	args = append(args, additionalBazelArgs...)
-	args = append(args, "--nocache_test_results", "--test_arg", "-test.v")
+	args = append(args, "--test_arg", "-test.v")
 	if short {
 		args = append(args, "--test_arg", "-test.short")
 	}
@@ -117,7 +117,7 @@ func (d *dev) lint(cmd *cobra.Command, commandLine []string) error {
 	}
 	if pkg != "" && filter == "" {
 		toLint := strings.TrimPrefix(pkg, "./")
-		args := []string{"build", toLint, "--run_validations"}
+		args := []string{"build", toLint, "--//build/toolchains:nogo_flag"}
 		addCommonBazelArguments(&args)
 		logCommand("bazel", args...)
 		return d.exec.CommandContextInheritingStdStreams(ctx, "bazel", args...)
@@ -128,7 +128,7 @@ func (d *dev) lint(cmd *cobra.Command, commandLine []string) error {
 			"//pkg/cmd/dev",
 			"//pkg/cmd/roachprod",
 			"//pkg/cmd/roachtest",
-			"--run_validations",
+			"--//build/toolchains:nogo_flag",
 		}
 		addCommonBazelArguments(&args)
 		logCommand("bazel", args...)

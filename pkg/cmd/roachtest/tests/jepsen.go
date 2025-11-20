@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 )
 
@@ -189,8 +188,12 @@ func initJepsen(ctx context.Context, t test.Test, c cluster.Cluster, j jepsenCon
 	c.Run(ctx, option.WithNodes(workers), "sh", "-c", `"cat controller_id_rsa.pub >> .ssh/authorized_keys"`)
 	// Prime the known hosts file, and use the unhashed format to
 	// work around JSCH auth error: https://github.com/jepsen-io/jepsen/blob/master/README.md
-	for _, worker := range workers {
-		c.Run(ctx, option.WithNodes(controller), "sh", "-c", fmt.Sprintf(`"ssh-keyscan -t rsa {ip:%d} >> .ssh/known_hosts"`, worker))
+	ips, err := c.InternalIP(ctx, t.L(), workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range ips {
+		c.Run(ctx, option.WithNodes(controller), "sh", "-c", fmt.Sprintf(`"ssh-keyscan -t rsa %s >> .ssh/known_hosts"`, ip))
 	}
 
 	t.L().Printf("cluster initialization complete\n")
@@ -283,19 +286,17 @@ func (j jepsenConfig) startTest(
 			}
 			t.Fatalf("error installing Jepsen deps: %+v", err)
 		}
-		t.Go(func(context.Context, *logger.Logger) error {
+		go func() {
 			errCh <- run("bash", "-e", "-c", fmt.Sprintf(
 				`"cd /mnt/data1/jepsen/cockroachdb && set -eo pipefail && ~/lein run %s > invoke.log 2>&1"`,
 				testArgs))
-			return nil
-		})
+		}()
 	} else {
-		t.Go(func(context.Context, *logger.Logger) error {
+		go func() {
 			errCh <- run("bash", "-e", "-c", fmt.Sprintf(
 				`"cd /mnt/data1/jepsen/cockroachdb && set -eo pipefail && java -jar %s %s > invoke.log 2>&1"`,
 				j.binaryName(), testArgs))
-			return nil
-		})
+		}()
 	}
 	return errCh
 }
@@ -309,8 +310,12 @@ func runJepsen(ctx context.Context, t test.Test, c cluster.Cluster, testName, ne
 
 	// Get the IP addresses for all our workers.
 	var nodeFlags []string
-	for _, node := range c.Range(1, c.Spec().NodeCount-1) {
-		nodeFlags = append(nodeFlags, fmt.Sprintf("-n {ip:%d}", node))
+	ips, err := c.InternalIP(ctx, t.L(), c.Range(1, c.Spec().NodeCount-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range ips {
+		nodeFlags = append(nodeFlags, "-n "+ip)
 	}
 	nodesStr := strings.Join(nodeFlags, " ")
 

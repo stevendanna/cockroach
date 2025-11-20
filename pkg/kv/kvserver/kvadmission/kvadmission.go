@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -53,12 +53,12 @@ var elasticCPUDurationPerInternalLowPriRead = settings.RegisterDurationSetting(
 	settings.DurationInRange(admission.MinElasticCPUDuration, admission.MaxElasticCPUDuration),
 )
 
-// elasticAdmissionAllLowPri determines whether internally
-// submitted low bulk pri requests integrate with elastic CPU control.
-var elasticAdmissionAllLowPri = settings.RegisterBoolSetting(
+// internalLowPriReadElasticControlEnabled determines whether internally
+// submitted low pri reads integrate with elastic CPU control.
+var internalLowPriReadElasticControlEnabled = settings.RegisterBoolSetting(
 	settings.SystemOnly,
-	"kvadmission.elastic_control_bulk_low_priority.enabled",
-	"determines whether the all low bulk priority requests integrate with elastic CPU control",
+	"kvadmission.low_pri_read_elastic_control.enabled",
+	"determines whether the internally submitted low priority reads integrate with elastic CPU control",
 	true,
 )
 
@@ -177,13 +177,7 @@ type Controller interface {
 	FollowerStoreWriteBytes(roachpb.StoreID, FollowerStoreWriteBytes)
 	// AdmitRaftEntry informs admission control of a raft log entry being
 	// written to storage.
-	AdmitRaftEntry(
-		_ context.Context, _ roachpb.TenantID, _ roachpb.StoreID, _ roachpb.RangeID, _ roachpb.ReplicaID,
-		leaderTerm uint64, _ raftpb.Entry)
-	replica_rac2.ACWorkQueue
-	// GetSnapshotQueue returns the SnapshotQueue which is used for ingesting raft
-	// snapshots.
-	GetSnapshotQueue(roachpb.StoreID) *admission.SnapshotQueue
+	AdmitRaftEntry(context.Context, roachpb.TenantID, roachpb.StoreID, roachpb.RangeID, raftpb.Entry)
 }
 
 // TenantWeightProvider can be periodically asked to provide the tenant
@@ -334,9 +328,10 @@ func (n *controllerImpl) AdmitKVWork(
 	// number of tokens available.
 	if ba.IsWrite() && !ba.IsSingleHeartbeatTxnRequest() {
 		var admitted bool
-		attemptFlowControl := kvflowcontrol.Enabled.Get(&n.settings.SV)
+		attemptFlowControl := kvflowcontrol.Enabled.Get(&n.settings.SV) &&
+			n.settings.Version.IsActive(ctx, clusterversion.V23_2_UseACRaftEntryEntryEncodings)
 		if attemptFlowControl && !bypassAdmission {
-			kvflowHandle, found := n.kvflowHandles.LookupReplicationAdmissionHandle(ba.RangeID)
+			kvflowHandle, found := n.kvflowHandles.Lookup(ba.RangeID)
 			if !found {
 				return Handle{}, nil
 			}
@@ -351,10 +346,6 @@ func (n *controllerImpl) AdmitKVWork(
 				// and the point of deduction. That's ok, there's no strong
 				// synchronization needed between these two points.
 				ah.raftAdmissionMeta = &kvflowcontrolpb.RaftAdmissionMeta{
-					// NOTE: The priority is identical for v1 and v2, a
-					// admissionpb.WorkPriority,  until we encode the command in
-					// replica_raft, where if the range is using racv2 encoding we will
-					// convert the priority to a raftpb.Priority.
 					AdmissionPriority:   int32(admissionInfo.Priority),
 					AdmissionCreateTime: admissionInfo.CreateTime,
 					AdmissionOriginNode: n.nodeID.Get(),
@@ -364,7 +355,7 @@ func (n *controllerImpl) AdmitKVWork(
 		// If flow control is disabled or if work bypasses flow control, we still
 		// subject it above-raft, leaseholder-only IO admission control.
 		if !attemptFlowControl || !admitted {
-			storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(ba.Replica.StoreID)
+			storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(int32(ba.Replica.StoreID))
 			if storeAdmissionQ != nil {
 				//  NB: Even though we would know here we're bypassing admission (via
 				//  `bypassAdmission`), we still have to explicitly invoke `.Admit()`.
@@ -401,13 +392,14 @@ func (n *controllerImpl) AdmitKVWork(
 		//   handed out through this mechanism, as a way to provide latency
 		//   isolation to non-elastic ("latency sensitive") work running on the
 		//   same machine.
-		// - We do the same for internally submitted bulk low priority requests in
+		// - We do the same for internally submitted low priority reads in
 		//   general (notably, for KV work done on the behalf of row-level TTL
-		//   reads or other jobs). Everything admissionpb.UserLowPri and above uses
-		//   the slots mechanism.
+		//   reads). Everything admissionpb.UserLowPri and above uses the slots
+		//   mechanism.
+		isInternalLowPriRead := ba.IsReadOnly() && admissionInfo.Priority < admissionpb.UserLowPri
 		shouldUseElasticCPU :=
 			(exportRequestElasticControlEnabled.Get(&n.settings.SV) && ba.IsSingleExportRequest()) ||
-				(admissionInfo.Priority <= admissionpb.BulkLowPri && elasticAdmissionAllLowPri.Get(&n.settings.SV))
+				(internalLowPriReadElasticControlEnabled.Get(&n.settings.SV) && isInternalLowPriRead)
 
 		if shouldUseElasticCPU {
 			var admitDuration time.Duration
@@ -458,12 +450,10 @@ func (n *controllerImpl) AdmittedKVWorkDone(ah Handle, writeBytes *StoreWriteByt
 	if ah.callAdmittedWorkDoneOnKVAdmissionQ {
 		cpuTime := grunning.Time() - ah.cpuStart
 		if cpuTime < 0 {
-			// We sometimes see cpuTime to be negative. We use 1ns here, arbitrarily.
-			// This issue is tracked by
-			// https://github.com/cockroachdb/cockroach/issues/126681.
-			if buildutil.CrdbTestBuild {
-				log.Warningf(context.Background(), "grunning.Time() should be non-decreasing, cpuTime=%s", cpuTime)
-			}
+			// See https://github.com/cockroachdb/cockroach/issues/95529. Count 1
+			// nanosecond, arbitrarily.
+			//
+			// TODO(sumeer): remove this hack when that bug is fixed.
 			cpuTime = 1
 		}
 		n.kvAdmissionQ.AdmittedWorkDone(ah.tenantID, cpuTime)
@@ -532,7 +522,7 @@ func (n *controllerImpl) SetTenantWeightProvider(
 				n.elasticCPUGrantCoordinator.ElasticCPUWorkQueue.SetTenantWeights(weights.Node)
 
 				for _, storeWeights := range weights.Stores {
-					q := n.storeGrantCoords.TryGetQueueForStore(storeWeights.StoreID)
+					q := n.storeGrantCoords.TryGetQueueForStore(int32(storeWeights.StoreID))
 					if q != nil {
 						if kvStoresDisabled {
 							storeWeights.Weights = nil
@@ -553,7 +543,7 @@ func (n *controllerImpl) SetTenantWeightProvider(
 func (n *controllerImpl) SnapshotIngestedOrWritten(
 	storeID roachpb.StoreID, ingestStats pebble.IngestOperationStats, writeBytes uint64,
 ) {
-	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(storeID)
+	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(int32(storeID))
 	if storeAdmissionQ == nil {
 		return
 	}
@@ -567,7 +557,7 @@ func (n *controllerImpl) FollowerStoreWriteBytes(
 	if followerWriteBytes.WriteBytes == 0 && followerWriteBytes.IngestedBytes == 0 {
 		return
 	}
-	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(storeID)
+	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(int32(storeID))
 	if storeAdmissionQ == nil {
 		return
 	}
@@ -575,18 +565,15 @@ func (n *controllerImpl) FollowerStoreWriteBytes(
 		followerWriteBytes.NumEntries, followerWriteBytes.StoreWorkDoneInfo)
 }
 
-// AdmitRaftEntry implements the Controller interface. It is only used for the
-// RACv1 protocol.
+// AdmitRaftEntry implements the Controller interface.
 func (n *controllerImpl) AdmitRaftEntry(
 	ctx context.Context,
 	tenantID roachpb.TenantID,
 	storeID roachpb.StoreID,
 	rangeID roachpb.RangeID,
-	replicaID roachpb.ReplicaID,
-	leaderTerm uint64,
 	entry raftpb.Entry,
 ) {
-	typ, _, err := raftlog.EncodingOf(entry)
+	typ, err := raftlog.EncodingOf(entry)
 	if err != nil {
 		log.Errorf(ctx, "unable to determine raft command encoding: %v", err)
 		return
@@ -615,7 +602,7 @@ func (n *controllerImpl) AdmitRaftEntry(
 		)
 	}
 
-	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(storeID)
+	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(int32(storeID))
 	if storeAdmissionQ == nil {
 		log.Errorf(ctx, "unable to find queue for store: %s", storeID)
 		return // nothing to do
@@ -632,17 +619,14 @@ func (n *controllerImpl) AdmitRaftEntry(
 		RequestedCount:  int64(len(entry.Data)),
 	}
 	wi.ReplicatedWorkInfo = admission.ReplicatedWorkInfo{
-		Enabled:    true,
-		RangeID:    rangeID,
-		ReplicaID:  replicaID,
-		LeaderTerm: leaderTerm,
+		Enabled: true,
+		RangeID: rangeID,
+		Origin:  meta.AdmissionOriginNode,
 		LogPosition: admission.LogPosition{
 			Term:  entry.Term,
 			Index: entry.Index,
 		},
-		Origin:       meta.AdmissionOriginNode,
-		IsV2Protocol: false,
-		Ingested:     typ.IsSideloaded(),
+		Ingested: typ.IsSideloaded(),
 	}
 
 	handle, err := storeAdmissionQ.Admit(ctx, admission.StoreWriteWorkInfo{
@@ -655,62 +639,6 @@ func (n *controllerImpl) AdmitRaftEntry(
 	if handle.UseAdmittedWorkDone() {
 		log.Fatalf(ctx, "unexpected handle.UseAdmittedWorkDone")
 	}
-}
-
-var _ replica_rac2.ACWorkQueue = &controllerImpl{}
-
-// Admit implements replica_rac2.ACWorkQueue. It is only used for the RACv2 protocol.
-func (n *controllerImpl) Admit(ctx context.Context, entry replica_rac2.EntryForAdmission) bool {
-	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(entry.StoreID)
-	if storeAdmissionQ == nil {
-		log.Errorf(ctx, "unable to find queue for store: %s", entry.StoreID)
-		return false // nothing to do
-	}
-
-	if entry.RequestedCount == 0 {
-		log.Fatal(ctx, "found (unexpected) empty raft command for below-raft admission")
-	}
-	wi := admission.WorkInfo{
-		TenantID:        entry.TenantID,
-		Priority:        entry.Priority,
-		CreateTime:      entry.CreateTime,
-		BypassAdmission: false,
-		RequestedCount:  entry.RequestedCount,
-	}
-	wi.ReplicatedWorkInfo = admission.ReplicatedWorkInfo{
-		Enabled:    true,
-		RangeID:    entry.RangeID,
-		ReplicaID:  entry.ReplicaID,
-		LeaderTerm: entry.CallbackState.Mark.Term,
-		LogPosition: admission.LogPosition{
-			Term:  0, // Ignored by callback in RACv2.
-			Index: entry.CallbackState.Mark.Index,
-		},
-		Origin:       0,
-		RaftPri:      entry.CallbackState.Priority,
-		IsV2Protocol: true,
-		Ingested:     entry.Ingested,
-	}
-
-	handle, err := storeAdmissionQ.Admit(ctx, admission.StoreWriteWorkInfo{
-		WorkInfo: wi,
-	})
-	if err != nil {
-		log.Errorf(ctx, "error while admitting to store admission queue: %v", err)
-		return false
-	}
-	if handle.UseAdmittedWorkDone() {
-		log.Fatalf(ctx, "unexpected handle.UseAdmittedWorkDone")
-	}
-	return true
-}
-
-func (n *controllerImpl) GetSnapshotQueue(storeID roachpb.StoreID) *admission.SnapshotQueue {
-	sq := n.storeGrantCoords.TryGetSnapshotQueueForStore(storeID)
-	if sq == nil {
-		return nil
-	}
-	return sq.(*admission.SnapshotQueue)
 }
 
 // FollowerStoreWriteBytes captures stats about writes done to a store by a

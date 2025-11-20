@@ -11,7 +11,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
@@ -24,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -225,7 +223,11 @@ func NewTxnFromProto(
 
 // NewLeafTxn instantiates a new leaf transaction.
 func NewLeafTxn(
-	ctx context.Context, db *DB, gatewayNodeID roachpb.NodeID, tis *roachpb.LeafTxnInputState,
+	ctx context.Context,
+	db *DB,
+	gatewayNodeID roachpb.NodeID,
+	tis *roachpb.LeafTxnInputState,
+	header *kvpb.AdmissionHeader,
 ) *Txn {
 	if db == nil {
 		panic(errors.WithContextTags(
@@ -240,6 +242,19 @@ func NewLeafTxn(
 	txn.mu.ID = tis.Txn.ID
 	txn.mu.userPriority = roachpb.NormalUserPriority
 	txn.mu.sender = db.factory.LeafTransactionalSender(tis)
+	if header != nil {
+		if admissionpb.WorkPriority(header.Priority) != admissionpb.NormalPri {
+			log.VEventf(ctx, 2,
+				"initializing leaf txn admission control header with priority: %v",
+				admissionpb.WorkPriority(header.Priority),
+			)
+		}
+		txn.admissionHeader = kvpb.AdmissionHeader{
+			CreateTime: header.CreateTime,
+			Priority:   header.Priority,
+			Source:     header.Source,
+		}
+	}
 	return txn
 }
 
@@ -262,14 +277,6 @@ func (txn *Txn) ID() uuid.UUID {
 	return txn.mu.ID
 }
 
-// Key returns the current "anchor" key of the transaction, or nil if no such
-// key has been set because the transaction has not yet acquired any locks.
-func (txn *Txn) Key() roachpb.Key {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-	return txn.mu.sender.Key()
-}
-
 // Epoch exports the txn's epoch.
 func (txn *Txn) Epoch() enginepb.TxnEpoch {
 	txn.mu.Lock()
@@ -282,25 +289,27 @@ func (txn *Txn) statusLocked() roachpb.TransactionStatus {
 	return txn.mu.sender.TxnStatus()
 }
 
-// hasStatus returns true iff the transaction has the provided status.
-func (txn *Txn) hasStatus(s roachpb.TransactionStatus) bool {
+// IsCommitted returns true iff the transaction has the committed status.
+func (txn *Txn) IsCommitted() bool {
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
-	return txn.statusLocked() == s
+	return txn.statusLocked() == roachpb.COMMITTED
 }
 
-// IsCommitted returns true iff the transaction has the committed status.
-func (txn *Txn) IsCommitted() bool { return txn.hasStatus(roachpb.COMMITTED) }
-
 // IsAborted returns true iff the transaction has the aborted status.
-func (txn *Txn) IsAborted() bool { return txn.hasStatus(roachpb.ABORTED) }
-
-// IsPrepared returns true iff the transaction has the prepared status.
-func (txn *Txn) IsPrepared() bool { return txn.hasStatus(roachpb.PREPARED) }
+func (txn *Txn) IsAborted() bool {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	return txn.statusLocked() == roachpb.ABORTED
+}
 
 // IsOpen returns true iff the transaction is in the open state where
 // it can accept further commands.
-func (txn *Txn) IsOpen() bool { return txn.hasStatus(roachpb.PENDING) }
+func (txn *Txn) IsOpen() bool {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	return txn.statusLocked() == roachpb.PENDING
+}
 
 // isClientFinalized returns true if the client has issued an EndTxn request in
 // an attempt to finalize the transaction.
@@ -395,24 +404,6 @@ func (txn *Txn) DebugName() string {
 
 func (txn *Txn) debugNameLocked() string {
 	return fmt.Sprintf("%s (id: %s)", txn.mu.debugName, txn.mu.ID)
-}
-
-func (txn *Txn) SetBufferedWritesEnabled(enabled bool) {
-	if txn.typ != RootTxn {
-		panic(errors.AssertionFailedf("SetBufferedWritesEnabled() called on leaf txn"))
-	}
-
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-
-	txn.mu.sender.SetBufferedWritesEnabled(enabled)
-}
-
-func (txn *Txn) BufferedWritesEnabled() bool {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-
-	return txn.mu.sender.BufferedWritesEnabled()
 }
 
 // String returns a string version of this transaction.
@@ -628,6 +619,20 @@ func (txn *Txn) Put(ctx context.Context, key, value interface{}) error {
 func (txn *Txn) CPut(ctx context.Context, key, value interface{}, expValue []byte) error {
 	b := txn.NewBatch()
 	b.CPut(key, value, expValue)
+	return getOneErr(txn.Run(ctx, b), b)
+}
+
+// InitPut sets the first value for a key to value. An error is reported if a
+// value already exists for the key and it's not equal to the value passed in.
+// If failOnTombstones is set to true, tombstones count as mismatched values
+// and will cause a ConditionFailedError.
+//
+// key can be either a byte slice or a string. value can be any key type, a
+// protoutil.Message or any Go primitive type (bool, int, etc). It is illegal to
+// set value to nil.
+func (txn *Txn) InitPut(ctx context.Context, key, value interface{}, failOnTombstones bool) error {
+	b := txn.NewBatch()
+	b.InitPut(key, value, failOnTombstones)
 	return getOneErr(txn.Run(ctx, b), b)
 }
 
@@ -1006,21 +1011,6 @@ func (txn *Txn) rollback(ctx context.Context) *kvpb.Error {
 	return nil
 }
 
-// Prepare sends an EndTxnRequest with Prepare=true. Once a transaction is
-// prepared, it cannot be used to perform any more reads or writes. A prepared
-// transaction can only be committed or rolled back.
-func (txn *Txn) Prepare(ctx context.Context) error {
-	if txn.typ != RootTxn {
-		return errors.WithContextTags(errors.AssertionFailedf("Prepare() called on leaf txn"), ctx)
-	}
-
-	et := endTxnReq(true, txn.deadline())
-	et.req.Prepare = true
-	ba := &kvpb.BatchRequest{Requests: et.unionArr[:]}
-	_, pErr := txn.Send(ctx, ba)
-	return pErr.GoError()
-}
-
 // AddCommitTrigger adds a closure to be executed on successful commit
 // of the transaction.
 func (txn *Txn) AddCommitTrigger(trigger func(ctx context.Context)) {
@@ -1072,10 +1062,7 @@ func (e *AutoCommitError) Error() string {
 func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) (err error) {
 	// Run fn in a retry loop until we encounter a success or
 	// error condition this loop isn't capable of handling.
-	retryOpts := base.DefaultRetryOptions()
-	retryOpts.InitialBackoff = 20 * time.Millisecond
-	retryOpts.MaxBackoff = 200 * time.Millisecond
-	for r := retry.Start(retryOpts); r.Next(); {
+	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return errors.Wrap(err, "txn exec")
 		}
@@ -1120,7 +1107,7 @@ func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) 
 					// TransactionRetryWithProtoRefreshError if the closure ran another
 					// transaction internally and let the error propagate upwards instead
 					// of handling it.
-					return errors.Wrap(errors.Opaque(err), "retryable error from another txn")
+					return errors.Wrapf(err, "retryable error from another txn")
 				}
 				if txn.isClientFinalized() {
 					// We've already committed or rolled back, so we can't retry. The
@@ -1145,15 +1132,11 @@ func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) 
 			// txn.db.ctx.Settings == nil is only expected in tests.
 			maxRetries = int(MaxInternalTxnAutoRetries.Get(&txn.db.ctx.Settings.SV))
 		}
-		// Add 1 because r.CurrentAttempt() starts at 0.
-		attempt := r.CurrentAttempt() + 1
 		if attempt > maxRetries {
 			// If the retries limit has been exceeded, rollback and return an error.
 			rollbackErr := txn.Rollback(ctx)
 			// NOTE: we don't errors.Wrap the most recent retry error because we want
-			// to terminate it here. Instead, we mark the error to allow callers to
-			// detect this condition and avoid automatic retries. We also include the
-			// original error in the error message.
+			// to terminate it here. Instead, we just include it in the error text.
 			err = errors.Mark(errors.Errorf("have retried transaction: %s %d times, most recently because of the "+
 				"retryable error: %s. Terminating retry loop and returning error due to cluster setting %s (%d). "+
 				"Rollback error: %v.", txn.DebugName(), attempt, err, MaxInternalTxnAutoRetries.Name(), maxRetries, rollbackErr),

@@ -6,9 +6,8 @@
 package split
 
 import (
-	"bytes"
 	"math"
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -258,8 +257,8 @@ func (f *WeightedFinder) PopularKeyFrequency() float64 {
 	// appears. We could copy the slice, however it would require an allocation.
 	// The probability a sample is replaced doesn't change as it is independent
 	// of position.
-	slices.SortFunc(f.samples[:], func(a, b weightedSample) int {
-		return bytes.Compare(a.key, b.key)
+	sort.Slice(f.samples[:], func(i, j int) bool {
+		return f.samples[i].key.Compare(f.samples[j].key) < 0
 	})
 
 	weight := f.samples[0].weight

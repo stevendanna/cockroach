@@ -11,7 +11,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -24,10 +23,9 @@ import (
 // is used to initialize the in-memory Replica instance.
 // TODO(pavelkalinnikov): integrate with kvstorage.Replica.
 type LoadedReplicaState struct {
-	ReplicaID   roachpb.ReplicaID
-	LastEntryID logstore.EntryID
-	ReplState   kvserverpb.ReplicaState
-	TruncState  kvserverpb.RaftTruncatedState
+	ReplicaID roachpb.ReplicaID
+	LastIndex kvpb.RaftIndex
+	ReplState kvserverpb.ReplicaState
 
 	hardState raftpb.HardState
 }
@@ -57,10 +55,7 @@ func LoadReplicaState(
 	if ls.hardState, err = sl.LoadHardState(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
-	if ls.TruncState, err = sl.LoadRaftTruncatedState(ctx, eng); err != nil {
-		return LoadedReplicaState{}, err
-	}
-	if ls.LastEntryID, err = sl.LoadLastEntryID(ctx, eng, ls.TruncState); err != nil {
+	if ls.LastIndex, err = sl.LoadLastIndex(ctx, eng); err != nil {
 		return LoadedReplicaState{}, err
 	}
 	if ls.ReplState, err = sl.Load(ctx, eng, desc); err != nil {

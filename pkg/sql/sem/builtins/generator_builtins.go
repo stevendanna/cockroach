@@ -50,7 +50,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // See the comments at the start of generators.go for details about
@@ -1399,7 +1398,7 @@ func (s *subscriptsValueGenerator) Values() (tree.Datums, error) {
 // EmptyGenerator returns a new, empty generator. Used when a SRF
 // evaluates to NULL.
 func EmptyGenerator() eval.ValueGenerator {
-	return &arrayValueGenerator{array: tree.NewDArray(types.AnyElement)}
+	return &arrayValueGenerator{array: tree.NewDArray(types.Any)}
 }
 
 // NullGenerator returns a new generator that returns a single row of nulls
@@ -1765,7 +1764,7 @@ func makeJSONPopulateImpl(gen eval.GeneratorWithExprsOverload, info string) tree
 		// structure. The first argument is an arbitrary tuple type, which is used
 		// to set the columns of the output when the builtin is used as a FROM
 		// source, or used as-is when it's used as an ordinary projection. To match
-		// PostgreSQL, the argument actually is types.AnyElement, and its tuple-ness is
+		// PostgreSQL, the argument actually is types.Any, and its tuple-ness is
 		// checked at execution time.
 		// The second argument is a JSON object or array of objects. The builtin
 		// transforms the JSON in the second argument into the tuple in the first
@@ -1776,7 +1775,7 @@ func makeJSONPopulateImpl(gen eval.GeneratorWithExprsOverload, info string) tree
 		// the default values of each field will be NULL.
 		// The second argument can also be null, in which case the first argument
 		// is returned as-is.
-		Types:              tree.ParamTypes{{Name: "base", Typ: types.AnyElement}, {Name: "from_json", Typ: types.Jsonb}},
+		Types:              tree.ParamTypes{{Name: "base", Typ: types.Any}, {Name: "from_json", Typ: types.Jsonb}},
 		ReturnType:         tree.IdentityReturnType(0),
 		GeneratorWithExprs: gen,
 		Class:              tree.GeneratorClass,
@@ -3690,11 +3689,11 @@ func newInternallyExecutedQueryIterator(
 // ExecuteQueryViaJobExecContext executes the provided query via the JobExecCtx
 // of the eval.Context. The method is initialized in the sql package to avoid
 // import cycles.
-var ExecuteQueryViaJobExecContext func(*eval.Context, context.Context, redact.RedactableString, *kv.Txn, sessiondata.InternalExecutorOverride, string, ...interface{}) (eval.InternalRows, error)
+var ExecuteQueryViaJobExecContext func(*eval.Context, context.Context, string, *kv.Txn, sessiondata.InternalExecutorOverride, string, ...interface{}) (eval.InternalRows, error)
 
 // Start implements the eval.ValueGenerator interface.
 func (qi *internallyExecutedQueryIterator) Start(ctx context.Context, txn *kv.Txn) error {
-	var opName redact.RedactableString = "internally-executed-query-builtin"
+	opName := "internally-executed-query-builtin"
 	var ieo sessiondata.InternalExecutorOverride
 	// Always use the session's user, even in "jobs-like" mode.
 	ieo.User = qi.evalCtx.SessionData().User()

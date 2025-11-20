@@ -38,7 +38,7 @@ var checkReconciliationJobInterval = settings.RegisterDurationSetting(
 //
 // TODO(irfansharif): This should be a tenant read-only setting once the work
 // for #73349 is completed.
-var JobEnabledSetting = settings.RegisterBoolSetting(
+var jobEnabledSetting = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"spanconfig.reconciliation_job.enabled",
 	"enable the use of the kv accessor", true)
@@ -109,7 +109,7 @@ func (m *Manager) run(ctx context.Context) {
 	//   skip starting the reconciliation job, learning about the cluster
 	//   version shortly, and only checking the job after an interval has
 	//   passed.
-	JobEnabledSetting.SetOnChange(&m.settings.SV, func(ctx context.Context) {
+	jobEnabledSetting.SetOnChange(&m.settings.SV, func(ctx context.Context) {
 		triggerJobCheck()
 	})
 	checkReconciliationJobInterval.SetOnChange(&m.settings.SV, func(ctx context.Context) {
@@ -124,11 +124,11 @@ func (m *Manager) run(ctx context.Context) {
 			fn()
 		}
 
-		if !JobEnabledSetting.Get(&m.settings.SV) {
+		if !jobEnabledSetting.Get(&m.settings.SV) {
 			return
 		}
 
-		started, err := m.createAndStartJobIfNoneExists(ctx)
+		started, err := m.createAndStartJobIfNoneExists(ctx, m.settings)
 		if err != nil {
 			log.Errorf(ctx, "error starting auto span config reconciliation job: %v", err)
 		}
@@ -162,7 +162,9 @@ func (m *Manager) run(ctx context.Context) {
 // createAndStartJobIfNoneExists creates span config reconciliation job iff it
 // hasn't been created already and notifies the jobs registry to adopt it.
 // Returns a boolean indicating if the job was created.
-func (m *Manager) createAndStartJobIfNoneExists(ctx context.Context) (bool, error) {
+func (m *Manager) createAndStartJobIfNoneExists(
+	ctx context.Context, cs *cluster.Settings,
+) (bool, error) {
 	if m.knobs.ManagerDisableJobCreation {
 		return false, nil
 	}
@@ -177,8 +179,9 @@ func (m *Manager) createAndStartJobIfNoneExists(ctx context.Context) (bool, erro
 
 	var job *jobs.Job
 	if err := m.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		exists, err := jobs.RunningJobExists(ctx, jobspb.InvalidJobID, txn,
-			jobspb.TypeAutoSpanConfigReconciliation)
+		exists, err := jobs.RunningJobExists(
+			ctx, cs, jobspb.InvalidJobID, txn, jobspb.TypeAutoSpanConfigReconciliation,
+		)
 		if err != nil {
 			return err
 		}

@@ -733,6 +733,14 @@ dt2  CREATE VIEW public.dt2 (
 statement ok
 SELECT * FROM dt2
 
+# Ensure that creating a view doesn't leak any session-level settings that
+# could affect subsequent AS OF SYSTEM TIME queries (#13547).
+statement ok
+CREATE VIEW v AS SELECT d, t FROM t
+
+statement error pq: AS OF SYSTEM TIME must be provided on a top-level statement
+CREATE TABLE t2 AS SELECT d, t FROM t AS OF SYSTEM TIME '2017-02-13 21:30:00'
+
 statement ok
 DROP TABLE t CASCADE
 
@@ -1173,7 +1181,7 @@ CREATE TABLE tval (val int primary key);
 statement ok
 CREATE VIEW rv as select val from tval;
 
-statement ok
+statement ok;
 USE DB2;
 
 # Cross-database type references are not allowed.
@@ -1379,14 +1387,14 @@ SHOW CREATE VIEW v10
 ----
 v10  CREATE VIEW public.v10 (
        view_typ
-     ) AS SELECT 'a':::public.view_typ_new
+     ) AS SELECT 'a':::db2.public.view_typ_new
 
 query TT
 SHOW CREATE VIEW v10 WITH REDACT
 ----
 v10  CREATE VIEW public.v10 (
        view_typ
-     ) AS SELECT ‹×›:::public.view_typ_new
+     ) AS SELECT ‹×›:::db2.public.view_typ_new
 
 query T
 SELECT * FROM v10
@@ -1404,14 +1412,14 @@ SHOW CREATE VIEW v11
 ----
 v11  CREATE VIEW public.v11 (
        k
-     ) AS (SELECT 'a':::public.view_typ < 'a':::public.view_typ AS k)
+     ) AS (SELECT 'a':::db2.public.view_typ < 'a':::db2.public.view_typ AS k)
 
 query TT
 SHOW CREATE VIEW v11 WITH REDACT
 ----
 v11  CREATE VIEW public.v11 (
        k
-     ) AS (SELECT ‹×›:::public.view_typ < ‹×›:::public.view_typ AS k)
+     ) AS (SELECT ‹×›:::db2.public.view_typ < ‹×›:::db2.public.view_typ AS k)
 
 query B
 SELECT * FROM v11
@@ -1429,14 +1437,14 @@ SHOW CREATE VIEW v12
 ----
 v12  CREATE VIEW public.v12 (
        k
-     ) AS (SELECT k FROM (SELECT 'a':::public.view_type_new AS k) AS "?subquery1?")
+     ) AS (SELECT k FROM (SELECT 'a':::db2.public.view_type_new AS k) AS "?subquery1?")
 
 query TT
 SHOW CREATE VIEW v12 WITH REDACT
 ----
 v12  CREATE VIEW public.v12 (
        k
-     ) AS (SELECT k FROM (SELECT ‹×›:::public.view_type_new AS k) AS "?subquery1?")
+     ) AS (SELECT k FROM (SELECT ‹×›:::db2.public.view_type_new AS k) AS "?subquery1?")
 
 query T
 SELECT * FROM v12
@@ -1454,14 +1462,14 @@ SHOW CREATE VIEW v13
 ----
 v13  CREATE VIEW public.v13 (
        k
-     ) AS (SELECT 'a':::public.view_type AS k UNION SELECT 'b':::public.view_type)
+     ) AS (SELECT 'a':::db2.public.view_type AS k UNION SELECT 'b':::db2.public.view_type)
 
 query TT
 SHOW CREATE VIEW v13 WITH REDACT
 ----
 v13  CREATE VIEW public.v13 (
        k
-     ) AS (SELECT ‹×›:::public.view_type AS k UNION SELECT ‹×›:::public.view_type)
+     ) AS (SELECT ‹×›:::db2.public.view_type AS k UNION SELECT ‹×›:::db2.public.view_type)
 
 query T
 SELECT * FROM v13 ORDER BY k
@@ -1480,7 +1488,10 @@ SHOW CREATE VIEW v14
 ----
 v14  CREATE VIEW public.v14 (
        "array"
-     ) AS (SELECT ARRAY['a':::public.view_type_new, 'b':::public.view_type_new]:::public.view_type_new[])
+     ) AS (
+         SELECT
+           ARRAY['a':::db2.public.view_type_new, 'b':::db2.public.view_type_new]:::db2.public.view_type_new[]
+       )
 
 query TT
 SHOW CREATE VIEW v14 WITH REDACT
@@ -1489,7 +1500,7 @@ v14  CREATE VIEW public.v14 (
        "array"
      ) AS (
          SELECT
-           ARRAY[‹×›:::public.view_type_new, ‹×›:::public.view_type_new]:::public.view_type_new[]
+           ARRAY[‹×›:::db2.public.view_type_new, ‹×›:::db2.public.view_type_new]:::db2.public.view_type_new[]
        )
 
 query T
@@ -1508,7 +1519,10 @@ SHOW CREATE VIEW v15
 ----
 v15  CREATE VIEW public.v15 (
        view_type_new
-     ) AS (SELECT ARRAY['a':::public.view_type, 'b':::public.view_type][2:::INT8] AS view_type_new)
+     ) AS (
+         SELECT
+           ARRAY['a':::db2.public.view_type, 'b':::db2.public.view_type][2:::INT8] AS view_type_new
+       )
 
 query TT
 SHOW CREATE VIEW v15 WITH REDACT
@@ -1517,7 +1531,7 @@ v15  CREATE VIEW public.v15 (
        view_type_new
      ) AS (
          SELECT
-           ARRAY[‹×›:::public.view_type, ‹×›:::public.view_type][‹×›:::INT8]
+           ARRAY[‹×›:::db2.public.view_type, ‹×›:::db2.public.view_type][‹×›:::INT8]
              AS view_type_new
        )
 
@@ -1934,8 +1948,3 @@ statement error cross database type references are not supported: db106602a.publ
 CREATE OR REPLACE VIEW v AS (SELECT 1 FROM (VALUES (1)) val(i) WHERE 'foo'::db106602a.e = 'foo'::db106602a.e)
 
 subtest end
-
-# Regression test for hitting an assertion error when using an unimplemented
-# builtin in the view (#128535).
-statement error pgcode 0A000 unimplemented
-CREATE VIEW v128535 AS SELECT json_to_tsvector()

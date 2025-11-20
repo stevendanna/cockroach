@@ -156,7 +156,7 @@ func MakeColumnDefDescs(
 	if err != nil {
 		return nil, err
 	}
-	if err = colinfo.ValidateColumnDefType(ctx, evalCtx.Settings, resType); err != nil {
+	if err = colinfo.ValidateColumnDefType(ctx, evalCtx.Settings.Version, resType); err != nil {
 		return nil, err
 	}
 	col.Type = resType
@@ -356,10 +356,6 @@ func (desc *wrapper) EnforcedCheckConstraints() []catalog.CheckConstraint {
 	return desc.getExistingOrNewConstraintCache().checksEnforced
 }
 
-func (desc *wrapper) EnforcedCheckValidators() []catalog.CheckConstraintValidator {
-	return desc.getExistingOrNewConstraintCache().checkValidators
-}
-
 // OutboundForeignKeys implements the catalog.TableDescriptor interface.
 func (desc *wrapper) OutboundForeignKeys() []catalog.ForeignKeyConstraint {
 	return desc.getExistingOrNewConstraintCache().fks
@@ -473,12 +469,6 @@ func ConstraintNamePlaceholder(id descpb.ConstraintID) string {
 	return fmt.Sprintf("crdb_internal_constraint_%d_name_placeholder", id)
 }
 
-// PolicyNamePlaceholder constructs a placeholder name for a policy based
-// on its id.
-func PolicyNamePlaceholder(id descpb.PolicyID) string {
-	return fmt.Sprintf("crdb_internal_policy_%d_name_placeholder", id)
-}
-
 // RenameColumnInTable will rename the column in tableDesc from oldName to
 // newName, including in expressions as well as shard columns.
 // The function is recursive because of this, but there should only be one level
@@ -534,25 +524,8 @@ func RenameColumnInTable(
 		}
 	}
 
-	// Rename the column in any policy expressions.
-	for i := range tableDesc.GetPolicies() {
-		p := &tableDesc.GetPolicies()[i]
-		if p.WithCheckExpr != "" {
-			if err := renameInExpr(&p.WithCheckExpr); err != nil {
-				return err
-			}
-		}
-		if p.UsingExpr != "" {
-			if err := renameInExpr(&p.UsingExpr); err != nil {
-				return err
-			}
-		}
-	}
-
 	// Do all of the above renames inside check constraints, computed expressions,
-	// idx predicates that are in mutations. Policies are excluded here,
-	// as they cannot be modified using the legacy schema changer. Therefore,
-	// no mutations exist for policies.
+	// and idx predicates that are in mutations.
 	for i := range tableDesc.Mutations {
 		m := &tableDesc.Mutations[i]
 		if constraint := m.GetConstraint(); constraint != nil {

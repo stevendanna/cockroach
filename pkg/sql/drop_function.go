@@ -28,7 +28,6 @@ import (
 )
 
 type dropFunctionNode struct {
-	zeroInputPlanNode
 	toDrop       []*funcdesc.Mutable
 	dropBehavior tree.DropBehavior
 }
@@ -187,7 +186,7 @@ func (p *planner) canDropFunction(ctx context.Context, fnDesc catalog.FunctionDe
 		return err
 	}
 	if !hasOwernship {
-		return pgerror.Newf(pgcode.InsufficientPrivilege, "must be owner of function %s", fnDesc.GetName())
+		return errors.Errorf("must be owner of function %s", fnDesc.GetName())
 	}
 	return nil
 }

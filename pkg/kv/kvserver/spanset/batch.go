@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/pebble"
@@ -445,7 +444,7 @@ func (s spanSetReader) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
 	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start []byte, end []byte, seqNum uint64) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -466,7 +465,7 @@ func (s spanSetReader) MVCCIterate(
 	start, end roachpb.Key,
 	iterKind storage.MVCCIterKind,
 	keyTypes storage.IterKeyType,
-	readCategory fs.ReadCategory,
+	readCategory storage.ReadCategory,
 	f func(storage.MVCCKeyValue, storage.MVCCRangeKeyStack) error,
 ) error {
 	if s.spansOnly {
@@ -515,7 +514,7 @@ func (s spanSetReader) ConsistentIterators() bool {
 }
 
 // PinEngineStateForIterators implements the storage.Reader interface.
-func (s spanSetReader) PinEngineStateForIterators(readCategory fs.ReadCategory) error {
+func (s spanSetReader) PinEngineStateForIterators(readCategory storage.ReadCategory) error {
 	return s.r.PinEngineStateForIterators(readCategory)
 }
 
@@ -782,7 +781,7 @@ func (s spanSetBatch) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
 	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitRangeDel func(start []byte, end []byte, seqNum uint64) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,

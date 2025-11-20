@@ -8,7 +8,7 @@ package kvserver
 import (
 	"context"
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -104,8 +104,8 @@ func (c *connectionTrackerForFlowControl) testingPrint() string {
 	}
 
 	var buf strings.Builder
-	slices.Sort(storeIDs)
-	slices.Sort(nodeIDs)
+	sort.Sort(roachpb.StoreIDSlice(storeIDs))
+	sort.Sort(roachpb.NodeIDSlice(nodeIDs))
 	buf.WriteString(fmt.Sprintf("connected-stores (server POV): %s\n", roachpb.StoreIDSlice(storeIDs)))
 	buf.WriteString(fmt.Sprintf("connected-nodes  (client POV): %s\n", roachpb.NodeIDSlice(nodeIDs)))
 	return buf.String()

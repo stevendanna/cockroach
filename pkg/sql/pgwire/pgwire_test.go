@@ -293,11 +293,6 @@ func TestPGPrepareWithCreateDropInTxn(t *testing.T) {
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(context.Background())
 
-	_, err := db.Exec("SET autocommit_before_ddl = false")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	{
 		tx, err := db.Begin()
 		if err != nil {

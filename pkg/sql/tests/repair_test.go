@@ -88,12 +88,13 @@ func TestDescriptorRepairOrphanedDescriptors(t *testing.T) {
 			return err
 		}))
 
-		// Verify that the table is now invalid, since the parent descriptor cannot
-		// be found.
-		var errorStr string
-		err := db.QueryRow("SELECT error FROM \"\".crdb_internal.invalid_objects WHERE id = $1", descID).Scan(&errorStr)
-		require.NoError(t, err)
-		require.Contains(t, errorStr, fmt.Sprintf(`relation "foo" (%d): referenced database ID %d: referenced descriptor not found`, descID, parentID))
+		// Ideally we should be able to query `crdb_internal.invalid_object` but it
+		// does not do enough validation. Instead we'll just observe the issue that
+		// the parent descriptor cannot be found.
+		_, err := db.Exec(
+			"SELECT count(*) FROM \"\".crdb_internal.tables WHERE table_id = $1",
+			descID)
+		require.Regexp(t, fmt.Sprintf(`pq: relation "foo" \(%d\): referenced database ID %d: referenced descriptor not found`, descID, parentID), err)
 
 		// In this case, we're treating the injected descriptor as having no data
 		// so we can clean it up by just deleting the erroneous descriptor and
@@ -147,12 +148,13 @@ func TestDescriptorRepairOrphanedDescriptors(t *testing.T) {
 			return err
 		}))
 
-		// Verify that the table is now invalid, since the parent descriptor cannot
-		// be found.
-		var errorStr string
-		err := db.QueryRow("SELECT error FROM \"\".crdb_internal.invalid_objects WHERE id = $1", descID).Scan(&errorStr)
-		require.NoError(t, err)
-		require.Contains(t, errorStr, fmt.Sprintf(`relation "foo" (%d): referenced database ID %d: referenced descriptor not found`, descID, parentID))
+		// Ideally we should be able to query `crdb_internal.invalid_objects` but it
+		// does not do enough validation. Instead we'll just observe the issue that
+		// the parent descriptor cannot be found.
+		_, err := db.Exec(
+			"SELECT count(*) FROM \"\".crdb_internal.tables WHERE table_id = $1",
+			descID)
+		require.Regexp(t, fmt.Sprintf(`pq: relation "foo" \(%d\): referenced database ID %d: referenced descriptor not found`, descID, parentID), err)
 
 		// In this case, we're going to inject a parent database
 		require.NoError(t, crdb.ExecuteTx(ctx, db, nil, func(tx *gosql.Tx) error {
@@ -968,42 +970,4 @@ FROM
 	// version.
 	tdb.Exec(t, repair, 12345, true)
 	tdb.Exec(t, `DROP TABLE testdb.parent`)
-}
-
-func TestAlterGCTTLOfDroppedRelations(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-	})
-	defer s.Stopper().Stop(ctx)
-	tdb := sqlutils.MakeSQLRunner(db)
-
-	tdb.Exec(t, `CREATE DATABASE db2`)
-	tdb.Exec(t, `CREATE TABLE db2.t2 (i INT PRIMARY KEY);`)
-	tdb.Exec(t, `ALTER DATABASE db2 CONFIGURE ZONE USING gc.ttlseconds = 90001;`)
-	tdb.Exec(t, `CREATE TABLE t3 (x INT PRIMARY KEY)`)
-	tdb.Exec(t, `DROP TABLE t3`)
-	tdb.Exec(t, `DROP TABLE db2.t2`)
-
-	vtableQuery := `SELECT name, ttl FROM crdb_internal.kv_dropped_relations ORDER BY name`
-	spanConfigQuery := `
-SELECT
-  crdb_internal.pretty_key(start_key, -1),
-  crdb_internal.pb_to_json('cockroach.roachpb.SpanConfig', config)->'gcPolicy'->>'ttlSeconds'
-FROM system.span_configurations
-WHERE start_key >= (SELECT crdb_internal.table_span(100)[1])
-ORDER BY start_key`
-
-	tdb.CheckQueryResults(t, vtableQuery, [][]string{{"t2", "25:00:01"}, {"t3", "04:00:00"}})
-	tdb.CheckQueryResultsRetry(t, spanConfigQuery, [][]string{{"/Table/106", "90001"}, {"/Table/107", "14400"}})
-
-	tdb.Exec(t, `
-SELECT crdb_internal.upsert_dropped_relation_gc_ttl(id, '1 second')
-FROM crdb_internal.kv_dropped_relations WHERE name IN ('t2', 't3')`)
-
-	tdb.CheckQueryResults(t, vtableQuery, [][]string{{"t2", "00:00:01"}, {"t3", "00:00:01"}})
-	tdb.CheckQueryResultsRetry(t, spanConfigQuery, [][]string{{"/Table/106", "1"}, {"/Table/107", "1"}})
 }

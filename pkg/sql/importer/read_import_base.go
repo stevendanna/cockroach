@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cloud"
-	"github.com/cockroachdb/cockroach/pkg/crosscluster"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -56,7 +55,7 @@ func runImport(
 
 	// Install type metadata in all of the import tables.
 	spec = protoutil.Clone(spec).(*execinfrapb.ReadImportDataSpec)
-	importResolver := crosscluster.MakeCrossClusterTypeResolver(spec.Types)
+	importResolver := makeImportTypeResolver(spec.Types)
 	for _, table := range spec.Tables {
 		cpy := tabledesc.NewBuilder(table.Desc).BuildCreatedMutableTable()
 		if err := typedesc.HydrateTypesInDescriptor(ctx, cpy, importResolver); err != nil {
@@ -67,7 +66,8 @@ func runImport(
 
 	evalCtx := flowCtx.NewEvalCtx()
 	evalCtx.Regions = makeImportRegionOperator(spec.DatabasePrimaryRegion)
-	semaCtx := tree.MakeSemaContext(importResolver)
+	semaCtx := tree.MakeSemaContext()
+	semaCtx.TypeResolver = importResolver
 	conv, err := makeInputConverter(ctx, &semaCtx, spec, evalCtx, kvCh, seqChunkProvider, flowCtx.Cfg.DB.KV())
 	if err != nil {
 		return nil, err

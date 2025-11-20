@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -38,8 +39,7 @@ import (
 // continue-grant-chain work=<kind>
 // cpu-load runnable=<int> procs=<int> [infrequent=<bool>]
 // init-store-grant-coordinator
-// set-tokens io-tokens=<int> disk-write-tokens=<int>
-// adjust-disk-error actual-write-bytes=<int> actual-read-bytes=<int>
+// set-tokens io-tokens=<int> elastic-disk-bw-tokens=<int>
 func TestGranterBasic(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -47,9 +47,7 @@ func TestGranterBasic(t *testing.T) {
 	var ambientCtx log.AmbientContext
 	// requesters[numWorkKinds] is used for kv elastic work, when working with a
 	// store grant coordinator.
-	// requesters[numWorkKinds + 1] is used for snapshot ingest, when working with a
-	// store grant coordinator.
-	var requesters [numWorkKinds + 2]*testRequester
+	var requesters [numWorkKinds + 1]*testRequester
 	var coord *GrantCoordinator
 	clearRequesterAndCoord := func() {
 		coord = nil
@@ -102,6 +100,12 @@ func TestGranterBasic(t *testing.T) {
 
 		case "init-store-grant-coordinator":
 			clearRequesterAndCoord()
+			metrics := makeGrantCoordinatorMetrics()
+			regularWorkQueueMetrics := makeWorkQueueMetrics("regular", registry)
+			elasticWorkQUeueMetrics := makeWorkQueueMetrics("elastic", registry)
+			workQueueMetrics := [admissionpb.NumWorkClasses]*WorkQueueMetrics{
+				regularWorkQueueMetrics, elasticWorkQUeueMetrics,
+			}
 			storeCoordinators := &StoreGrantCoordinators{
 				settings: settings,
 				makeStoreRequesterFunc: func(
@@ -132,38 +136,27 @@ func TestGranterBasic(t *testing.T) {
 					requesters[numWorkKinds] = req.requesters[admissionpb.ElasticWorkClass]
 					return req
 				},
-				disableTickerForTesting: true,
-				knobs:                   &TestingKnobs{},
+				kvIOTokensExhaustedDuration: metrics.KVIOTokensExhaustedDuration,
+				kvIOTokensAvailable:         metrics.KVIOTokensAvailable,
+				kvIOTokensTaken:             metrics.KVIOTokensTaken,
+				kvIOTokensReturned:          metrics.KVIOTokensReturned,
+				kvIOTokensBypassed:          metrics.KVIOTokensBypassed,
+				l0CompactedBytes:            metrics.L0CompactedBytes,
+				l0TokensProduced:            metrics.L0TokensProduced,
+				workQueueMetrics:            workQueueMetrics,
+				disableTickerForTesting:     true,
+				knobs:                       &TestingKnobs{},
 			}
 			var metricsProvider testMetricsProvider
 			metricsProvider.setMetricsForStores([]int32{1}, pebble.Metrics{})
-			registryProvider := &testRegistryProvider{registry: registry}
-			storeCoordinators.SetPebbleMetricsProvider(context.Background(), &metricsProvider, registryProvider, &metricsProvider)
-			var ok bool
-			coord, ok = storeCoordinators.gcMap.Load(1)
+			storeCoordinators.SetPebbleMetricsProvider(context.Background(), &metricsProvider, &metricsProvider)
+			unsafeGranter, ok := storeCoordinators.gcMap.Load(int64(1))
 			require.True(t, ok)
+			coord = (*GrantCoordinator)(unsafeGranter)
 			kvStoreGranter := coord.granters[KVWork].(*kvStoreTokenGranter)
-			// Defensive check: `SetPebbleMetricsProvider` should initialize the SnapshotQueue.
-			require.NotNil(t, kvStoreGranter.snapshotRequester)
-			snapshotGranter := kvStoreGranter.snapshotRequester.(*SnapshotQueue).snapshotGranter
-			require.NotNil(t, snapshotGranter)
-			snapshotReq := &testRequester{
-				workKind:               KVWork,
-				granter:                snapshotGranter,
-				additionalID:           "-snapshot",
-				usesTokens:             true,
-				buf:                    &buf,
-				returnValueFromGranted: 0,
-			}
-			kvStoreGranter.snapshotRequester = snapshotReq
-			snapshotQueue := storeCoordinators.TryGetSnapshotQueueForStore(1)
-			require.NotNil(t, snapshotQueue)
-			requesters[numWorkKinds+1] = snapshotReq
-			// Use the same model for the IO linear models.
+			// Use the same model for all 3 kinds of models.
 			tlm := tokensLinearModel{multiplier: 0.5, constant: 50}
-			// Use w-amp of 1 for the purpose of this test.
-			wamplm := tokensLinearModel{multiplier: 1, constant: 0}
-			kvStoreGranter.setLinearModels(tlm, tlm, tlm, wamplm)
+			kvStoreGranter.setLinearModels(tlm, tlm, tlm)
 			return flushAndReset()
 
 		case "set-has-waiting-requests":
@@ -234,14 +227,10 @@ func TestGranterBasic(t *testing.T) {
 
 		case "set-tokens-loop":
 			var ioTokens int
-			var elasticDiskWriteTokens int
-			var elasticDiskReadTokens int
+			var elasticTokens int
 			var loop int
 			d.ScanArgs(t, "io-tokens", &ioTokens)
-			d.ScanArgs(t, "disk-write-tokens", &elasticDiskWriteTokens)
-			if d.HasArg("disk-read-tokens") {
-				d.ScanArgs(t, "disk-read-tokens", &elasticDiskReadTokens)
-			}
+			d.ScanArgs(t, "elastic-disk-bw-tokens", &elasticTokens)
 			d.ScanArgs(t, "loop", &loop)
 
 			for loop > 0 {
@@ -249,14 +238,8 @@ func TestGranterBasic(t *testing.T) {
 				// We are not using a real ioLoadListener, and simply setting the
 				// tokens (the ioLoadListener has its own test).
 				coord.granters[KVWork].(*kvStoreTokenGranter).setAvailableTokens(
-					int64(ioTokens),
-					int64(ioTokens),
-					int64(elasticDiskWriteTokens),
-					int64(elasticDiskReadTokens),
-					int64(ioTokens*250),
-					int64(ioTokens*250),
-					int64(elasticDiskWriteTokens*250),
-					false, // lastTick
+					int64(ioTokens), int64(ioTokens), int64(elasticTokens),
+					int64(ioTokens*250), int64(ioTokens*250), int64(elasticTokens*250), false,
 				)
 			}
 			coord.testingTryGrant()
@@ -264,14 +247,10 @@ func TestGranterBasic(t *testing.T) {
 
 		case "set-tokens":
 			var ioTokens int
-			var elasticDiskWriteTokens int
-			var elasticDiskReadTokens int
+			var elasticTokens int
 			var tickInterval int
 			d.ScanArgs(t, "io-tokens", &ioTokens)
-			d.ScanArgs(t, "disk-write-tokens", &elasticDiskWriteTokens)
-			if d.HasArg("disk-read-tokens") {
-				d.ScanArgs(t, "disk-read-tokens", &elasticDiskReadTokens)
-			}
+			d.ScanArgs(t, "elastic-disk-bw-tokens", &elasticTokens)
 			elasticIOTokens := ioTokens
 			if d.HasArg("elastic-io-tokens") {
 				d.ScanArgs(t, "elastic-io-tokens", &elasticIOTokens)
@@ -290,14 +269,9 @@ func TestGranterBasic(t *testing.T) {
 			// We are not using a real ioLoadListener, and simply setting the
 			// tokens (the ioLoadListener has its own test).
 			coord.granters[KVWork].(*kvStoreTokenGranter).setAvailableTokens(
-				int64(ioTokens),
-				int64(elasticIOTokens),
-				int64(elasticDiskWriteTokens),
-				int64(elasticDiskReadTokens),
-				int64(ioTokens*burstMultiplier),
-				int64(elasticIOTokens*burstMultiplier),
-				int64(elasticDiskWriteTokens*burstMultiplier),
-				false, // lastTick
+				int64(ioTokens), int64(elasticIOTokens), int64(elasticTokens),
+				int64(ioTokens*burstMultiplier), int64(elasticIOTokens*burstMultiplier),
+				int64(elasticTokens*burstMultiplier), false,
 			)
 			coord.testingTryGrant()
 			return flushAndReset()
@@ -309,17 +283,6 @@ func TestGranterBasic(t *testing.T) {
 			requesters[scanWorkKind(t, d)].granter.(granterWithStoreReplicatedWorkAdmitted).storeWriteDone(
 				int64(origTokens), StoreWorkDoneInfo{WriteBytes: int64(writeBytes)})
 			coord.testingTryGrant()
-			return flushAndReset()
-
-		case "adjust-disk-error":
-			var readBytes, writeBytes int
-			d.ScanArgs(t, "actual-write-bytes", &writeBytes)
-			d.ScanArgs(t, "actual-read-bytes", &readBytes)
-			m := StoreMetrics{DiskStats: DiskStats{
-				BytesRead:    uint64(readBytes),
-				BytesWritten: uint64(writeBytes),
-			}}
-			coord.adjustDiskTokenError(m)
 			return flushAndReset()
 
 		default:
@@ -380,23 +343,24 @@ func TestStoreCoordinators(t *testing.T) {
 	metrics := pebble.Metrics{}
 	mp := testMetricsProvider{}
 	mp.setMetricsForStores([]int32{10, 20}, metrics)
-	registryProvider := &testRegistryProvider{registry: registry}
 	// Setting the metrics provider will cause the initialization of two
 	// GrantCoordinators for the two stores.
-	storeCoords.SetPebbleMetricsProvider(context.Background(), &mp, registryProvider, &mp)
+	storeCoords.SetPebbleMetricsProvider(context.Background(), &mp, &mp)
 	// Now we have 1+2*2 = 5 KVWork requesters.
 	require.Equal(t, 5, len(requesters))
 	// Confirm that the store IDs are as expected.
-	var actualStores []roachpb.StoreID
+	var actualStores []int32
 
-	storeCoords.gcMap.Range(func(s roachpb.StoreID, _ *GrantCoordinator) bool {
-		actualStores = append(actualStores, s)
+	storeCoords.gcMap.Range(func(s int64, _ unsafe.Pointer) bool {
+		// The int32 conversion is lossless since we only store int32s in the
+		// gcMap.
+		actualStores = append(actualStores, int32(s))
 		// true indicates that iteration should continue after the
 		// current entry has been processed.
 		return true
 	})
 	sort.Slice(actualStores, func(i, j int) bool { return actualStores[i] < actualStores[j] })
-	require.Equal(t, []roachpb.StoreID{10, 20}, actualStores)
+	require.Equal(t, []int32{10, 20}, actualStores)
 	// Do tryGet on all requesters. The requester for the Regular
 	// GrantCoordinator will return false since it has 0 CPU slots. We are
 	// interested in the other ones, which have unlimited slots at this point in
@@ -505,8 +469,6 @@ func scanWorkKind(t *testing.T, d *datadriven.TestData) int8 {
 		return int8(SQLStatementRootStartWork)
 	case "kv-elastic":
 		return int8(numWorkKinds)
-	case "kv-snapshot":
-		return int8(numWorkKinds + 1)
 	}
 	panic("unknown WorkKind")
 }
@@ -522,8 +484,6 @@ type testMetricsProvider struct {
 func (m *testMetricsProvider) GetPebbleMetrics() []StoreMetrics {
 	return m.metrics
 }
-
-func (m *testMetricsProvider) Close() {}
 
 func (m *testMetricsProvider) UpdateIOThreshold(
 	id roachpb.StoreID, threshold *admissionpb.IOThreshold,
@@ -542,15 +502,14 @@ func (m *testMetricsProvider) setMetricsForStores(stores []int32, metrics pebble
 
 type noopOnLogEntryAdmitted struct{}
 
-func (n *noopOnLogEntryAdmitted) AdmittedLogEntry(context.Context, LogEntryAdmittedCallbackState) {
+func (n *noopOnLogEntryAdmitted) AdmittedLogEntry(
+	context.Context,
+	roachpb.NodeID,
+	admissionpb.WorkPriority,
+	roachpb.StoreID,
+	roachpb.RangeID,
+	LogPosition,
+) {
 }
 
 var _ OnLogEntryAdmitted = &noopOnLogEntryAdmitted{}
-
-type testRegistryProvider struct {
-	registry *metric.Registry
-}
-
-func (r *testRegistryProvider) GetMetricsRegistry(roachpb.StoreID) *metric.Registry {
-	return r.registry
-}

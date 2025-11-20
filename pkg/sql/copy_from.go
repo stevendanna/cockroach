@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
@@ -343,9 +344,15 @@ func newCopyMachine(
 	// to have field data then we have to populate the expectedHiddenColumnIdxs
 	// field with the columns indexes we expect to be hidden.
 	if c.p.SessionData().ExpectAndIgnoreNotVisibleColumnsInCopy && len(n.Columns) == 0 {
+		numInaccessibleCols := 0
 		for i, col := range tableDesc.PublicColumns() {
 			if col.IsHidden() {
-				c.expectedHiddenColumnIdxs = append(c.expectedHiddenColumnIdxs, i)
+				// Offset the index by the number of preceding inaccessible
+				// columns, which are never expected in the input.
+				c.expectedHiddenColumnIdxs = append(c.expectedHiddenColumnIdxs, i-numInaccessibleCols)
+			}
+			if col.IsInaccessible() {
+				numInaccessibleCols++
 			}
 		}
 	}
@@ -360,7 +367,7 @@ func newCopyMachine(
 	// we still have all the encoder allocations to make.
 	//
 	// We also make the fraction depend on the number of indexes in the table
-	// since each secondary index will require a separate CPut command for
+	// since each secondary index will require a separate InitPut command for
 	// each input row. We want to pick the fraction to be in [0.1, 0.33] range
 	// so that 0.33 is used with no secondary indexes and 0.1 is used with 16 or
 	// more secondary indexes.
@@ -474,9 +481,9 @@ func (c *copyMachine) initVectorizedCopy(ctx context.Context, typs []*types.T) e
 	c.vectorized = true
 	factory := coldataext.NewExtendedColumnFactory(c.p.EvalContext())
 	alloc := colmem.NewLimitedAllocator(ctx, &c.rowsMemAcc, nil /*optional unlimited memory account*/, factory)
+	alloc.SetMaxBatchSize(c.copyBatchRowSize)
 	// TODO(cucaroach): Avoid allocating selection vector.
-	c.accHelper.Init(alloc, c.maxRowMem, typs, false /* alwaysReallocate */)
-	c.accHelper.SetMaxBatchSize(c.copyBatchRowSize)
+	c.accHelper.Init(alloc, c.maxRowMem, typs, false /*alwaysReallocate*/)
 	// Start with small number of rows, compromise between going too big and
 	// overallocating memory and avoiding some doubling growth batches.
 	if err := colexecerror.CatchVectorizedRuntimeError(func() {
@@ -518,7 +525,7 @@ func (c *copyMachine) initMonitoring(ctx context.Context, parentMon *mon.BytesMo
 	// Create a monitor for the COPY command so it can be tracked separate from transaction or session.
 	memMetrics := &MemoryMetrics{}
 	c.copyMon = mon.NewMonitor(mon.Options{
-		Name:     mon.MakeMonitorName("copy"),
+		Name:     "copy",
 		CurCount: memMetrics.CurBytesCount,
 		MaxHist:  memMetrics.MaxBytesHist,
 		Settings: c.p.ExecCfg().Settings,
@@ -620,7 +627,7 @@ Loop:
 		switch typ {
 		case pgwirebase.ClientMsgCopyData:
 			if err := c.processCopyData(
-				ctx, encoding.UnsafeConvertBytesToString(readBuf.Msg), false, /* final */
+				ctx, unsafeUint8ToString(readBuf.Msg), false, /* final */
 			); err != nil {
 				return err
 			}
@@ -995,7 +1002,6 @@ func (c *copyMachine) readBinaryTuple(ctx context.Context) (bytesRead int, err e
 			c.resultColumns[i].Typ,
 			pgwirebase.FormatBinary,
 			data,
-			c.p.datumAlloc,
 		)
 		if err != nil {
 			return bytesRead, pgerror.Wrapf(err, pgcode.BadCopyFileFormat,
@@ -1206,11 +1212,6 @@ func (c *copyMachine) insertRowsInternal(ctx context.Context, finalBatch bool) (
 	var vc tree.SelectStatement
 	if c.copyFastPath {
 		if c.vectorized {
-			if buildutil.CrdbTestBuild {
-				if c.txnOpt.txn.BufferedWritesEnabled() {
-					return errors.AssertionFailedf("buffered writes should have been disabled for COPY")
-				}
-			}
 			b := tree.VectorRows{Batch: c.batch}
 			vc = &tree.LiteralValuesClause{Rows: &b}
 		} else {
@@ -1296,7 +1297,7 @@ func (c *copyMachine) readTextTuple(ctx context.Context, line []byte) error {
 func (c *copyMachine) readTextTupleDatum(ctx context.Context, parts [][]byte) error {
 	datums := c.scratchRow
 	for i, part := range parts {
-		s := encoding.UnsafeConvertBytesToString(part)
+		s := unsafeUint8ToString(part)
 		// Disable NULL conversion during file uploads.
 		if !c.forceNotNull && s == c.null {
 			datums[i] = tree.DNull
@@ -1339,7 +1340,7 @@ func (c *copyMachine) readTextTupleDatum(ctx context.Context, parts [][]byte) er
 
 func (c *copyMachine) readTextTupleVec(ctx context.Context, parts [][]byte) error {
 	for i, part := range parts {
-		s := encoding.UnsafeConvertBytesToString(part)
+		s := unsafeUint8ToString(part)
 		// Disable NULL conversion during file uploads.
 		if !c.forceNotNull && s == c.null {
 			c.valueHandlers[i].Null()
@@ -1489,3 +1490,7 @@ const (
 	binaryStateRead
 	binaryStateFoundTrailer
 )
+
+func unsafeUint8ToString(data []uint8) string {
+	return *(*string)(unsafe.Pointer(&data))
+}

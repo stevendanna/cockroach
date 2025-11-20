@@ -40,7 +40,7 @@ func newEnv(t *testing.T) *env {
 	// all of it with the datadriven harness!
 	require.NoError(t, WriteClusterVersion(ctx, eng, clusterversion.TestingClusterVersion))
 	require.NoError(t, InitEngine(ctx, eng, roachpb.StoreIdent{
-		ClusterID: uuid.MakeV4(),
+		ClusterID: uuid.FastMakeV4(),
 		NodeID:    1,
 		StoreID:   1,
 	}))

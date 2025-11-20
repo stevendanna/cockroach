@@ -12,6 +12,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -33,12 +34,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinsregistry"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treewindow"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
@@ -269,12 +270,6 @@ func (b *Builder) buildRelational(e memo.RelExpr) (_ execPlan, outputCols colOrd
 	case *memo.LockExpr:
 		ep, outputCols, err = b.buildLock(t)
 
-	case *memo.VectorSearchExpr:
-		ep, outputCols, err = b.buildVectorSearch(t)
-
-	case *memo.VectorMutationSearchExpr:
-		ep, outputCols, err = b.buildVectorMutationSearch(t)
-
 	case *memo.BarrierExpr:
 		ep, outputCols, err = b.buildBarrier(t)
 
@@ -286,9 +281,6 @@ func (b *Builder) buildRelational(e memo.RelExpr) (_ execPlan, outputCols colOrd
 
 	case *memo.CreateFunctionExpr:
 		ep, outputCols, err = b.buildCreateFunction(t)
-
-	case *memo.CreateTriggerExpr:
-		ep, outputCols, err = b.buildCreateTrigger(t)
 
 	case *memo.WithExpr:
 		ep, outputCols, err = b.buildWith(t)
@@ -381,7 +373,6 @@ func (b *Builder) buildRelational(e memo.RelExpr) (_ execPlan, outputCols colOrd
 	}
 
 	b.maybeAnnotateWithEstimates(ep.root, e)
-	b.maybeAnnotatePolicyInfo(ep.root, e)
 
 	if saveTableName != "" {
 		// The output columns do not change in applySaveTable.
@@ -414,8 +405,8 @@ func (b *Builder) maybeAnnotateWithEstimates(node exec.Node, e memo.RelExpr) {
 				// The first stat is the most recent full one.
 				var first int
 				for first < tab.StatisticCount() &&
-					tab.Statistic(first).IsPartial() ||
-					(tab.Statistic(first).IsForecast() && !b.evalCtx.SessionData().OptimizerUseForecasts) {
+					(tab.Statistic(first).IsPartial() ||
+						(tab.Statistic(first).IsForecast() && !b.evalCtx.SessionData().OptimizerUseForecasts)) {
 					first++
 				}
 
@@ -443,57 +434,6 @@ func (b *Builder) maybeAnnotateWithEstimates(node exec.Node, e memo.RelExpr) {
 			}
 		}
 		ef.AnnotateNode(node, exec.EstimatedStatsID, &val)
-	}
-}
-
-// maybeAnnotatePolicyInfo checks if we are building against an
-// ExplainFactory and annotates the node with row-level security policy
-// information.
-func (b *Builder) maybeAnnotatePolicyInfo(node exec.Node, e memo.RelExpr) {
-	if ef, ok := b.factory.(exec.ExplainFactory); ok {
-		rlsMeta := b.mem.Metadata().GetRLSMeta()
-		// RLS is lazily initialized, and only when it comes across a RLS enabled
-		// table.
-		if !rlsMeta.IsInitialized {
-			return
-		}
-		// Helper to annotate a node for the given table ID.
-		annotateNodeForTable := func(tabID opt.TableID) {
-			// Pull out the policy information for the table the node was built for.
-			policies, found := rlsMeta.PoliciesApplied[tabID]
-			if found {
-				val := exec.RLSPoliciesApplied{
-					PoliciesSkippedForRole: rlsMeta.HasAdminRole,
-					Policies:               policies,
-				}
-				ef.AnnotateNode(node, exec.PolicyInfoID, &val)
-			}
-		}
-		switch e := e.(type) {
-		case *memo.ValuesExpr:
-			// Normally, since policies apply to specific tables, we annotate when we
-			// come across a scan of a single table. We need to annotate a "norows"
-			// value as this can be emitted when scanning a table and RLS forced all
-			// rows to be filtered out because none of the policies applied.
-			if len(e.Rows) == 0 && rlsMeta.NoPoliciesApplied {
-				ef.AnnotateNode(node, exec.PolicyInfoID, &exec.RLSPoliciesApplied{})
-			}
-		case *memo.ScanExpr:
-			annotateNodeForTable(e.Table)
-		case *memo.LookupJoinExpr:
-			annotateNodeForTable(e.Table)
-		case *memo.ZigzagJoinExpr:
-			annotateNodeForTable(e.LeftTable)
-			annotateNodeForTable(e.RightTable)
-		case *memo.InvertedJoinExpr:
-			annotateNodeForTable(e.Table)
-		case *memo.PlaceholderScanExpr:
-			annotateNodeForTable(e.Table)
-		case *memo.IndexJoinExpr:
-			annotateNodeForTable(e.Table)
-		case *memo.VectorSearchExpr:
-			annotateNodeForTable(e.Table)
-		}
 	}
 }
 
@@ -629,7 +569,7 @@ func (b *Builder) indexConstraintMaxResults(
 		return 0, false
 	}
 
-	return c.CalculateMaxResults(b.ctx, b.evalCtx, indexCols, relProps.NotNullCols)
+	return c.CalculateMaxResults(b.evalCtx, indexCols, relProps.NotNullCols)
 }
 
 // scanParams populates ScanParams and the output column mapping.
@@ -640,7 +580,7 @@ func (b *Builder) scanParams(
 	// index in the memo.
 	if scan.Flags.ForceIndex && scan.Flags.Index != scan.Index {
 		idx := tab.Index(scan.Flags.Index)
-		isInverted := idx.Type() == idxtype.INVERTED
+		isInverted := idx.IsInverted()
 		_, isPartial := idx.Predicate()
 
 		var err error
@@ -664,20 +604,13 @@ func (b *Builder) scanParams(
 			err = pgerror.Newf(pgcode.WrongObjectType,
 				"index \"%s\" cannot be used for this query", idx.Name())
 			if b.evalCtx.SessionData().DisallowFullTableScans &&
-				!b.evalCtx.SessionData().Internal &&
 				(b.flags.IsSet(exec.PlanFlagContainsLargeFullTableScan) ||
 					b.flags.IsSet(exec.PlanFlagContainsLargeFullIndexScan)) {
 				// TODO(#123783): this code might need an adjustment for virtual
 				// tables.
-				var hint strings.Builder
-				hint.WriteString("to permit this scan, set disallow_full_table_scans to false or increase the large_full_scan_rows threshold")
-				// If statistics are available, we can determine the appropriate
-				// `large_full_scan_rows` threshold to allow this scan.
-				stats := relProps.Statistics()
-				if stats.Available {
-					hint.WriteString(fmt.Sprintf(" to at least %0.0f", stats.RowCount+1))
-				}
-				err = errors.WithHint(err, hint.String())
+				err = errors.WithHint(err,
+					"try overriding the `disallow_full_table_scans` or increasing the `large_full_scan_rows` cluster/session settings",
+				)
 			}
 		}
 
@@ -808,7 +741,7 @@ func (b *Builder) buildScan(scan *memo.ScanExpr) (_ execPlan, outputCols colOrdM
 		// NO_FULL_SCAN hint (isUnfiltered is false for partial indexes), but if the
 		// user has explicitly forced the partial index *and* used NO_FULL_SCAN, we
 		// disallow the full index scan.
-		if isUnfiltered || (scan.Flags.ForceIndex && scan.IsFullIndexScan()) {
+		if isUnfiltered || (scan.Flags.ForceIndex && scan.IsFullIndexScan(md)) {
 			return execPlan{}, colOrdMap{}, fmt.Errorf("could not produce a query plan conforming to the NO_FULL_SCAN hint")
 		}
 	}
@@ -818,17 +751,11 @@ func (b *Builder) buildScan(scan *memo.ScanExpr) (_ execPlan, outputCols colOrdM
 	}
 
 	idx := tab.Index(scan.Index)
-	if idx.Type() == idxtype.INVERTED {
-		if len(scan.InvertedConstraint) == 0 && scan.Constraint == nil {
-			return execPlan{}, colOrdMap{},
-				errors.AssertionFailedf("expected inverted index scan to have a constraint")
-		}
+	if idx.IsInverted() && len(scan.InvertedConstraint) == 0 && scan.Constraint == nil {
+		return execPlan{}, colOrdMap{},
+			errors.AssertionFailedf("expected inverted index scan to have a constraint")
 	}
-	if idx.Type() == idxtype.VECTOR {
-		return execPlan{}, colOrdMap{}, errors.AssertionFailedf(
-			"only VectorSearch operators can use vector indexes")
-	}
-	b.IndexesUsed.add(tab.ID(), idx.ID())
+	b.IndexesUsed = util.CombineUnique(b.IndexesUsed, []string{fmt.Sprintf("%d@%d", tab.ID(), idx.ID())})
 
 	// Save if we planned a full (large) table/index scan on the builder so that
 	// the planner can be made aware later. We only do this for non-virtual
@@ -840,7 +767,7 @@ func (b *Builder) buildScan(scan *memo.ScanExpr) (_ execPlan, outputCols colOrdM
 	relProps := scan.Relational()
 	stats := relProps.Statistics()
 	if !tab.IsVirtualTable() && isUnfiltered {
-		large := !stats.Available || stats.RowCount >= b.evalCtx.SessionData().LargeFullScanRows
+		large := !stats.Available || stats.RowCount > b.evalCtx.SessionData().LargeFullScanRows
 		if scan.Index == cat.PrimaryIndex {
 			b.flags.Set(exec.PlanFlagContainsFullTableScan)
 			if large {
@@ -961,7 +888,7 @@ func (b *Builder) buildPlaceholderScan(
 	}
 	var columns constraint.Columns
 	columns.Init(spanColumns)
-	keyCtx := constraint.MakeKeyContext(b.ctx, &columns, b.evalCtx)
+	keyCtx := constraint.MakeKeyContext(&columns, b.evalCtx)
 
 	values := make([]tree.Datum, len(scan.Span))
 	for i, expr := range scan.Span {
@@ -987,7 +914,7 @@ func (b *Builder) buildPlaceholderScan(
 	c.Init(&keyCtx, &spans)
 
 	private := scan.ScanPrivate
-	private.SetConstraint(b.ctx, b.evalCtx, &c)
+	private.SetConstraint(b.evalCtx, &c)
 
 	var params exec.ScanParams
 	params, outputCols, err = b.scanParams(tab, &private, scan.Relational(), scan.RequiredPhysical())
@@ -1230,7 +1157,6 @@ func (b *Builder) buildApplyJoin(join memo.RelExpr) (_ execPlan, outputCols colO
 	//
 	// Note: we put o outside of the function so we allocate it only once.
 	var o xform.Optimizer
-	fromMemo := b.mem
 	planRightSideFn := func(ctx context.Context, ef exec.Factory, leftRow tree.Datums) (_ exec.Plan, err error) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -1259,6 +1185,7 @@ func (b *Builder) buildApplyJoin(join memo.RelExpr) (_ execPlan, outputCols colO
 
 		// Copy the right expression into a new memo, replacing each bound column
 		// with the corresponding value from the left row.
+		addedWithBindings := false
 		var replaceFn norm.ReplaceFunc
 		replaceFn = func(e opt.Expr) opt.Expr {
 			switch t := e.(type) {
@@ -1282,20 +1209,17 @@ func (b *Builder) buildApplyJoin(join memo.RelExpr) (_ execPlan, outputCols colO
 				// We lazily add these With expressions to the metadata here
 				// because the call to Factory.CopyAndReplace below clears With
 				// expressions in the metadata.
-				b.mem.Metadata().ForEachWithBinding(func(id opt.WithID, expr opt.Expr) {
-					// Make sure to check for an existing With binding, since we may
-					// have already rewritten the bound expression and added it to the
-					// new memo if the associated WithExpr is part of the right input of
-					// the apply-join.
-					if !f.Metadata().HasWithBinding(id) {
+				if !addedWithBindings {
+					b.mem.Metadata().ForEachWithBinding(func(id opt.WithID, expr opt.Expr) {
 						f.Metadata().AddWithBinding(id, expr)
-					}
-				})
+					})
+					addedWithBindings = true
+				}
 				// Fall through.
 			}
 			return f.CopyAndReplaceDefault(e, replaceFn)
 		}
-		f.CopyAndReplace(fromMemo, rightExpr, &rightRequiredProps, replaceFn)
+		f.CopyAndReplace(rightExpr, &rightRequiredProps, replaceFn)
 
 		newRightSide, err := o.Optimize()
 		if err != nil {
@@ -1430,10 +1354,6 @@ func (b *Builder) buildHashJoin(join memo.RelExpr) (_ execPlan, outputCols colOr
 		// to apply join hints to semi or anti joins. Join hints are only
 		// possible on explicit joins using the JOIN keyword, and semi and anti
 		// joins are only created from implicit joins without the JOIN keyword.
-		//
-		// Note that we use the row count estimates even when stats are
-		// unavailable so that the input that is more likely to be smaller ended
-		// up on the right side.
 		leftRowCount := leftExpr.Relational().Statistics().RowCount
 		rightRowCount := rightExpr.Relational().Statistics().RowCount
 		if leftRowCount < rightRowCount {
@@ -1508,13 +1428,6 @@ func (b *Builder) buildHashJoin(join memo.RelExpr) (_ execPlan, outputCols colOr
 
 	leftEqColsAreKey := leftExpr.Relational().FuncDeps.ColsAreStrictKey(leftEq.ToSet())
 	rightEqColsAreKey := rightExpr.Relational().FuncDeps.ColsAreStrictKey(rightEq.ToSet())
-	var leftRowCount, rightRowCount uint64
-	if leftExpr.Relational().Statistics().Available {
-		leftRowCount = uint64(leftExpr.Relational().Statistics().RowCount)
-	}
-	if rightExpr.Relational().Statistics().Available {
-		rightRowCount = uint64(rightExpr.Relational().Statistics().RowCount)
-	}
 
 	b.recordJoinType(joinType)
 	if isCrossJoin {
@@ -1529,7 +1442,6 @@ func (b *Builder) buildHashJoin(join memo.RelExpr) (_ execPlan, outputCols colOr
 		leftEqOrdinals, rightEqOrdinals,
 		leftEqColsAreKey, rightEqColsAreKey,
 		onExpr,
-		leftRowCount, rightRowCount,
 	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
@@ -1556,10 +1468,6 @@ func (b *Builder) buildMergeJoin(
 		// We have a partial join, and we want to make sure that the relation
 		// with smaller cardinality is on the right side. Note that we assumed
 		// it during the costing.
-		//
-		// Note that we use the row count estimates even when stats are
-		// unavailable so that the input that is more likely to be smaller ended
-		// up on the right side.
 		// TODO(raduberinde): we might also need to look at memo.JoinFlags when
 		// choosing a side.
 		leftRowCount := leftExpr.Relational().Statistics().RowCount
@@ -1617,13 +1525,6 @@ func (b *Builder) buildMergeJoin(
 	}
 	leftEqColsAreKey := leftExpr.Relational().FuncDeps.ColsAreStrictKey(leftEq.ColSet())
 	rightEqColsAreKey := rightExpr.Relational().FuncDeps.ColsAreStrictKey(rightEq.ColSet())
-	var leftRowCount, rightRowCount uint64
-	if leftExpr.Relational().Statistics().Available {
-		leftRowCount = uint64(leftExpr.Relational().Statistics().RowCount)
-	}
-	if rightExpr.Relational().Statistics().Available {
-		rightRowCount = uint64(rightExpr.Relational().Statistics().RowCount)
-	}
 	b.recordJoinType(joinType)
 	b.recordJoinAlgorithm(exec.MergeJoin)
 	var ep execPlan
@@ -1633,7 +1534,6 @@ func (b *Builder) buildMergeJoin(
 		onExpr,
 		leftOrd, rightOrd, reqOrd,
 		leftEqColsAreKey, rightEqColsAreKey,
-		leftRowCount, rightRowCount,
 	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
@@ -1731,9 +1631,6 @@ func (b *Builder) buildGroupBy(groupBy memo.RelExpr) (_ execPlan, outputCols col
 
 	aggregations := *groupBy.Child(1).(*memo.AggregationsExpr)
 	aggInfos := make([]exec.AggInfo, len(aggregations))
-	// There will be roughly one column per aggregation.
-	argCols := make([]exec.NodeColumnOrdinal, 0, len(aggregations))
-	var constArgs tree.Datums
 	for i := range aggregations {
 		item := &aggregations[i]
 		agg := item.Agg
@@ -1761,6 +1658,8 @@ func (b *Builder) buildGroupBy(groupBy memo.RelExpr) (_ execPlan, outputCols col
 
 		// Accumulate variable arguments in argCols and constant arguments in
 		// constArgs. Constant arguments must follow variable arguments.
+		var argCols []exec.NodeColumnOrdinal
+		var constArgs tree.Datums
 		for j, n := 0, agg.ChildCount(); j < n; j++ {
 			child := agg.Child(j)
 			if variable, ok := child.(*memo.VariableExpr); ok {
@@ -1776,10 +1675,6 @@ func (b *Builder) buildGroupBy(groupBy memo.RelExpr) (_ execPlan, outputCols col
 				if len(argCols) == 0 {
 					return execPlan{}, colOrdMap{}, errors.Errorf("a constant arg requires at least one variable arg")
 				}
-				if constArgs == nil {
-					// Lazily allocate constArgs.
-					constArgs = make(tree.Datums, 0, len(aggregations)-i)
-				}
 				constArgs = append(constArgs, memo.ExtractConstDatum(child))
 			}
 		}
@@ -1788,26 +1683,17 @@ func (b *Builder) buildGroupBy(groupBy memo.RelExpr) (_ execPlan, outputCols col
 			FuncName:         name,
 			Distinct:         distinct,
 			ResultType:       item.Agg.DataType(),
-			ArgCols:          argCols[:len(argCols):len(argCols)],
-			ConstArgs:        constArgs[:len(constArgs):len(constArgs)],
+			ArgCols:          argCols,
+			ConstArgs:        constArgs,
 			Filter:           filterOrd,
 			DistsqlBlocklist: overload.DistsqlBlocklist,
 		}
 		outputCols.Set(item.Col, len(groupingColIdx)+i)
-		// Slice argCols and constArgs so the rest of their capacity can be
-		// reused.
-		argCols = argCols[len(argCols):]
-		constArgs = constArgs[len(constArgs):]
 	}
 
 	var ep execPlan
 	if groupBy.Op() == opt.ScalarGroupByOp {
-		scalarGroupBy := groupBy.(*memo.ScalarGroupByExpr)
-		var inputRowCount uint64
-		if inputRelProps := scalarGroupBy.Input.Relational(); inputRelProps.Statistics().Available {
-			inputRowCount = uint64(math.Ceil(inputRelProps.Statistics().RowCount))
-		}
-		ep.root, err = b.factory.ConstructScalarGroupBy(input.root, aggInfos, inputRowCount)
+		ep.root, err = b.factory.ConstructScalarGroupBy(input.root, aggInfos)
 	} else {
 		groupBy := groupBy.(*memo.GroupByExpr)
 		var groupingColOrder colinfo.ColumnOrdering
@@ -1823,15 +1709,12 @@ func (b *Builder) buildGroupBy(groupBy memo.RelExpr) (_ execPlan, outputCols col
 			return execPlan{}, colOrdMap{}, err
 		}
 		orderType := exec.GroupingOrderType(groupBy.GroupingOrderType(&groupBy.RequiredPhysical().Ordering))
-		var rowCount, inputRowCount uint64
+		var rowCount uint64
 		if relProps := groupBy.Relational(); relProps.Statistics().Available {
 			rowCount = uint64(math.Ceil(relProps.Statistics().RowCount))
 		}
-		if inputRelProps := groupBy.Input.Relational(); inputRelProps.Statistics().Available {
-			inputRowCount = uint64(math.Ceil(inputRelProps.Statistics().RowCount))
-		}
 		ep.root, err = b.factory.ConstructGroupBy(
-			input.root, groupingColIdx, groupingColOrder, aggInfos, reqOrd, orderType, rowCount, inputRowCount,
+			input.root, groupingColIdx, groupingColOrder, aggInfos, reqOrd, orderType, rowCount,
 		)
 	}
 	if err != nil {
@@ -1922,7 +1805,7 @@ func (b *Builder) buildGroupByInput(
 	neededCols := private.GroupingCols.Copy()
 	aggs := *groupBy.Child(1).(*memo.AggregationsExpr)
 	for i := range aggs {
-		neededCols = memo.AddAggInputColumns(neededCols, aggs[i].Agg)
+		neededCols.UnionWith(memo.ExtractAggInputColumns(aggs[i].Agg))
 	}
 
 	// In rare cases, we might need a column only for its ordering, for example:
@@ -2068,14 +1951,6 @@ func (b *Builder) buildSetOp(set memo.RelExpr) (_ execPlan, outputCols colOrdMap
 	for i, col := range private.OutCols {
 		outputCols.Set(col, i)
 	}
-	leftOrdering, err := sqlOrdering(leftExpr.ProvidedPhysical().Ordering, leftCols)
-	if err != nil {
-		return execPlan{}, colOrdMap{}, err
-	}
-	rightOrdering, err := sqlOrdering(rightExpr.ProvidedPhysical().Ordering, rightCols)
-	if err != nil {
-		return execPlan{}, colOrdMap{}, err
-	}
 	streamingOrdering, err := sqlOrdering(
 		ordering.StreamingSetOpOrdering(set, &set.RequiredPhysical().Ordering), outputCols,
 	)
@@ -2090,18 +1965,12 @@ func (b *Builder) buildSetOp(set memo.RelExpr) (_ execPlan, outputCols colOrdMap
 
 	var ep execPlan
 	if typ == tree.UnionOp && all {
-		ep.root, err = b.factory.ConstructUnionAll(
-			left.root, right.root, leftOrdering, rightOrdering, reqOrdering,
-			hardLimit, enforceHomeRegion,
-		)
+		ep.root, err = b.factory.ConstructUnionAll(left.root, right.root, reqOrdering, hardLimit, enforceHomeRegion)
 	} else if len(streamingOrdering) > 0 {
 		if typ != tree.UnionOp {
 			b.recordJoinAlgorithm(exec.MergeJoin)
 		}
-		ep.root, err = b.factory.ConstructStreamingSetOp(
-			typ, all, left.root, right.root,
-			leftOrdering, rightOrdering, streamingOrdering, reqOrdering,
-		)
+		ep.root, err = b.factory.ConstructStreamingSetOp(typ, all, left.root, right.root, streamingOrdering, reqOrdering)
 	} else {
 		if len(reqOrdering) > 0 {
 			return execPlan{}, colOrdMap{}, errors.AssertionFailedf("hash set op is not supported with a required ordering")
@@ -2140,18 +2009,12 @@ func (b *Builder) buildTopK(e *memo.TopKExpr) (_ execPlan, outputCols colOrdMap,
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}
-	var inputRowCount uint64
-	if inputRelProps := e.Input.Relational(); inputRelProps.Statistics().Available {
-		inputRowCount = uint64(math.Ceil(inputRelProps.Statistics().RowCount))
-	}
 	var ep execPlan
 	ep.root, err = b.factory.ConstructTopK(
 		input.root,
 		e.K,
 		exec.OutputOrdering(sqlOrdering),
-		alreadyOrderedPrefix,
-		inputRowCount,
-	)
+		alreadyOrderedPrefix)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}
@@ -2205,18 +2068,11 @@ func (b *Builder) buildSort(sort *memo.SortExpr) (_ execPlan, outputCols colOrdM
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}
-
-	var inputRowCount uint64
-	if inputRelProps := sort.Input.Relational(); inputRelProps.Statistics().Available {
-		inputRowCount = uint64(math.Ceil(inputRelProps.Statistics().RowCount))
-	}
-
 	var ep execPlan
 	ep.root, err = b.factory.ConstructSort(
 		input.root,
 		exec.OutputOrdering(sqlOrdering),
 		alreadyOrderedPrefix,
-		inputRowCount,
 	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
@@ -2251,7 +2107,7 @@ func (b *Builder) enforceScanWithHomeRegion(skipID cat.StableID) error {
 		}
 	}
 	if len(moreThanOneRegionScans) > 0 {
-		md := b.mem.Metadata()
+		md := moreThanOneRegionScans[0].Memo().Metadata()
 		tabMeta := md.TableMeta(moreThanOneRegionScans[0].Table)
 		if len(moreThanOneRegionScans) == 1 {
 			return b.filterSuggestionError(tabMeta, moreThanOneRegionScans[0].Index, nil /* table2Meta */, 0 /* indexOrdinal2 */)
@@ -2270,7 +2126,7 @@ func (b *Builder) enforceScanWithHomeRegion(skipID cat.StableID) error {
 			sqlerrors.EnforceHomeRegionFurtherInfo)
 	}
 	for i, scan := range b.builtScans {
-		inputTableMeta := b.mem.Metadata().TableMeta(scan.Table)
+		inputTableMeta := scan.Memo().Metadata().TableMeta(scan.Table)
 		inputTable := inputTableMeta.Table
 		// Mutation DML errors out with additional information via a call to
 		// `filterSuggestionError`, handled by the caller, so skip the target of
@@ -2309,7 +2165,7 @@ func (b *Builder) enforceScanWithHomeRegion(skipID cat.StableID) error {
 			var inputIndexOrdinal2 cat.IndexOrdinal
 			if len(b.builtScans) > 1 && i == 0 {
 				scan2 := b.builtScans[1]
-				inputTableMeta2 = b.mem.Metadata().TableMeta(scan2.Table)
+				inputTableMeta2 = scan2.Memo().Metadata().TableMeta(scan2.Table)
 				inputIndexOrdinal2 = scan2.Index
 			}
 			return b.filterSuggestionError(inputTableMeta, inputIndexOrdinal, inputTableMeta2, inputIndexOrdinal2)
@@ -2431,7 +2287,7 @@ func (b *Builder) buildIndexJoin(
 	// TODO(radu): the distsql implementation of index join assumes that the input
 	// starts with the PK columns in order (#40749).
 	pri := tab.Index(cat.PrimaryIndex)
-	b.IndexesUsed.add(tab.ID(), pri.ID())
+	b.IndexesUsed = util.CombineUnique(b.IndexesUsed, []string{fmt.Sprintf("%d@%d", tab.ID(), pri.ID())})
 	keyCols := make([]exec.NodeColumnOrdinal, pri.KeyColumnCount())
 	for i := range keyCols {
 		keyCols[i], err = getNodeColumnOrdinal(inputCols, join.Table.ColumnID(pri.Column(i).Ordinal()))
@@ -2544,7 +2400,7 @@ func (b *Builder) handleRemoteLookupJoinError(join *memo.LookupJoinExpr) (err er
 		// the query can't be answered by executing the first branch of the LOS.
 		return nil
 	}
-	lookupTableMeta := b.mem.Metadata().TableMeta(join.Table)
+	lookupTableMeta := join.Memo().Metadata().TableMeta(join.Table)
 	lookupTable := lookupTableMeta.Table
 
 	var input opt.Expr
@@ -2575,7 +2431,7 @@ func (b *Builder) handleRemoteLookupJoinError(join *memo.LookupJoinExpr) (err er
 	var inputIndexOrdinal cat.IndexOrdinal
 	switch t := input.(type) {
 	case *memo.ScanExpr:
-		inputTableMeta = b.mem.Metadata().TableMeta(t.Table)
+		inputTableMeta = join.Memo().Metadata().TableMeta(t.Table)
 		inputTable = inputTableMeta.Table
 		inputTableName = string(inputTable.Name())
 		inputIndexOrdinal = t.Index
@@ -2607,7 +2463,7 @@ func (b *Builder) handleRemoteLookupJoinError(join *memo.LookupJoinExpr) (err er
 				}
 			} else if join.LookupColsAreTableKey &&
 				len(join.LookupExpr) > 0 {
-				if filterIdx, ok := join.GetConstPrefixFilter(b.mem.Metadata()); ok {
+				if filterIdx, ok := join.GetConstPrefixFilter(join.Memo().Metadata()); ok {
 					firstIndexColEqExpr := join.LookupJoinPrivate.LookupExpr[filterIdx].Condition
 					if firstIndexColEqExpr.Op() == opt.EqOp {
 						if regionName, ok := distribution.GetDEnumAsStringFromConstantExpr(firstIndexColEqExpr.Child(1)); ok {
@@ -2625,7 +2481,7 @@ func (b *Builder) handleRemoteLookupJoinError(join *memo.LookupJoinExpr) (err er
 	// more.
 	if homeRegion == "" && b.optimizer != nil && b.optimizer.Coster() != nil {
 		_, physicalDistribution := distribution.BuildLookupJoinLookupTableDistribution(
-			b.ctx, b.evalCtx, b.mem, join, join.RequiredPhysical(), b.optimizer.MaybeGetBestCostRelation,
+			b.ctx, b.evalCtx, join, join.RequiredPhysical(), b.optimizer.MaybeGetBestCostRelation,
 		)
 		if len(physicalDistribution.Regions) == 1 {
 			homeRegion = physicalDistribution.Regions[0]
@@ -2809,7 +2665,7 @@ func (b *Builder) buildLookupJoin(
 
 	tab := md.Table(join.Table)
 	idx := tab.Index(join.Index)
-	b.IndexesUsed.add(tab.ID(), idx.ID())
+	b.IndexesUsed = util.CombineUnique(b.IndexesUsed, []string{fmt.Sprintf("%d@%d", tab.ID(), idx.ID())})
 
 	locking, err := b.buildLocking(join.Table, join.Locking)
 	if err != nil {
@@ -2826,13 +2682,6 @@ func (b *Builder) buildLookupJoin(
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}
-	ok, requiredDirection := ordering.LookupJoinCanProvideOrdering(
-		b.ctx, b.evalCtx, b.mem, join, &join.RequiredPhysical().Ordering,
-	)
-	if !ok {
-		return execPlan{}, colOrdMap{}, errors.AssertionFailedf("lookup join can't provide required ordering")
-	}
-	reverse := requiredDirection == ordering.ReverseDirection
 	var res execPlan
 	res.root, err = b.factory.ConstructLookupJoin(
 		joinType,
@@ -2851,7 +2700,6 @@ func (b *Builder) buildLookupJoin(
 		locking,
 		join.RequiredPhysical().LimitHintInt64(),
 		join.RemoteOnlyLookups,
-		reverse,
 	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
@@ -2876,7 +2724,7 @@ func (b *Builder) buildLookupJoin(
 }
 
 func (b *Builder) handleRemoteInvertedJoinError(join *memo.InvertedJoinExpr) (err error) {
-	lookupTableMeta := b.mem.Metadata().TableMeta(join.Table)
+	lookupTableMeta := join.Memo().Metadata().TableMeta(join.Table)
 	lookupTable := lookupTableMeta.Table
 
 	var input opt.Expr
@@ -2894,7 +2742,7 @@ func (b *Builder) handleRemoteInvertedJoinError(join *memo.InvertedJoinExpr) (er
 	var inputIndexOrdinal cat.IndexOrdinal
 	switch t := input.(type) {
 	case *memo.ScanExpr:
-		inputTableMeta = b.mem.Metadata().TableMeta(t.Table)
+		inputTableMeta = join.Memo().Metadata().TableMeta(t.Table)
 		inputTable = inputTableMeta.Table
 		inputTableName = string(inputTable.Name())
 		inputIndexOrdinal = t.Index
@@ -2997,7 +2845,7 @@ func (b *Builder) buildInvertedJoin(
 	md := b.mem.Metadata()
 	tab := md.Table(join.Table)
 	idx := tab.Index(join.Index)
-	b.IndexesUsed.add(tab.ID(), idx.ID())
+	b.IndexesUsed = util.CombineUnique(b.IndexesUsed, []string{fmt.Sprintf("%d@%d", tab.ID(), idx.ID())})
 
 	prefixEqCols := make([]exec.NodeColumnOrdinal, len(join.PrefixKeyCols))
 	for i, c := range join.PrefixKeyCols {
@@ -3139,8 +2987,10 @@ func (b *Builder) buildZigzagJoin(
 	rightTable := md.Table(join.RightTable)
 	leftIndex := leftTable.Index(join.LeftIndex)
 	rightIndex := rightTable.Index(join.RightIndex)
-	b.IndexesUsed.add(leftTable.ID(), leftIndex.ID())
-	b.IndexesUsed.add(rightTable.ID(), rightIndex.ID())
+	b.IndexesUsed = util.CombineUnique(b.IndexesUsed,
+		[]string{fmt.Sprintf("%d@%d", leftTable.ID(), leftIndex.ID())})
+	b.IndexesUsed = util.CombineUnique(b.IndexesUsed,
+		[]string{fmt.Sprintf("%d@%d", rightTable.ID(), rightIndex.ID())})
 
 	leftEqCols := make([]exec.TableColumnOrdinal, len(join.LeftEqCols))
 	rightEqCols := make([]exec.TableColumnOrdinal, len(join.RightEqCols))
@@ -3248,7 +3098,7 @@ func (b *Builder) buildZigzagJoin(
 }
 
 func (b *Builder) buildLocking(toLock opt.TableID, locking opt.Locking) (opt.Locking, error) {
-	if b.forceForUpdateLocking == toLock {
+	if b.forceForUpdateLocking.Contains(int(toLock)) {
 		locking = locking.Max(forUpdateLocking)
 	}
 	if locking.IsLocking() {
@@ -3266,10 +3116,13 @@ func (b *Builder) buildLocking(toLock opt.TableID, locking opt.Locking) (opt.Loc
 		// Check if we can actually use shared locks here, or we need to use
 		// non-locking reads instead.
 		if locking.Strength == tree.ForShare || locking.Strength == tree.ForKeyShare {
-			// Shared locks behavior for serializable transactions is dictated by
-			// session setting.
-			if b.evalCtx.TxnIsoLevel == isolation.Serializable &&
-				!b.evalCtx.SessionData().SharedLockingForSerializable {
+			// Shared locks weren't a thing prior to v23.2, so we must use non-locking
+			// reads.
+			if !b.evalCtx.Settings.Version.IsActive(b.ctx, clusterversion.V23_2) ||
+				// And in >= v23.2, their locking behavior for serializable transactions
+				// is dictated by session setting.
+				(b.evalCtx.TxnIsoLevel == isolation.Serializable &&
+					!b.evalCtx.SessionData().SharedLockingForSerializable) {
 				// Reset locking information as we've determined we're going to be
 				// performing a non-locking read.
 				return opt.Locking{}, nil // early return; do not set PlanFlagContainsLocking
@@ -3317,12 +3170,16 @@ func (b *Builder) buildWith(with *memo.WithExpr) (_ execPlan, outputCols colOrdM
 	// remove it, since subquery execution also guarantees complete execution.
 
 	// Add the buffer as a subquery so it gets executed ahead of time, and is
-	// available to be referenced by other queries. Use SubqueryDiscardAllRows to
-	// avoid buffering the results in the subquery, since the bufferNode will
-	// already save the rows.
+	// available to be referenced by other queries.
 	b.subqueries = append(b.subqueries, exec.Subquery{
 		ExprNode: with.OriginalExpr,
-		Mode:     exec.SubqueryDiscardAllRows,
+		// TODO(justin): this is wasteful: both the subquery and the bufferNode
+		// will buffer up all the results.  This should be fixed by either making
+		// the buffer point directly to the subquery results or adding a new
+		// subquery mode that reads and discards all rows. This could possibly also
+		// be fixed by ensuring that bufferNode exhausts its input (and forcing it
+		// to behave like a spoolNode) and using the EXISTS mode.
+		Mode:     exec.SubqueryAllRows,
 		Root:     buffer,
 		RowCount: int64(with.Relational().Statistics().RowCountIfAvailable()),
 	})
@@ -3393,8 +3250,8 @@ func (b *Builder) buildRecursiveCTE(
 		}
 		rootRowCount := int64(rec.Recursive.Relational().Statistics().RowCountIfAvailable())
 		return innerBld.factory.ConstructPlan(
-			plan.root, innerBld.subqueries, innerBld.cascades, innerBld.triggers, innerBld.checks,
-			rootRowCount, innerBld.flags,
+			plan.root, innerBld.subqueries, innerBld.cascades, innerBld.checks, rootRowCount,
+			innerBld.flags,
 		)
 	}
 
@@ -3543,7 +3400,6 @@ func (b *Builder) buildCall(c *memo.CallExpr) (_ execPlan, outputCols colOrdMap,
 		udf.Def.SetReturning,
 		false, /* tailCall */
 		true,  /* procedure */
-		false, /* triggerFunc */
 		false, /* blockStart */
 		nil,   /* blockState */
 		nil,   /* cursorDeclaration */
@@ -3782,7 +3638,7 @@ func (b *Builder) buildWindow(w *memo.WindowExpr) (_ execPlan, outputCols colOrd
 			OrderBy:    orderingExprs,
 			Frame:      frame,
 		}
-		wrappedFn, err := b.wrapBuiltinFunction(name)
+		wrappedFn, err := b.wrapFunction(name)
 		if err != nil {
 			return execPlan{}, colOrdMap{}, err
 		}
@@ -3873,7 +3729,7 @@ func (b *Builder) applySaveTable(
 	// opttester.
 	outputCols := e.Relational().OutputCols
 	colNames := make([]string, outputCols.Len())
-	colNameGen := memo.NewColumnNameGenerator(b.mem, e)
+	colNameGen := memo.NewColumnNameGenerator(e)
 	for col, ok := outputCols.Next(0); ok; col, ok = outputCols.Next(col + 1) {
 		ord, _ := inputCols.Get(col)
 		colNames[ord] = colNameGen.GenerateName(col)
@@ -3910,114 +3766,6 @@ func (b *Builder) buildBarrier(
 	// BarrierExpr is only used as an optimization barrier. In the execution plan,
 	// it is replaced with its input.
 	return b.buildRelational(barrier.Input)
-}
-
-func (b *Builder) buildVectorSearch(
-	search *memo.VectorSearchExpr,
-) (_ execPlan, _ colOrdMap, _ error) {
-	md := b.mem.Metadata()
-	table := md.Table(search.Table)
-	index := table.Index(search.Index)
-	if index.Type() != idxtype.VECTOR {
-		return execPlan{}, colOrdMap{}, errors.AssertionFailedf(
-			"vector search is only supported on vector indexes")
-	}
-	primaryKeyCols := md.TableMeta(search.Table).IndexKeyColumns(cat.PrimaryIndex)
-	for col, ok := search.Cols.Next(0); ok; col, ok = search.Cols.Next(col + 1) {
-		if !primaryKeyCols.Contains(col) {
-			return execPlan{}, colOrdMap{}, errors.AssertionFailedf(
-				"vector search output column %d is not a primary key column", col)
-		}
-	}
-	// Evaluate the prefix expressions.
-	var prefixKey constraint.Key
-	if len(search.PrefixVals) > 0 {
-		values := make([]tree.Datum, len(search.PrefixVals))
-		for i, expr := range search.PrefixVals {
-			// The expression is either a placeholder or a constant.
-			if p, ok := expr.(*memo.PlaceholderExpr); ok {
-				val, err := eval.Expr(b.ctx, b.evalCtx, p.Value)
-				if err != nil {
-					return execPlan{}, colOrdMap{}, err
-				}
-				values[i] = val
-			} else {
-				values[i] = memo.ExtractConstDatum(expr)
-			}
-		}
-		prefixKey = constraint.MakeCompositeKey(values...)
-	}
-
-	outColOrds, outColMap := b.getColumns(search.Cols, search.Table)
-	ctx := buildScalarCtx{}
-	queryVector, err := b.buildScalar(&ctx, search.QueryVector)
-	if err != nil {
-		return execPlan{}, colOrdMap{}, err
-	}
-	targetNeighborCount := uint64(search.TargetNeighborCount)
-
-	var res execPlan
-	res.root, err = b.factory.ConstructVectorSearch(
-		table, index, outColOrds, prefixKey, queryVector, targetNeighborCount,
-	)
-	if err != nil {
-		return execPlan{}, colOrdMap{}, err
-	}
-	return res, outColMap, nil
-}
-
-func (b *Builder) buildVectorMutationSearch(
-	search *memo.VectorMutationSearchExpr,
-) (_ execPlan, outputCols colOrdMap, err error) {
-	md := b.mem.Metadata()
-	table := md.Table(search.Table)
-	index := table.Index(search.Index)
-	if index.Type() != idxtype.VECTOR {
-		return execPlan{}, colOrdMap{}, errors.AssertionFailedf(
-			"vector mutation search is only supported on vector indexes")
-	}
-
-	input, inputCols, err := b.buildRelational(search.Input)
-	if err != nil {
-		return execPlan{}, colOrdMap{}, err
-	}
-	// Produce the output column map. All input columns are passed through.
-	// The operator will project a partition column and (optionally) a quantized
-	// vector column.
-	outputCols = inputCols
-	outputCols.Set(search.PartitionCol, inputCols.MaxOrd()+1)
-	if search.QuantizedVectorCol != 0 {
-		outputCols.Set(search.QuantizedVectorCol, inputCols.MaxOrd()+2)
-	}
-
-	// Resolve the column ordinals for the input columns.
-	prefixKeyCols := make([]exec.NodeColumnOrdinal, len(search.PrefixKeyCols))
-	for i, c := range search.PrefixKeyCols {
-		prefixKeyCols[i], err = getNodeColumnOrdinal(inputCols, c)
-		if err != nil {
-			return execPlan{}, colOrdMap{}, err
-		}
-	}
-	queryVectorCol, err := getNodeColumnOrdinal(inputCols, search.QueryVectorCol)
-	if err != nil {
-		return execPlan{}, colOrdMap{}, err
-	}
-	suffixKeyCols := make([]exec.NodeColumnOrdinal, len(search.SuffixKeyCols))
-	for i, col := range search.SuffixKeyCols {
-		suffixKeyCols[i], err = getNodeColumnOrdinal(inputCols, col)
-		if err != nil {
-			return execPlan{}, colOrdMap{}, err
-		}
-	}
-
-	var res execPlan
-	res.root, err = b.factory.ConstructVectorMutationSearch(
-		input.root, table, index, prefixKeyCols, queryVectorCol, suffixKeyCols, search.IsIndexPut,
-	)
-	if err != nil {
-		return execPlan{}, colOrdMap{}, err
-	}
-	return res, outputCols, nil
 }
 
 // needProjection figures out what projection is needed on top of the input plan
@@ -4144,7 +3892,7 @@ func (b *Builder) getEnvData() (exec.ExplainEnvData, error) {
 		b.ctx,
 		b.catalog,
 		b.mem.Metadata().AllTables(),
-		func(cat.Table, cat.ForeignKeyConstraint) (exploreFKs bool) {
+		func(cat.Table, cat.ForeignKeyConstraint) (recurse bool) {
 			return true
 		},
 		func(table cat.Table, _ cat.ForeignKeyConstraint) {
@@ -4155,12 +3903,23 @@ func (b *Builder) getEnvData() (exec.ExplainEnvData, error) {
 			refTableIncluded.Add(int(table.ID()))
 		},
 	)
-	envOpts.AddFKs = opt.GetAllFKsAmongTables(
+	var skipFKs []*tree.AlterTable
+	envOpts.AddFKs, skipFKs = opt.GetAllFKs(
+		b.ctx,
+		b.catalog,
 		refTables,
 		func(t cat.Table) (tree.TableName, error) {
 			return b.catalog.FullyQualifiedName(b.ctx, t)
 		},
 	)
+	// Given that we include all FK-related tables when visiting them, we should
+	// not skip any FKs - we'll return an error if we find any in test-only
+	// builds.
+	if buildutil.CrdbTestBuild {
+		if len(skipFKs) > 0 {
+			return envOpts, errors.AssertionFailedf("unexpectedly skipped adding FKs in EXPLAIN (OPT): %v", skipFKs)
+		}
+	}
 	var err error
 	envOpts.Tables, err = getNames(len(refTables), func(i int) cat.DataSource {
 		return refTables[i]
@@ -4199,6 +3958,10 @@ func (b *Builder) statementTag(expr memo.RelExpr) string {
 // recordJoinType increments the counter for the given join type for telemetry
 // reporting.
 func (b *Builder) recordJoinType(joinType descpb.JoinType) {
+	if b.JoinTypeCounts == nil {
+		const numJoinTypes = 7
+		b.JoinTypeCounts = make(map[descpb.JoinType]int, numJoinTypes)
+	}
 	// Don't bother distinguishing between left and right.
 	switch joinType {
 	case descpb.RightOuterJoin:
@@ -4208,17 +3971,16 @@ func (b *Builder) recordJoinType(joinType descpb.JoinType) {
 	case descpb.RightAntiJoin:
 		joinType = descpb.LeftAntiJoin
 	}
-	if b.JoinTypeCounts[joinType]+1 > b.JoinTypeCounts[joinType] {
-		b.JoinTypeCounts[joinType]++
-	}
+	b.JoinTypeCounts[joinType]++
 }
 
 // recordJoinAlgorithm increments the counter for the given join algorithm for
 // telemetry reporting.
 func (b *Builder) recordJoinAlgorithm(joinAlgorithm exec.JoinAlgorithm) {
-	if b.JoinAlgorithmCounts[joinAlgorithm]+1 > b.JoinAlgorithmCounts[joinAlgorithm] {
-		b.JoinAlgorithmCounts[joinAlgorithm]++
+	if b.JoinAlgorithmCounts == nil {
+		b.JoinAlgorithmCounts = make(map[exec.JoinAlgorithm]int, exec.NumJoinAlgorithms)
 	}
+	b.JoinAlgorithmCounts[joinAlgorithm]++
 }
 
 // boundedStalenessAllowList contains the operators that may be used with

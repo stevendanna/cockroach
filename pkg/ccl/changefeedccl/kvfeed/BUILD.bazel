@@ -12,7 +12,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/ccl/changefeedccl/changefeedbase",
-        "//pkg/ccl/changefeedccl/checkpoint",
         "//pkg/ccl/changefeedccl/kvevent",
         "//pkg/ccl/changefeedccl/schemafeed",
         "//pkg/ccl/changefeedccl/timers",
@@ -64,7 +63,6 @@ go_test(
         "//pkg/kv",
         "//pkg/kv/kvclient/kvcoord",
         "//pkg/kv/kvpb",
-        "//pkg/kv/kvserver/rangefeed",
         "//pkg/roachpb",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
@@ -89,5 +87,6 @@ go_test(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
+        "@org_golang_x_exp//slices",
     ],
 )

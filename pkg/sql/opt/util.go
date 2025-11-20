@@ -18,9 +18,8 @@ import (
 // are visited in sorted order so that later tables reference earlier tables.
 //
 // The visiting is controlled by two callbacks:
-// - visitPreFn should tell the visitor whether the FKs of the given tables
-// should be explored (i.e. whether the visitor should "recurse" into FK
-// reference tables of the given one).
+// - recurseFn should tell the visitor whether it should recurse into FK
+// reference tables of the given one.
 // - visitFn allows the caller to do any work on the table being visited.
 //
 // In both functions:
@@ -35,39 +34,39 @@ func VisitFKReferenceTables(
 	ctx context.Context,
 	catalog cat.Catalog,
 	tables []TableMeta,
-	visitPreFn func(_ cat.Table, fk cat.ForeignKeyConstraint) (exploreFKs bool),
+	recurseFn func(_ cat.Table, fk cat.ForeignKeyConstraint) bool,
 	visitFn func(_ cat.Table, fk cat.ForeignKeyConstraint),
 ) {
-	// tableExplored tracks which tables we've already explored FKs of. Once a
-	// table is explored, it is considered "fully processed" and we effectively
-	// ignore it from now on. If a table has already been visited but is not
-	// explored, we still might want to explore it later (because we might get
-	// to it via a different FK that requires exploration).
-	var tableExplored intsets.Fast
+	// tableRecursed tracks which tables we've already recursed into. Once a
+	// table is recursed into, it is considered "fully processed" and we
+	// effectively ignore it from now on. If a table has already been visited
+	// but is not recursed into, we still might want to recurse into it later
+	// (because we might get to it via a different FK that requires recursion).
+	var tableRecursed intsets.Fast
 	var visitForeignKeyReferencedTables func(tab cat.Table)
 	var visitForeignKeyReferencingTables func(tab cat.Table)
-	visitTable := func(table cat.Table, fk cat.ForeignKeyConstraint, exploreFKs bool) {
+	visitTable := func(table cat.Table, fk cat.ForeignKeyConstraint, recurse bool) {
 		tabID := table.ID()
-		if exploreFKs {
-			tableExplored.Add(int(tabID))
+		if recurse {
+			tableRecursed.Add(int(tabID))
 		}
 		// The order of visiting here is important: namely, we want to visit
 		// all tables that we reference first, then ourselves, and only then
 		// tables that reference us.
-		if exploreFKs {
+		if recurse {
 			visitForeignKeyReferencedTables(table)
 		}
 		visitFn(table, fk)
-		if exploreFKs {
+		if recurse {
 			visitForeignKeyReferencingTables(table)
 		}
 	}
 	// handleRelatedTables is a helper function that processes the given table
-	// if it hasn't been explored yet by visiting all referenced and referencing
-	// table of the given one, including via transient (recursive) FK
-	// relationships.
+	// if it hasn't been recursed into yet by visiting all referenced and
+	// referencing table of the given one, including via transient (recursive)
+	// FK relationships.
 	handleRelatedTables := func(tabID cat.StableID, fk cat.ForeignKeyConstraint) {
-		if !tableExplored.Contains(int(tabID)) {
+		if !tableRecursed.Contains(int(tabID)) {
 			ds, _, err := catalog.ResolveDataSourceByID(ctx, cat.Flags{}, tabID)
 			if err != nil {
 				// This is a best-effort attempt to get all the tables, so don't
@@ -80,8 +79,8 @@ func VisitFKReferenceTables(
 				// error.
 				return
 			}
-			exploreFKs := visitPreFn(refTab, fk)
-			visitTable(refTab, fk, exploreFKs)
+			recurse := recurseFn(refTab, fk)
+			visitTable(refTab, fk, recurse)
 		}
 	}
 	visitForeignKeyReferencedTables = func(tab cat.Table) {
@@ -98,33 +97,60 @@ func VisitFKReferenceTables(
 	}
 	for _, tabMeta := range tables {
 		tabID := tabMeta.Table.ID()
-		if !tableExplored.Contains(int(tabID)) {
-			exploreFKs := visitPreFn(tabMeta.Table, nil /* fk */)
-			visitTable(tabMeta.Table, nil /* fk */, exploreFKs)
+		if !tableRecursed.Contains(int(tabID)) {
+			recurse := recurseFn(tabMeta.Table, nil /* fk */)
+			visitTable(tabMeta.Table, nil /* fk */, recurse)
 		}
 	}
 }
 
-// GetAllFKsAmongTables returns a list of ALTER statements that corresponds to
-// all FOREIGN KEY constraints where both the origin and the referenced tables
-// are present in the given set of tables. List of the given tables is assumed
-// to be unique.
-func GetAllFKsAmongTables(
-	tables []cat.Table, fullyQualifiedName func(cat.Table) (tree.TableName, error),
-) []*tree.AlterTable {
+// GetAllFKs returns a list of ALTER statements that corresponds to all FOREIGN
+// KEY constraints where both the origin and the referenced tables are present
+// in the given set of tables as well as a list of ALTER statements for all
+// FOREIGN KEY constraints where the origin table is in the given set while the
+// referenced one isn't.
+//
+// List of the given tables is assumed to be unique.
+func GetAllFKs(
+	ctx context.Context,
+	catalog cat.Catalog,
+	tables []cat.Table,
+	fullyQualifiedName func(cat.Table) (tree.TableName, error),
+) (addFKs, skipFKs []*tree.AlterTable) {
 	idToTable := make(map[cat.StableID]cat.Table)
 	for _, table := range tables {
 		idToTable[table.ID()] = table
 	}
-	var addFKs []*tree.AlterTable
+	skippedIDToTable := make(map[cat.StableID]cat.Table)
+	resolveSkippedTable := func(tabID cat.StableID) cat.Table {
+		if table, ok := skippedIDToTable[tabID]; ok {
+			return table
+		}
+		ds, _, err := catalog.ResolveDataSourceByID(ctx, cat.Flags{}, tabID)
+		if err != nil {
+			return nil
+		}
+		t, ok := ds.(cat.Table)
+		if !ok {
+			return nil
+		}
+		skippedIDToTable[tabID] = t
+		return t
+	}
 	for _, origTable := range tables {
 		for i := 0; i < origTable.OutboundForeignKeyCount(); i++ {
+			includeInto := &addFKs
 			fk := origTable.OutboundForeignKey(i)
 			refTable, ok := idToTable[fk.ReferencedTableID()]
 			if !ok {
-				// The referenced table is not in the given list, so we skip
-				// this FK constraint.
-				continue
+				// The referenced table is not in the given list, so we include
+				// this FK into the skipped list.
+				includeInto = &skipFKs
+				refTable = resolveSkippedTable(fk.ReferencedTableID())
+				if refTable == nil {
+					// This is a best-effort attempt to get skipped FKs.
+					continue
+				}
 			}
 			fromCols, toCols := make(tree.NameList, fk.ColumnCount()), make(tree.NameList, fk.ColumnCount())
 			for j := range fromCols {
@@ -139,7 +165,7 @@ func GetAllFKsAmongTables(
 			if err != nil {
 				continue
 			}
-			addFKs = append(addFKs, &tree.AlterTable{
+			*includeInto = append(*includeInto, &tree.AlterTable{
 				Table: origTableName.ToUnresolvedObjectName(),
 				Cmds: []tree.AlterTableCmd{
 					&tree.AlterTableAddConstraint{
@@ -159,5 +185,5 @@ func GetAllFKsAmongTables(
 			})
 		}
 	}
-	return addFKs
+	return addFKs, skipFKs
 }

@@ -8,8 +8,8 @@ package changefeedccl
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvfeed"
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/resolvedspan"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -102,12 +102,12 @@ type TestingKnobs struct {
 	// AsyncFlushSync is called in async flush goroutines as a way to provide synchronization between them.
 	AsyncFlushSync func()
 
-	// AfterCoordinatorFrontierRestore is called on the start of the changefeed coordinator so we can
-	// make assertions about its frontier.
-	AfterCoordinatorFrontierRestore func(frontier *resolvedspan.CoordinatorFrontier)
-
 	// WrapTelemetryLogger is used to wrap the periodic telemetry logger in tests.
 	WrapTelemetryLogger func(logger telemetryLogger) telemetryLogger
+
+	// MakeKVFeedToAggregatorBufferKnobs is used to make a fresh set of testing knobs
+	// to pass to the constructor of the kv feed to change aggregator buffer.
+	MakeKVFeedToAggregatorBufferKnobs func() kvevent.BlockingBufferTestingKnobs
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

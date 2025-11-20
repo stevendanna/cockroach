@@ -199,53 +199,53 @@
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_position"></a><code>array_position(array: varbit[], elem: varbit, start: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Return the index of the first occurrence of <code>elem</code> in <code>array</code>, with the search begins at <code>start</code> index.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bool.html">bool</a>[], elem: <a href="bool.html">bool</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bool.html">bool</a>[], elem: <a href="bool.html">bool</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bytes.html">bytes</a>[], elem: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="bytes.html">bytes</a>[], elem: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="date.html">date</a>[], elem: <a href="date.html">date</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="date.html">date</a>[], elem: <a href="date.html">date</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="decimal.html">decimal</a>[], elem: <a href="decimal.html">decimal</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="decimal.html">decimal</a>[], elem: <a href="decimal.html">decimal</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="float.html">float</a>[], elem: <a href="float.html">float</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="float.html">float</a>[], elem: <a href="float.html">float</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="inet.html">inet</a>[], elem: <a href="inet.html">inet</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="inet.html">inet</a>[], elem: <a href="inet.html">inet</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="int.html">int</a>[], elem: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="int.html">int</a>[], elem: <a href="int.html">int</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="interval.html">interval</a>[], elem: <a href="interval.html">interval</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="interval.html">interval</a>[], elem: <a href="interval.html">interval</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="string.html">string</a>[], elem: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="string.html">string</a>[], elem: <a href="string.html">string</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="time.html">time</a>[], elem: <a href="time.html">time</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="time.html">time</a>[], elem: <a href="time.html">time</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamp</a>[], elem: <a href="timestamp.html">timestamp</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamp</a>[], elem: <a href="timestamp.html">timestamp</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamptz</a>[], elem: <a href="timestamp.html">timestamptz</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="timestamp.html">timestamptz</a>[], elem: <a href="timestamp.html">timestamptz</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="uuid.html">uuid</a>[], elem: <a href="uuid.html">uuid</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: <a href="uuid.html">uuid</a>[], elem: <a href="uuid.html">uuid</a>) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: anyenum[], elem: anyenum) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: anyenum[], elem: anyenum) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: box2d[], elem: box2d) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: box2d[], elem: box2d) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: geography[], elem: geography) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: geography[], elem: geography) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: geometry[], elem: geometry) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: geometry[], elem: geometry) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: jsonb[], elem: jsonb) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: jsonb[], elem: jsonb) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: oid[], elem: oid) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: oid[], elem: oid) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: pg_lsn[], elem: pg_lsn) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: pg_lsn[], elem: pg_lsn) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: refcursor[], elem: refcursor) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: refcursor[], elem: refcursor) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: timetz[], elem: timetz) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: timetz[], elem: timetz) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: tuple[], elem: tuple) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: tuple[], elem: tuple) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="array_positions"></a><code>array_positions(array: varbit[], elem: varbit) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns an array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
+<tr><td><a name="array_positions"></a><code>array_positions(array: varbit[], elem: varbit) &rarr; <a href="int.html">int</a>[]</code></td><td><span class="funcdesc"><p>Returns and array of indexes of all occurrences of <code>elem</code> in <code>array</code>.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="array_prepend"></a><code>array_prepend(elem: <a href="bool.html">bool</a>, array: <a href="bool.html">bool</a>[]) &rarr; <a href="bool.html">bool</a>[]</code></td><td><span class="funcdesc"><p>Prepends <code>elem</code> to <code>array</code>, returning the result.</p>
 </span></td><td>Immutable</td></tr>
@@ -1277,25 +1277,6 @@ the locality flag on node startup. Returns an error if no region is set.</p>
 <tr><td><a name="rehome_row"></a><code>rehome_row() &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns the region of the connection’s current node as defined by
 the locality flag on node startup. Returns an error if no region is set.</p>
 </span></td><td>Stable</td></tr></tbody>
-</table>
-
-### PGVector functions
-
-<table>
-<thead><tr><th>Function &rarr; Returns</th><th>Description</th><th>Volatility</th></tr></thead>
-<tbody>
-<tr><td><a name="cosine_distance"></a><code>cosine_distance(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the cosine distance between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="inner_product"></a><code>inner_product(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the inner product between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="l1_distance"></a><code>l1_distance(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the Manhattan distance between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="l2_distance"></a><code>l2_distance(v1: vector, v2: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the Euclidean distance between the two vectors.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="vector_dims"></a><code>vector_dims(vector: vector) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Returns the number of the dimensions in the vector.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="vector_norm"></a><code>vector_norm(vector: vector) &rarr; <a href="float.html">float</a></code></td><td><span class="funcdesc"><p>Returns the Euclidean norm of the vector.</p>
-</span></td><td>Immutable</td></tr></tbody>
 </table>
 
 ### STRING[] functions
@@ -2880,7 +2861,7 @@ Can be used to define the tile bounds required by ST_AsMVTGeom to convert geomet
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="compress"></a><code>compress(data: <a href="bytes.html">bytes</a>, codec: <a href="string.html">string</a>) &rarr; <a href="bytes.html">bytes</a></code></td><td><span class="funcdesc"><p>Compress <code>data</code> with the specified <code>codec</code> (<code>gzip</code>, ‘lz4’, ‘snappy’, 'zstd).</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="concat"></a><code>concat(anyelement...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Concatenates a comma-separated list of strings.</p>
+<tr><td><a name="concat"></a><code>concat(<a href="string.html">string</a>...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Concatenates a comma-separated list of strings.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="concat_ws"></a><code>concat_ws(<a href="string.html">string</a>...) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Uses the first argument as a separator between the concatenation of the subsequent arguments.</p>
 <p>For example <code>concat_ws('!','wow','great')</code> returns <code>wow!great</code>.</p>
@@ -3119,8 +3100,8 @@ Case mode values range between 0 - 1, representing lower casing and upper casing
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="similar_to_escape"></a><code>similar_to_escape(unescaped: <a href="string.html">string</a>, pattern: <a href="string.html">string</a>, escape: <a href="string.html">string</a>) &rarr; <a href="bool.html">bool</a></code></td><td><span class="funcdesc"><p>Matches <code>unescaped</code> with <code>pattern</code> using <code>escape</code> as an escape token.</p>
 </span></td><td>Immutable</td></tr>
-<tr><td><a name="split_part"></a><code>split_part(input: <a href="string.html">string</a>, delimiter: <a href="string.html">string</a>, return_index_pos: <a href="int.html">int</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Splits <code>input</code> using <code>delimiter</code> and returns the field at <code>return_index_pos</code> (starting from 1). If <code>return_index_pos</code> is negative, it returns the |<code>return_index_pos</code>|'th field from the end.</p>
-<p>For example, <code>split_part('123.456.789.0', '.', 3)</code> returns <code>789</code>.</p>
+<tr><td><a name="split_part"></a><code>split_part(input: <a href="string.html">string</a>, delimiter: <a href="string.html">string</a>, return_index_pos: <a href="int.html">int</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Splits <code>input</code> on <code>delimiter</code> and return the value in the <code>return_index_pos</code>  position (starting at 1).</p>
+<p>For example, <code>split_part('123.456.789.0','.',3)</code>returns <code>789</code>.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="strpos"></a><code>strpos(input: <a href="bytes.html">bytes</a>, find: <a href="bytes.html">bytes</a>) &rarr; <a href="int.html">int</a></code></td><td><span class="funcdesc"><p>Calculates the position where the byte subarray <code>find</code> begins in <code>input</code>.</p>
 </span></td><td>Immutable</td></tr>
@@ -3160,9 +3141,6 @@ Case mode values range between 0 - 1, representing lower casing and upper casing
 <tr><td><a name="substring"></a><code>substring(input: varbit, start_pos: <a href="int.html">int</a>) &rarr; varbit</code></td><td><span class="funcdesc"><p>Returns a bit subarray of <code>input</code> starting at <code>start_pos</code> (count starts at 1).</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="substring"></a><code>substring(input: varbit, start_pos: <a href="int.html">int</a>, length: <a href="int.html">int</a>) &rarr; varbit</code></td><td><span class="funcdesc"><p>Returns a bit subarray of <code>input</code> starting at <code>start_pos</code> (count starts at 1) and including up to <code>length</code> characters.</p>
-</span></td><td>Immutable</td></tr>
-<tr><td><a name="substring_index"></a><code>substring_index(input: <a href="string.html">string</a>, delim: <a href="string.html">string</a>, count: <a href="int.html">int</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Returns a substring of <code>input</code> before <code>count</code> occurrences of <code>delim</code>.
-If <code>count</code> is positive, the leftmost part is returned. If <code>count</code> is negative, the rightmost part is returned.</p>
 </span></td><td>Immutable</td></tr>
 <tr><td><a name="to_char_with_style"></a><code>to_char_with_style(date: <a href="date.html">date</a>, datestyle: <a href="string.html">string</a>) &rarr; <a href="string.html">string</a></code></td><td><span class="funcdesc"><p>Convert an date to a string assuming the string is formatted using the given DateStyle.</p>
 </span></td><td>Immutable</td></tr>

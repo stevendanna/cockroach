@@ -61,7 +61,6 @@ func remoteWorker(
 	log *logger.Logger,
 	execFunc RemoteExecutionFunc,
 	clusterNode string,
-	runOptions install.RunOptions,
 	workChan chan []RemoteCommand,
 	responseChan chan RemoteResponse,
 ) {
@@ -80,7 +79,7 @@ func remoteWorker(
 			start := timeutil.Now()
 			runResult, err := execFunc(
 				context.Background(), log, clusterNode, "" /* SSHOptions */, "", /* processTag */
-				false /* secure */, command.Args, runOptions,
+				false /* secure */, command.Args, install.DefaultRunOptions().WithRetryDisabled(),
 			)
 			duration := timeutil.Since(start)
 
@@ -133,7 +132,6 @@ func ExecuteRemoteCommands(
 	commandGroups [][]RemoteCommand,
 	numNodes int,
 	failFast bool,
-	runOptions install.RunOptions,
 	callback func(response RemoteResponse),
 ) error {
 	workChannel := make(chan []RemoteCommand, numNodes)
@@ -142,8 +140,7 @@ func ExecuteRemoteCommands(
 	ctx, cancelCtx := context.WithCancelCause(context.Background())
 
 	for idx := 1; idx <= numNodes; idx++ {
-		go remoteWorker(ctx, log, execFunc, fmt.Sprintf("%s:%d", cluster, idx),
-			runOptions, workChannel, responseChannel)
+		go remoteWorker(ctx, log, execFunc, fmt.Sprintf("%s:%d", cluster, idx), workChannel, responseChannel)
 	}
 
 	var wg sync.WaitGroup

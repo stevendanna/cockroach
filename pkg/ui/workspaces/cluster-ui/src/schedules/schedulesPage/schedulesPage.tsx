@@ -3,14 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 import { InlineAlert } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import moment from "moment-timezone";
 import React, { useEffect } from "react";
 import { Helmet } from "react-helmet";
 import { RouteComponentProps } from "react-router-dom";
-
 import { Schedules } from "src/api/schedulesApi";
-import { commonStyles } from "src/common";
 import { Delayed } from "src/delayed";
 import { Dropdown } from "src/dropdown";
 import { Loading } from "src/loading";
@@ -18,10 +15,13 @@ import { PageConfig, PageConfigItem } from "src/pageConfig";
 import { SortSetting } from "src/sortedtable";
 import { syncHistory } from "src/util";
 
+import { ScheduleTable } from "./scheduleTable";
+
+import { commonStyles } from "src/common";
 import styles from "../schedules.module.scss";
+import classNames from "classnames/bind";
 
 import { statusOptions, showOptions } from "./scheduleOptions";
-import { ScheduleTable } from "./scheduleTable";
 
 const cx = classNames.bind(styles);
 
@@ -74,7 +74,11 @@ export const SchedulesPage: React.FC<SchedulesPageProps> = props => {
   // Filter Status.
   const paramStatus = searchParams.get("status") || undefined;
   useEffect(() => {
-    if (paramStatus === undefined) {
+    if (
+      paramStatus === undefined ||
+      statusOptions.find(option => option["value"] === paramStatus) ===
+        undefined
+    ) {
       return;
     }
     setStatus(paramStatus);
@@ -83,7 +87,10 @@ export const SchedulesPage: React.FC<SchedulesPageProps> = props => {
   // Filter Show.
   const paramShow = searchParams.get("show") || undefined;
   useEffect(() => {
-    if (paramShow === undefined) {
+    if (
+      paramShow === undefined ||
+      showOptions.find(option => option["value"] === paramShow) === undefined
+    ) {
       return;
     }
     setShow(paramShow);
@@ -140,13 +147,23 @@ export const SchedulesPage: React.FC<SchedulesPageProps> = props => {
           <PageConfigItem>
             <Dropdown items={statusOptions} onChange={onStatusSelected}>
               Status:{" "}
-              {statusOptions.find(option => option["value"] === status)["name"]}
+              {
+                (
+                  statusOptions.find(option => option["value"] === status) ??
+                  statusOptions[0]
+                ).name
+              }
             </Dropdown>
           </PageConfigItem>
           <PageConfigItem>
             <Dropdown items={showOptions} onChange={onShowSelected}>
               Show:{" "}
-              {showOptions.find(option => option["value"] === show)["name"]}
+              {
+                (
+                  showOptions.find(option => option["value"] === show) ??
+                  showOptions[0]
+                ).name
+              }
             </Dropdown>
           </PageConfigItem>
         </PageConfig>

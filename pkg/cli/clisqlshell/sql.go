@@ -1267,8 +1267,6 @@ func (c *cliState) doProcessFirstLine(startState, nextState cliStateEnum) cliSta
 		return startState
 
 	case "exit", "quit":
-		// When explicitly exiting, clear exitErr.
-		c.exitErr = nil
 		return cliStop
 	}
 
@@ -1414,8 +1412,6 @@ func (c *cliState) doHandleCliCmd(loopState, nextState cliStateEnum) cliStateEnu
 
 	switch cmd[0] {
 	case `\q`, `\quit`, `\exit`:
-		// When explicitly exiting, clear exitErr.
-		c.exitErr = nil
 		return cliStop
 
 	case `\`, `\?`, `\help`:
@@ -2268,14 +2264,12 @@ func (c *cliState) doRunShell(state cliStateEnum, cmdIn, cmdOut, cmdErr *os.File
 		}
 		switch state {
 		case cliStart:
-			//nolint:deferloop TODO(#137605)
 			defer func() {
 				if err := c.closeOutputFile(); err != nil {
 					fmt.Fprintf(cmdErr, "warning: closing output file: %v\n", err)
 				}
 			}()
 			cleanupFn, err := c.configurePreShellDefaults(cmdIn, cmdOut, cmdErr)
-			//nolint:deferloop TODO(#137605)
 			defer cleanupFn()
 			if err != nil {
 				return err

@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/disk"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -133,7 +132,7 @@ func TestStoresGetReplicaForRangeID(t *testing.T) {
 		stopper.AddCloser(memEngine)
 
 		cfg := TestStoreConfig(clock)
-		cfg.Transport = NewDummyRaftTransport(cfg.AmbientCtx, cfg.Settings, cfg.Clock)
+		cfg.Transport = NewDummyRaftTransport(cfg.Settings, cfg.AmbientCtx.Tracer)
 
 		store := NewStore(ctx, cfg, memEngine, &roachpb.NodeDescriptor{NodeID: 1})
 		// Fake-set an ident. This is usually read from the engine on store.Start()
@@ -226,7 +225,7 @@ func createStores(count int) (*timeutil.ManualTime, []*Store, *Stores, *stop.Sto
 	// Create two stores with ranges we care about.
 	stores := []*Store{}
 	for i := 0; i < count; i++ {
-		cfg.Transport = NewDummyRaftTransport(cfg.AmbientCtx, cfg.Settings, cfg.Clock)
+		cfg.Transport = NewDummyRaftTransport(cfg.Settings, cfg.AmbientCtx.Tracer)
 		eng := storage.NewDefaultInMemForTesting()
 		stopper.AddCloser(eng)
 		s := NewStore(context.Background(), cfg, eng, &roachpb.NodeDescriptor{NodeID: 1})
@@ -355,22 +354,19 @@ func TestRegisterDiskMonitors(t *testing.T) {
 	ls.AddStore(stores[0])
 	ls.AddStore(stores[1])
 
-	defaultFS := vfs.Default
-	diskManager := disk.NewMonitorManager(defaultFS)
-	diskMonitors := make(map[roachpb.StoreID]DiskStatsMonitor, len(stores))
+	fs := vfs.Default
+	pathToStore := make(map[string]roachpb.StoreID, len(stores))
 	for i, store := range stores {
 		storePath := path.Join(dir, strconv.Itoa(i))
-		_, err := defaultFS.Create(storePath, fs.UnspecifiedWriteCategory)
+		pathToStore[storePath] = store.StoreID()
+
+		_, err := fs.Create(storePath)
 		require.NoError(t, err)
 		require.Nil(t, store.diskMonitor)
-
-		monitor, err := diskManager.Monitor(storePath)
-		require.NoError(t, err)
-		defer monitor.Close()
-		diskMonitors[store.StoreID()] = monitor
 	}
 
-	err := ls.RegisterDiskMonitors(diskMonitors)
+	diskManager := disk.NewMonitorManager(fs)
+	err := ls.RegisterDiskMonitors(diskManager, pathToStore)
 	require.NoError(t, err)
 	for _, store := range stores {
 		require.NotNil(t, store.diskMonitor)

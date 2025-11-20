@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 var (
@@ -73,8 +72,7 @@ var (
 func gcSystemLog(
 	ctx context.Context,
 	sqlServer *SQLServer,
-	opName redact.RedactableString,
-	table, tsCol string,
+	opName, table, tsCol string,
 	timestampLowerBound, timestampUpperBound time.Time,
 	limit int64,
 ) (time.Time, int64, error) {
@@ -175,7 +173,7 @@ func runSystemLogGCForOneTable(
 		return 0, nil
 	}
 
-	opName := redact.Sprintf("%s-%s-gc", gcConfig.table, gcConfig.timestampCol)
+	opName := gcConfig.table + "-" + gcConfig.timestampCol + "-gc"
 	limit := systemLogGCLimit.Get(&st.SV)
 	timestampUpperBound := timeutil.Unix(0, sqlServer.execCfg.Clock.PhysicalNow()-int64(ttl))
 	newTimestampLowerBound, rowsAffected, err := gcSystemLog(

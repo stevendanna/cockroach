@@ -71,7 +71,7 @@ query T rowsort
 SELECT message FROM [SHOW TRACE FOR SESSION]
 WHERE message LIKE '%executing cascade %' OR message LIKE 'Del%'
 ----
-Del (locking) /Table/106/1/"a-pk1"/0
+Del /Table/106/1/"a-pk1"/0
 executing cascade for constraint b1_delete_cascade_fkey
 Del /Table/107/1/"b1-pk1"/0
 Del /Table/107/1/"b1-pk2"/0
@@ -175,10 +175,10 @@ Del /Table/112/1/"updated"/0
 CPut /Table/112/1/"updated2"/0 -> /TUPLE/
 executing cascade for constraint b1_update_cascade_fkey
 Del /Table/113/2/"updated"/0
-CPut /Table/113/2/"updated2"/0 -> /BYTES/0x1262312d706b310001
+CPut /Table/113/2/"updated2"/0 -> /BYTES/0x1262312d706b310001 (expecting does not exist)
 executing cascade for constraint b2_update_cascade_fkey
 Del /Table/114/2/"updated"/0
-CPut /Table/114/2/"updated2"/0 -> /BYTES/0x1262322d706b310001
+CPut /Table/114/2/"updated2"/0 -> /BYTES/0x1262322d706b310001 (expecting does not exist)
 executing cascade for constraint c1_update_cascade_fkey
 executing cascade for constraint c2_update_cascade_fkey
 executing cascade for constraint c3_id_fkey
@@ -315,7 +315,7 @@ query T
 SELECT message FROM [SHOW TRACE FOR SESSION]
 WHERE message LIKE '%executing cascade %' OR message LIKE 'Del%'
 ----
-Del (locking) /Table/123/1/"a-pk1"/0
+Del /Table/123/1/"a-pk1"/0
 executing cascade for constraint b1_delete_cascade_fkey
 Del /Table/124/1/"b1-pk1"/0
 Del /Table/124/1/"b1-pk2"/0
@@ -463,10 +463,10 @@ Del /Table/134/1/"original"/0
 CPut /Table/134/1/"updated"/0 -> /TUPLE/
 executing cascade for constraint b1_update_cascade_fkey
 Del /Table/135/2/"original"/0
-CPut /Table/135/2/"updated"/0 -> /BYTES/0x1262312d706b310001
+CPut /Table/135/2/"updated"/0 -> /BYTES/0x1262312d706b310001 (expecting does not exist)
 executing cascade for constraint b2_update_cascade_fkey
 Del /Table/136/2/"original"/0
-CPut /Table/136/2/"updated"/0 -> /BYTES/0x1262322d706b310001
+CPut /Table/136/2/"updated"/0 -> /BYTES/0x1262322d706b310001 (expecting does not exist)
 executing cascade for constraint c1_update_set_null_fkey
 executing cascade for constraint c2_update_set_null_fkey
 executing cascade for constraint c3_update_set_null_fkey
@@ -603,7 +603,7 @@ query T
 SELECT message FROM [SHOW TRACE FOR SESSION]
 WHERE message LIKE '%executing cascade %' OR message LIKE 'Del%'
 ----
-Del (locking) /Table/145/1/"a-pk1"/0
+Del /Table/145/1/"a-pk1"/0
 executing cascade for constraint b1_delete_cascade_fkey
 Del /Table/146/1/"b1-pk1"/0
 Del /Table/146/1/"b1-pk2"/0
@@ -751,10 +751,10 @@ Del /Table/156/1/"original"/0
 CPut /Table/156/1/"updated"/0 -> /TUPLE/
 executing cascade for constraint b1_update_cascade_fkey
 Del /Table/157/2/"original"/0
-CPut /Table/157/2/"updated"/0 -> /BYTES/0x1262312d706b310001
+CPut /Table/157/2/"updated"/0 -> /BYTES/0x1262312d706b310001 (expecting does not exist)
 executing cascade for constraint b2_update_cascade_fkey
 Del /Table/158/2/"original"/0
-CPut /Table/158/2/"updated"/0 -> /BYTES/0x1262322d706b310001
+CPut /Table/158/2/"updated"/0 -> /BYTES/0x1262322d706b310001 (expecting does not exist)
 executing cascade for constraint c1_update_set_null_fkey
 executing cascade for constraint c2_update_set_null_fkey
 executing cascade for constraint c3_update_set_null_fkey
@@ -764,9 +764,6 @@ statement ok
 DROP TABLE c3, c2, c1, b2, b1, a;
 
 # Regression for #46094.
-
-statement ok
-SET autocommit_before_ddl = false
 
 statement ok
 CREATE TABLE parent (x INT PRIMARY KEY);
@@ -865,7 +862,7 @@ vectorized: true
 query T kvtrace(Del,DelRange)
 DELETE FROM delrng1 WHERE p = 1
 ----
-Del (locking) /Table/165/1/1/0
+Del /Table/165/1/1/0
 DelRange /Table/166/1/1 - /Table/166/1/2
 DelRange /Table/167/1/1 - /Table/167/1/2
 DelRange /Table/168/1/1 - /Table/168/1/2
@@ -903,7 +900,6 @@ vectorized: true
 │             missing stats
 │             table: self@self_pkey
 │             spans: [/4 - /4]
-│             locking strength: for update
 │
 └── • fk-cascade
     │ fk: self_b_fkey
@@ -988,7 +984,6 @@ vectorized: true
 │             missing stats
 │             table: loop_a@loop_a_pkey
 │             spans: [/'loop_a-pk1' - /'loop_a-pk1']
-│             locking strength: for update
 │
 └── • fk-cascade
     │ fk: loop_b_cascade_delete_fkey
@@ -1064,20 +1059,19 @@ quality of service: regular
 • root
 │
 ├── • delete
-│   │ sql nodes: <hidden>
+│   │ nodes: <hidden>
 │   │ regions: <hidden>
 │   │ actual row count: 1
 │   │ from: loop_a
 │   │
 │   └── • buffer
-│       │ sql nodes: <hidden>
+│       │ nodes: <hidden>
 │       │ regions: <hidden>
 │       │ actual row count: 1
 │       │ label: buffer 1
 │       │
 │       └── • scan
-│             sql nodes: <hidden>
-│             kv nodes: <hidden>
+│             nodes: <hidden>
 │             regions: <hidden>
 │             actual row count: 1
 │             KV time: 0µs
@@ -1090,7 +1084,6 @@ quality of service: regular
 │             missing stats
 │             table: loop_a@loop_a_pkey
 │             spans: [/'loop_a-pk1' - /'loop_a-pk1']
-│             locking strength: for update
 │
 └── • fk-cascade
     │ fk: loop_b_cascade_delete_fkey
@@ -1098,27 +1091,27 @@ quality of service: regular
     └── • root
         │
         ├── • delete
-        │   │ sql nodes: <hidden>
+        │   │ nodes: <hidden>
         │   │ regions: <hidden>
         │   │ actual row count: 0
         │   │ from: loop_b
         │   │
         │   └── • buffer
-        │       │ sql nodes: <hidden>
+        │       │ nodes: <hidden>
         │       │ regions: <hidden>
         │       │ actual row count: 1
         │       │ label: buffer 1
         │       │
         │       └── • hash join (semi)
-        │           │ sql nodes: <hidden>
+        │           │ nodes: <hidden>
         │           │ regions: <hidden>
         │           │ actual row count: 1
         │           │ estimated max memory allocated: 0 B
+        │           │ estimated max sql temp disk usage: 0 B
         │           │ equality: (cascade_delete) = (id)
         │           │
         │           ├── • scan
-        │           │     sql nodes: <hidden>
-        │           │     kv nodes: <hidden>
+        │           │     nodes: <hidden>
         │           │     regions: <hidden>
         │           │     actual row count: 3
         │           │     KV time: 0µs
@@ -1133,7 +1126,7 @@ quality of service: regular
         │           │     spans: FULL SCAN
         │           │
         │           └── • scan buffer
-        │                 sql nodes: <hidden>
+        │                 nodes: <hidden>
         │                 regions: <hidden>
         │                 actual row count: 1
         │                 estimated row count: 1
@@ -1145,20 +1138,19 @@ quality of service: regular
             └── • root
                 │
                 ├── • delete
-                │   │ sql nodes: <hidden>
+                │   │ nodes: <hidden>
                 │   │ regions: <hidden>
                 │   │ actual row count: 0
                 │   │ from: loop_a
                 │   │
                 │   └── • buffer
-                │       │ sql nodes: <hidden>
+                │       │ nodes: <hidden>
                 │       │ regions: <hidden>
                 │       │ actual row count: 1
                 │       │ label: buffer 1
                 │       │
                 │       └── • lookup join
-                │           │ sql nodes: <hidden>
-                │           │ kv nodes: <hidden>
+                │           │ nodes: <hidden>
                 │           │ regions: <hidden>
                 │           │ actual row count: 1
                 │           │ KV time: 0µs
@@ -1172,15 +1164,16 @@ quality of service: regular
                 │           │ equality: (id) = (cascade_delete)
                 │           │
                 │           └── • distinct
-                │               │ sql nodes: <hidden>
+                │               │ nodes: <hidden>
                 │               │ regions: <hidden>
                 │               │ actual row count: 1
                 │               │ estimated max memory allocated: 0 B
+                │               │ estimated max sql temp disk usage: 0 B
                 │               │ estimated row count: 1
                 │               │ distinct on: id
                 │               │
                 │               └── • scan buffer
-                │                     sql nodes: <hidden>
+                │                     nodes: <hidden>
                 │                     regions: <hidden>
                 │                     actual row count: 1
                 │                     estimated row count: 1
@@ -1239,7 +1232,6 @@ vectorized: true
 │             missing stats
 │             table: t3@t3_pkey
 │             spans: [/1 - /1]
-│             locking strength: for update
 │
 ├── • fk-cascade
 │   │ fk: fk1
@@ -1394,113 +1386,3 @@ vectorized: true
                 └── • scan buffer
                       estimated row count: 100
                       label: buffer 1000000
-
-# Regression test for #138974 where the creation of the short-circuited cascade
-# plan triggered a nil pointer in the gist factory.
-statement ok
-CREATE TABLE p138974 (k INT PRIMARY KEY, v INT);
-
-statement ok
-CREATE TABLE c138974 (k INT PRIMARY KEY, parent_k INT REFERENCES p138974(k) ON DELETE CASCADE);
-
-# "Vanilla" EXPLAIN always gets the full plan.
-query T
-EXPLAIN DELETE FROM p138974 WHERE v = 1;
-----
-distribution: local
-vectorized: true
-·
-• root
-│
-├── • delete
-│   │ from: p138974
-│   │
-│   └── • buffer
-│       │ label: buffer 1
-│       │
-│       └── • filter
-│           │ filter: v = 1
-│           │
-│           └── • scan
-│                 missing stats
-│                 table: p138974@p138974_pkey
-│                 spans: FULL SCAN
-│
-└── • fk-cascade
-    │ fk: c138974_parent_k_fkey
-    │
-    └── • delete
-        │ from: c138974
-        │
-        └── • hash join
-            │ equality: (parent_k) = (k)
-            │ right cols are key
-            │
-            ├── • scan
-            │     missing stats
-            │     table: c138974@c138974_pkey
-            │     spans: FULL SCAN
-            │
-            └── • distinct
-                │ estimated row count: 10
-                │ distinct on: k
-                │
-                └── • scan buffer
-                      estimated row count: 100
-                      label: buffer 1000000
-
-# The main query doesn't modify any rows, so the cascade isn't triggered.
-query T
-EXPLAIN ANALYZE DELETE FROM p138974 WHERE v = 1;
-----
-planning time: 10µs
-execution time: 100µs
-distribution: <hidden>
-vectorized: <hidden>
-plan type: custom
-maximum memory usage: <hidden>
-network usage: <hidden>
-regions: <hidden>
-isolation level: serializable
-priority: normal
-quality of service: regular
-·
-• root
-│
-├── • delete
-│   │ sql nodes: <hidden>
-│   │ regions: <hidden>
-│   │ actual row count: 0
-│   │ from: p138974
-│   │
-│   └── • buffer
-│       │ sql nodes: <hidden>
-│       │ regions: <hidden>
-│       │ actual row count: 0
-│       │ label: buffer 1
-│       │
-│       └── • filter
-│           │ sql nodes: <hidden>
-│           │ regions: <hidden>
-│           │ actual row count: 0
-│           │ filter: v = 1
-│           │
-│           └── • scan
-│                 sql nodes: <hidden>
-│                 kv nodes: <hidden>
-│                 regions: <hidden>
-│                 actual row count: 0
-│                 KV time: 0µs
-│                 KV contention time: 0µs
-│                 KV rows decoded: 0
-│                 KV bytes read: 0 B
-│                 KV gRPC calls: 0
-│                 estimated max memory allocated: 0 B
-│                 missing stats
-│                 table: p138974@p138974_pkey
-│                 spans: FULL SCAN
-│
-└── • fk-cascade
-      fk: c138974_parent_k_fkey
-      short-circuited
-      input: buffer 1

@@ -14,9 +14,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
 )
@@ -92,16 +92,18 @@ func TestSetMinVersion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	st := cluster.MakeClusterSettings()
 	p, err := Open(context.Background(), InMemory(), cluster.MakeClusterSettings(), CacheSize(0))
 	require.NoError(t, err)
 	defer p.Close()
-	require.Equal(t, MinimumSupportedFormatVersion, p.db.FormatMajorVersion())
+	require.Equal(t, pebble.FormatFlushableIngest, p.db.FormatMajorVersion())
 
+	ValueBlocksEnabled.Override(context.Background(), &st.SV, true)
 	// Advancing the store cluster version to one that supports a new feature
 	// should also advance the store's format major version.
-	err = p.SetMinVersion(clusterversion.Latest.Version())
+	err = p.SetMinVersion(clusterversion.V23_2_PebbleFormatDeleteSizedAndObsolete.Version())
 	require.NoError(t, err)
-	require.Equal(t, pebbleFormatVersion(clusterversion.Latest.Version()), p.db.FormatMajorVersion())
+	require.Equal(t, pebble.FormatDeleteSizedAndObsolete, p.db.FormatMajorVersion())
 }
 
 func TestMinVersion_IsNotEncrypted(t *testing.T) {
@@ -119,8 +121,8 @@ func TestMinVersion_IsNotEncrypted(t *testing.T) {
 	st := cluster.MakeClusterSettings()
 	baseFS := vfs.NewMem()
 	env, err := fs.InitEnv(ctx, baseFS, "", fs.EnvConfig{
-		EncryptionOptions: &storagepb.EncryptionOptions{},
-	}, nil /* statsCollector */)
+		EncryptionOptions: []byte("foo"),
+	})
 	require.NoError(t, err)
 
 	p, err := Open(ctx, env, st)
@@ -137,11 +139,7 @@ func TestMinVersion_IsNotEncrypted(t *testing.T) {
 }
 
 func fauxNewEncryptedEnvFunc(
-	unencryptedFS vfs.FS,
-	fr *fs.FileRegistry,
-	dbDir string,
-	readOnly bool,
-	_ *storagepb.EncryptionOptions,
+	unencryptedFS vfs.FS, fr *fs.FileRegistry, dbDir string, readOnly bool, optionBytes []byte,
 ) (*fs.EncryptionEnv, error) {
 	return &fs.EncryptionEnv{
 		Closer: nopCloser{},
@@ -157,8 +155,8 @@ type fauxEncryptedFS struct {
 	vfs.FS
 }
 
-func (fs fauxEncryptedFS) Create(path string, category vfs.DiskWriteCategory) (vfs.File, error) {
-	f, err := fs.FS.Create(path, category)
+func (fs fauxEncryptedFS) Create(path string) (vfs.File, error) {
+	f, err := fs.FS.Create(path)
 	if err != nil {
 		return nil, err
 	}

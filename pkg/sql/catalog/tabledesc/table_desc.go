@@ -287,22 +287,6 @@ func UpdateIndexPartitioning(
 	return true
 }
 
-// NewPartitioning creates a new catalog.paritioning from the given
-// partitioning descriptor. If the partitioning descriptor is nil, the resulting
-// partitioning will have the default value for each entry.
-func NewPartitioning(partDesc *catpb.PartitioningDescriptor) catalog.Partitioning {
-	if partDesc != nil {
-		return &partitioning{desc: partDesc}
-	}
-	partDesc = &catpb.PartitioningDescriptor{
-		NumColumns:         0,
-		NumImplicitColumns: 0,
-		List:               nil,
-		Range:              nil,
-	}
-	return partitioning{desc: partDesc}
-}
-
 // GetPrimaryIndex implements the TableDescriptor interface.
 func (desc *wrapper) GetPrimaryIndex() catalog.UniqueWithIndexConstraint {
 	return desc.getExistingOrNewIndexCache().primary
@@ -350,24 +334,11 @@ func (desc *wrapper) NonDropIndexes() []catalog.Index {
 	return desc.getExistingOrNewIndexCache().nonDrop
 }
 
-// PartialIndexes returns a slice of all partial indexes in the underlying
+// NonDropIndexes returns a slice of all partial indexes in the underlying
 // proto, in their canonical order. This is equivalent to taking the slice
-// produced by DeletableNonPrimaryIndexes and filtering indexes with non-empty
-// expressions.
-//
-// Backfilling indexes are excluded.
+// produced by AllIndexes and filtering indexes with non-empty expressions.
 func (desc *wrapper) PartialIndexes() []catalog.Index {
 	return desc.getExistingOrNewIndexCache().partial
-}
-
-// VectorIndexes returns a slice of all vector indexes in the underlying
-// proto, in their canonical order. This is equivalent to taking the slice
-// produced by DeletableNonPrimaryIndexes and filtering indexes that are not
-// vector indexes.
-//
-// Backfilling indexes are excluded.
-func (desc *wrapper) VectorIndexes() []catalog.Index {
-	return desc.getExistingOrNewIndexCache().vector
 }
 
 // NonPrimaryIndexes returns a slice of all non-primary indexes, in
@@ -669,11 +640,6 @@ func (desc *wrapper) ForEachUDTDependentForHydration(fn func(t *types.T) error) 
 	return nil
 }
 
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (desc *wrapper) MaybeRequiresTypeHydration() bool {
-	return len(desc.UserDefinedTypeColumns()) > 0
-}
-
 // IsSchemaLocked implements the TableDescriptor interface.
 func (desc *wrapper) IsSchemaLocked() bool {
 	return desc.SchemaLocked
@@ -719,19 +685,4 @@ func (desc *wrapper) IsPrimaryKeySwapMutation(m *descpb.DescriptorMutation) bool
 		}
 	}
 	return false
-}
-
-// ExternalRowData implements the TableDescriptor interface.
-func (desc *wrapper) ExternalRowData() *descpb.ExternalRowData {
-	return desc.External
-}
-
-// IsRowLevelSecurityEnabled implements the TableDescriptor interface.
-func (desc *wrapper) IsRowLevelSecurityEnabled() bool {
-	return desc.RowLevelSecurityEnabled
-}
-
-// IsRowLevelSecurityForced implements the TableDescriptor interface.
-func (desc *wrapper) IsRowLevelSecurityForced() bool {
-	return desc.RowLevelSecurityForced
 }

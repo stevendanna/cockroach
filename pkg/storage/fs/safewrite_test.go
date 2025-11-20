@@ -19,14 +19,14 @@ func TestSafeWriteToFile(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	// Use an in-memory FS that strictly enforces syncs.
-	mem := vfs.NewCrashableMem()
+	mem := vfs.NewStrictMem()
 	syncDir := func(dir string) {
 		fdir, err := mem.OpenDir(dir)
 		require.NoError(t, err)
 		require.NoError(t, fdir.Sync())
 		require.NoError(t, fdir.Close())
 	}
-	readFile := func(mem *vfs.MemFS, filename string) []byte {
+	readFile := func(filename string) []byte {
 		f, err := mem.Open("foo/bar")
 		require.NoError(t, err)
 		b, err := io.ReadAll(f)
@@ -37,7 +37,7 @@ func TestSafeWriteToFile(t *testing.T) {
 
 	require.NoError(t, mem.MkdirAll("foo", os.ModePerm))
 	syncDir("")
-	f, err := mem.Create("foo/bar", UnspecifiedWriteCategory)
+	f, err := mem.Create("foo/bar")
 	require.NoError(t, err)
 	_, err = io.WriteString(f, "Hello world")
 	require.NoError(t, err)
@@ -47,14 +47,14 @@ func TestSafeWriteToFile(t *testing.T) {
 
 	// Discard any unsynced writes to make sure we set up the test
 	// preconditions correctly.
-	crashFS := mem.CrashClone(vfs.CrashCloneCfg{})
-	require.Equal(t, []byte("Hello world"), readFile(crashFS, "foo/bar"))
+	mem.ResetToSyncedState()
+	require.Equal(t, []byte("Hello world"), readFile("foo/bar"))
 
 	// Use SafeWriteToFile to atomically, durably change the contents of the
 	// file.
-	require.NoError(t, SafeWriteToFile(crashFS, "foo", "foo/bar", []byte("Hello everyone"), UnspecifiedWriteCategory))
+	require.NoError(t, SafeWriteToFile(mem, "foo", "foo/bar", []byte("Hello everyone")))
 
 	// Discard any unsynced writes.
-	crashFS = crashFS.CrashClone(vfs.CrashCloneCfg{})
-	require.Equal(t, []byte("Hello everyone"), readFile(crashFS, "foo/bar"))
+	mem.ResetToSyncedState()
+	require.Equal(t, []byte("Hello everyone"), readFile("foo/bar"))
 }

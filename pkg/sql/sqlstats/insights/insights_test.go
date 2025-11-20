@@ -40,7 +40,7 @@ func BenchmarkInsights(b *testing.B) {
 	// down, guiding us as we tune buffer sizes, etc.
 	for _, numSessions := range []int{1, 10, 100, 1000, 10000} {
 		b.Run(fmt.Sprintf("numSessions=%d", numSessions), func(b *testing.B) {
-			provider := insights.New(settings, insights.NewMetrics(), nil)
+			provider := insights.New(settings, insights.NewMetrics())
 			provider.Start(ctx, stopper)
 
 			// Spread the b.N work across the simulated SQL sessions, so that we
@@ -50,7 +50,7 @@ func BenchmarkInsights(b *testing.B) {
 			numTransactionsPerSession := b.N / numSessions
 			var sessions sync.WaitGroup
 			sessions.Add(numSessions)
-			writer := provider.Writer()
+			writer := provider.Writer(false /* internal */)
 			statements := make([]insights.Statement, b.N)
 			transactions := make([]insights.Transaction, b.N)
 			for i := 0; i < numSessions; i++ {

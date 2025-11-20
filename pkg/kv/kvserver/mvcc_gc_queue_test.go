@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
@@ -1312,7 +1311,7 @@ func TestMVCCGCQueueIntentResolution(t *testing.T) {
 		// may use an intentInterleavingIter.
 		return tc.store.TODOEngine().MVCCIterate(context.Background(), keys.LocalMax, roachpb.KeyMax,
 			storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
-			fs.UnknownReadCategory, func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
+			storage.UnknownReadCategory, func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 				if !kv.Key.IsValue() {
 					if err := protoutil.Unmarshal(kv.Value, meta); err != nil {
 						return err

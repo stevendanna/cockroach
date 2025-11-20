@@ -11,7 +11,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │         ├── 8 elements transitioning toward PUBLIC
  │         │    ├── ABSENT → DELETE_ONLY   Column:{DescID: 106 (tbl), ColumnID: 2 (j+)}
  │         │    ├── ABSENT → PUBLIC        ColumnName:{DescID: 106 (tbl), Name: "j", ColumnID: 2 (j+)}
- │         │    ├── ABSENT → PUBLIC        ColumnType:{DescID: 106 (tbl), ColumnFamilyID: 0 (primary), ColumnID: 2 (j+), TypeName: "INT8"}
+ │         │    ├── ABSENT → PUBLIC        ColumnType:{DescID: 106 (tbl), ColumnFamilyID: 0 (primary), ColumnID: 2 (j+)}
  │         │    ├── ABSENT → PUBLIC        ColumnDefaultExpression:{DescID: 106 (tbl), ColumnID: 2 (j+), Expr: CAST(date_part('year':::STRING, now():::TIMESTAMPTZ) AS INT8)}
  │         │    ├── ABSENT → BACKFILL_ONLY PrimaryIndex:{DescID: 106 (tbl), IndexID: 4 (tbl_pkey+), ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 1 (tbl_pkey-)}
  │         │    ├── ABSENT → PUBLIC        IndexColumn:{DescID: 106 (tbl), ColumnID: 1 (i), IndexID: 4 (tbl_pkey+)}
@@ -24,7 +24,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │         └── 10 Mutation operations
  │              ├── MakeAbsentColumnDeleteOnly {"Column":{"ColumnID":2,"TableID":106}}
  │              ├── SetColumnName {"ColumnID":2,"Name":"j","TableID":106}
- │              ├── UpsertColumnType {"ColumnType":{"ColumnID":2,"IsNullable":true,"TableID":106}}
+ │              ├── SetAddedColumnType {"ColumnType":{"ColumnID":2,"IsNullable":true,"TableID":106}}
  │              ├── AddColumnDefaultExpression {"Default":{"ColumnID":2,"TableID":106}}
  │              ├── MakeAbsentIndexBackfilling {"Index":{"ConstraintID":4,"IndexID":4,"IsUnique":true,"SourceIndexID":1,"TableID":106,"TemporaryIndexID":5}}
  │              ├── AddColumnToIndex {"ColumnID":1,"IndexID":4,"TableID":106}
@@ -37,7 +37,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │    │    ├── 8 elements transitioning toward PUBLIC
  │    │    │    ├── DELETE_ONLY   → ABSENT Column:{DescID: 106 (tbl), ColumnID: 2 (j+)}
  │    │    │    ├── PUBLIC        → ABSENT ColumnName:{DescID: 106 (tbl), Name: "j", ColumnID: 2 (j+)}
- │    │    │    ├── PUBLIC        → ABSENT ColumnType:{DescID: 106 (tbl), ColumnFamilyID: 0 (primary), ColumnID: 2 (j+), TypeName: "INT8"}
+ │    │    │    ├── PUBLIC        → ABSENT ColumnType:{DescID: 106 (tbl), ColumnFamilyID: 0 (primary), ColumnID: 2 (j+)}
  │    │    │    ├── PUBLIC        → ABSENT ColumnDefaultExpression:{DescID: 106 (tbl), ColumnID: 2 (j+), Expr: CAST(date_part('year':::STRING, now():::TIMESTAMPTZ) AS INT8)}
  │    │    │    ├── BACKFILL_ONLY → ABSENT PrimaryIndex:{DescID: 106 (tbl), IndexID: 4 (tbl_pkey+), ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 1 (tbl_pkey-)}
  │    │    │    ├── PUBLIC        → ABSENT IndexColumn:{DescID: 106 (tbl), ColumnID: 1 (i), IndexID: 4 (tbl_pkey+)}
@@ -53,7 +53,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │         ├── 8 elements transitioning toward PUBLIC
  │         │    ├── ABSENT → DELETE_ONLY   Column:{DescID: 106 (tbl), ColumnID: 2 (j+)}
  │         │    ├── ABSENT → PUBLIC        ColumnName:{DescID: 106 (tbl), Name: "j", ColumnID: 2 (j+)}
- │         │    ├── ABSENT → PUBLIC        ColumnType:{DescID: 106 (tbl), ColumnFamilyID: 0 (primary), ColumnID: 2 (j+), TypeName: "INT8"}
+ │         │    ├── ABSENT → PUBLIC        ColumnType:{DescID: 106 (tbl), ColumnFamilyID: 0 (primary), ColumnID: 2 (j+)}
  │         │    ├── ABSENT → PUBLIC        ColumnDefaultExpression:{DescID: 106 (tbl), ColumnID: 2 (j+), Expr: CAST(date_part('year':::STRING, now():::TIMESTAMPTZ) AS INT8)}
  │         │    ├── ABSENT → BACKFILL_ONLY PrimaryIndex:{DescID: 106 (tbl), IndexID: 4 (tbl_pkey+), ConstraintID: 4, TemporaryIndexID: 5, SourceIndexID: 1 (tbl_pkey-)}
  │         │    ├── ABSENT → PUBLIC        IndexColumn:{DescID: 106 (tbl), ColumnID: 1 (i), IndexID: 4 (tbl_pkey+)}
@@ -66,7 +66,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │         └── 14 Mutation operations
  │              ├── MakeAbsentColumnDeleteOnly {"Column":{"ColumnID":2,"TableID":106}}
  │              ├── SetColumnName {"ColumnID":2,"Name":"j","TableID":106}
- │              ├── UpsertColumnType {"ColumnType":{"ColumnID":2,"IsNullable":true,"TableID":106}}
+ │              ├── SetAddedColumnType {"ColumnType":{"ColumnID":2,"IsNullable":true,"TableID":106}}
  │              ├── AddColumnDefaultExpression {"Default":{"ColumnID":2,"TableID":106}}
  │              ├── MakeAbsentIndexBackfilling {"Index":{"ConstraintID":4,"IndexID":4,"IsUnique":true,"SourceIndexID":1,"TableID":106,"TemporaryIndexID":5}}
  │              ├── MaybeAddSplitForIndex {"IndexID":4,"TableID":106}

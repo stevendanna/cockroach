@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -149,7 +148,7 @@ type Guard struct {
 	// Non-nil only when AcquireOptimistic has retained the snapshot for later
 	// checking of conflicts, and waiting.
 	snap        *snapshot
-	acquireTime crtime.Mono
+	acquireTime int64
 }
 
 func (lg *Guard) latches(s spanset.SpanScope, a spanset.SpanAccess) []latch {
@@ -533,7 +532,7 @@ func (m *Manager) wait(ctx context.Context, lg *Guard, snap snapshot) error {
 			}
 		}
 	}
-	lg.acquireTime = crtime.NowMono()
+	lg.acquireTime = timeutil.Now().UnixNano()
 	return nil
 }
 
@@ -572,12 +571,12 @@ func (m *Manager) waitForSignal(
 	waitType, heldType spanset.SpanAccess,
 	wait, held *latch,
 ) error {
-	if m.latchWaitDurations != nil {
-		tBegin := crtime.NowMono()
-		defer func() {
-			m.latchWaitDurations.RecordValue(tBegin.Elapsed().Nanoseconds())
-		}()
-	}
+	tBegin := timeutil.Now()
+	defer func() {
+		if m.latchWaitDurations != nil {
+			m.latchWaitDurations.RecordValue(int64(timeutil.Since(tBegin)))
+		}
+	}()
 	log.Eventf(ctx, "waiting to acquire %s latch %s, held by %s latch %s", waitType, wait, heldType, held)
 	poisonCh := held.g.poison.signalChan()
 	t.Reset(base.SlowRequestThreshold)
@@ -608,7 +607,6 @@ func (m *Manager) waitForSignal(
 				base.SlowRequestThreshold, waitType, wait, heldType, held)
 			if m.slowReqs != nil {
 				m.slowReqs.Inc(1)
-				//nolint:deferloop TODO(#137605)
 				defer m.slowReqs.Dec(1)
 			}
 		case <-ctx.Done():
@@ -643,7 +641,7 @@ func (m *Manager) Release(ctx context.Context, lg *Guard) {
 
 	var held time.Duration
 	if lg.acquireTime != 0 {
-		held = lg.acquireTime.Elapsed()
+		held = timeutil.Since(timeutil.FromUnixNanos(lg.acquireTime))
 	}
 	if held > m.longLatchHoldThreshold() {
 		const msg = "%s has held latch for %s. Some possible causes are " +

@@ -12,10 +12,10 @@ import (
 	"math/rand"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftentry"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/raft"
@@ -25,14 +25,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -58,25 +56,6 @@ var enableNonBlockingRaftLogSync = settings.RegisterBoolSetting(
 	envutil.EnvOrDefaultBool("COCKROACH_ENABLE_RAFT_LOG_NON_BLOCKING_SYNCHRONIZATION", true),
 )
 
-// raftLogTruncationClearRangeThreshold is the number of entries at which Raft
-// log truncation uses a Pebble range tombstone rather than point deletes. It is
-// set high enough to avoid writing too many range tombstones to Pebble, but low
-// enough that we don't do too many point deletes either (in particular, we
-// don't want to overflow the Pebble write batch).
-//
-// In the steady state, Raft log truncation occurs when RaftLogQueueStaleSize
-// (64 KB) or RaftLogQueueStaleThreshold (100 entries) is exceeded, so
-// truncations are generally small. If followers are lagging, we let the log
-// grow to RaftLogTruncationThreshold (16 MB) before truncating.
-//
-// 100k was chosen because it is unlikely to be hit in most common cases,
-// keeping the number of range tombstones low, but will trigger when Raft logs
-// have grown abnormally large. RaftLogTruncationThreshold will typically not
-// trigger it, unless the average log entry is <= 160 bytes. The key size is ~16
-// bytes, so Pebble point deletion batches will be bounded at ~1.6MB.
-var raftLogTruncationClearRangeThreshold = kvpb.RaftIndex(metamorphic.ConstantWithTestRange(
-	"raft-log-truncation-clearrange-threshold", 100000 /* default */, 1 /* min */, 1e6 /* max */))
-
 // MsgStorageAppend is a raftpb.Message with type MsgStorageAppend.
 type MsgStorageAppend raftpb.Message
 
@@ -88,59 +67,6 @@ func MakeMsgStorageAppend(m raftpb.Message) MsgStorageAppend {
 	return MsgStorageAppend(m)
 }
 
-// HardState returns the hard state assembled from the message.
-func (m *MsgStorageAppend) HardState() raftpb.HardState {
-	return raftpb.HardState{
-		Term:      m.Term,
-		Vote:      m.Vote,
-		Commit:    m.Commit,
-		Lead:      m.Lead,
-		LeadEpoch: m.LeadEpoch,
-	}
-}
-
-// MustSync returns true if this storage write must be synced.
-func (m *MsgStorageAppend) MustSync() bool {
-	return len(m.Responses) != 0
-}
-
-// OnDone returns the storage write post-processing information.
-func (m *MsgStorageAppend) OnDone() MsgStorageAppendDone { return m.Responses }
-
-// MsgStorageAppendDone encapsulates the actions to do after MsgStorageAppend is
-// done, such as sending messages back to raft node and its peers.
-type MsgStorageAppendDone []raftpb.Message
-
-// Responses returns the messages to send after the write/sync is completed.
-func (m MsgStorageAppendDone) Responses() []raftpb.Message { return m }
-
-// Mark returns the LogMark of the raft log in storage after the write/sync is
-// completed. Returns zero value if the write does not update the log mark.
-func (m MsgStorageAppendDone) Mark() raft.LogMark {
-	if len(m) == 0 {
-		return raft.LogMark{}
-	}
-	// Optimization: the MsgStorageAppendResp message, if any, is always the last
-	// one in the list.
-	// TODO(pav-kv): this is an undocumented API quirk. Refactor the raft write
-	// API to be more digestible outside the package.
-	if buildutil.CrdbTestBuild {
-		for _, msg := range m[:len(m)-1] {
-			if msg.Type == raftpb.MsgStorageAppendResp {
-				panic("unexpected MsgStorageAppendResp not in last position")
-			}
-		}
-	}
-	if msg := m[len(m)-1]; msg.Type != raftpb.MsgStorageAppendResp {
-		return raft.LogMark{}
-	} else if msg.Index != 0 {
-		return raft.LogMark{Term: msg.LogTerm, Index: msg.Index}
-	} else if msg.Snapshot != nil {
-		return raft.LogMark{Term: msg.LogTerm, Index: msg.Snapshot.Metadata.Index}
-	}
-	return raft.LogMark{}
-}
-
 // RaftState stores information about the last entry and the size of the log.
 type RaftState struct {
 	LastIndex kvpb.RaftIndex
@@ -150,16 +76,16 @@ type RaftState struct {
 
 // AppendStats describes a completed log storage append operation.
 type AppendStats struct {
-	Begin crtime.Mono
-	End   crtime.Mono
+	Begin time.Time
+	End   time.Time
 
 	RegularEntries    int
 	RegularBytes      int64
 	SideloadedEntries int
 	SideloadedBytes   int64
 
-	PebbleBegin crtime.Mono
-	PebbleEnd   crtime.Mono
+	PebbleBegin time.Time
+	PebbleEnd   time.Time
 	PebbleBytes int64
 	// Only set when !NonBlocking, which means almost never, since
 	// kv.raft_log.non_blocking_synchronization.enabled defaults to true.
@@ -180,7 +106,7 @@ type LogStore struct {
 	RangeID     roachpb.RangeID
 	Engine      storage.Engine
 	Sideload    SideloadStorage
-	StateLoader StateLoader // used only for writes under raftMu
+	StateLoader StateLoader
 	SyncWaiter  *SyncWaiterLoop
 	EntryCache  *raftentry.Cache
 	Settings    *cluster.Settings
@@ -190,14 +116,11 @@ type LogStore struct {
 }
 
 // SyncCallback is a callback that is notified when a raft log write has been
-// durably committed to disk.
-//
-// The function is handed the struct containing messages that are associated
-// with the MsgStorageAppend that triggered the fsync.
-//
+// durably committed to disk. The function is handed the response messages that
+// are associated with the MsgStorageAppend that triggered the fsync.
 // commitStats is populated iff this was a non-blocking sync.
 type SyncCallback interface {
-	OnLogSync(context.Context, MsgStorageAppendDone, storage.BatchCommitStats)
+	OnLogSync(context.Context, []raftpb.Message, storage.BatchCommitStats)
 }
 
 func newStoreEntriesBatch(eng storage.Engine) storage.Batch {
@@ -247,7 +170,7 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 	if len(m.Entries) > 0 {
 		firstPurge := kvpb.RaftIndex(m.Entries[0].Index) // first new entry written
 		overwriting = firstPurge <= prevLastIndex
-		stats.Begin = crtime.NowMono()
+		stats.Begin = timeutil.Now()
 		// All of the entries are appended to distinct keys, returning a new
 		// last index.
 		thinEntries, numSideloaded, sideLoadedEntriesSize, otherEntriesSize, err := MaybeSideloadEntries(ctx, m.Entries, s.Sideload)
@@ -266,10 +189,15 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 		stats.RegularBytes += otherEntriesSize
 		stats.SideloadedEntries += numSideloaded
 		stats.SideloadedBytes += sideLoadedEntriesSize
-		stats.End = crtime.NowMono()
+		stats.End = timeutil.Now()
 	}
 
-	if hs := m.HardState(); !raft.IsEmptyHardState(hs) {
+	hs := raftpb.HardState{
+		Term:   m.Term,
+		Vote:   m.Vote,
+		Commit: m.Commit,
+	}
+	if !raft.IsEmptyHardState(hs) {
 		// NB: Note that without additional safeguards, it's incorrect to write
 		// the HardState before appending m.Entries. When catching up, a follower
 		// will receive Entries that are immediately Committed in the same
@@ -301,9 +229,9 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 	// communicates an important invariant, but is hard to grok now and can be
 	// outdated. Raft invariants are in the responsibility of the layer above
 	// (Replica), so this comment might need to move.
-	stats.PebbleBegin = crtime.NowMono()
+	stats.PebbleBegin = timeutil.Now()
 	stats.PebbleBytes = int64(batch.Len())
-	wantsSync := m.MustSync()
+	wantsSync := len(m.Responses) > 0
 	willSync := wantsSync && !DisableSyncRaftLog.Get(&s.Settings.SV)
 	// Use the non-blocking log sync path if we are performing a log sync ...
 	nonBlockingSync := willSync &&
@@ -328,14 +256,14 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 			const expl = "while committing batch without sync wait"
 			return RaftState{}, errors.Wrap(err, expl)
 		}
-		stats.PebbleEnd = crtime.NowMono()
+		stats.PebbleEnd = timeutil.Now()
 		// Instead, enqueue that waiting on the SyncWaiterLoop, who will signal the
 		// callback when the write completes.
 		waiterCallback := nonBlockingSyncWaiterCallbackPool.Get().(*nonBlockingSyncWaiterCallback)
 		*waiterCallback = nonBlockingSyncWaiterCallback{
 			ctx:            ctx,
 			cb:             cb,
-			onDone:         m.OnDone(),
+			msgs:           m.Responses,
 			batch:          batch,
 			metrics:        s.Metrics,
 			logCommitBegin: stats.PebbleBegin,
@@ -348,12 +276,12 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 			const expl = "while committing batch"
 			return RaftState{}, errors.Wrap(err, expl)
 		}
-		stats.PebbleEnd = crtime.NowMono()
+		stats.PebbleEnd = timeutil.Now()
 		stats.PebbleCommitStats = batch.CommitStats()
 		if wantsSync {
 			logCommitEnd := stats.PebbleEnd
 			s.Metrics.RaftLogCommitLatency.RecordValue(logCommitEnd.Sub(stats.PebbleBegin).Nanoseconds())
-			cb.OnLogSync(ctx, m.OnDone(), storage.BatchCommitStats{})
+			cb.OnLogSync(ctx, m.Responses, storage.BatchCommitStats{})
 		}
 	}
 	stats.Sync = wantsSync
@@ -403,22 +331,22 @@ func (s *LogStore) storeEntriesAndCommitBatch(
 // callback.
 type nonBlockingSyncWaiterCallback struct {
 	// Used to run SyncCallback.
-	ctx    context.Context
-	cb     SyncCallback
-	onDone MsgStorageAppendDone
+	ctx  context.Context
+	cb   SyncCallback
+	msgs []raftpb.Message
 	// Used to extract stats. This is the batch that has been synced.
 	batch storage.WriteBatch
 	// Used to record Metrics.
 	metrics        Metrics
-	logCommitBegin crtime.Mono
+	logCommitBegin time.Time
 }
 
 // run is the callback's logic. It is executed on the SyncWaiterLoop goroutine.
 func (cb *nonBlockingSyncWaiterCallback) run() {
-	dur := cb.logCommitBegin.Elapsed().Nanoseconds()
+	dur := timeutil.Since(cb.logCommitBegin).Nanoseconds()
 	cb.metrics.RaftLogCommitLatency.RecordValue(dur)
 	commitStats := cb.batch.CommitStats()
-	cb.cb.OnLogSync(cb.ctx, cb.onDone, commitStats)
+	cb.cb.OnLogSync(cb.ctx, cb.msgs, commitStats)
 	cb.release()
 }
 
@@ -472,7 +400,7 @@ func logAppend(
 	value.RawBytes = value.RawBytes[:0]
 	diff.Reset()
 
-	opts := storage.MVCCWriteOptions{Stats: diff, Category: fs.ReplicationReadCategory}
+	opts := storage.MVCCWriteOptions{Stats: diff, Category: storage.ReplicationReadCategory}
 	for i := range entries {
 		ent := &entries[i]
 		key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
@@ -512,105 +440,8 @@ func logAppend(
 	}, nil
 }
 
-// Compact constructs a write that compacts the raft log from
-// currentTruncatedState up to suggestedTruncatedState. Returns (true, nil) iff
-// the compaction can proceed, and the write has been constructed.
-//
-// TODO(#136109): make this a method of a write-through LogStore data structure,
-// which is aware of the current log state.
-func Compact(
-	ctx context.Context,
-	currentTruncatedState kvserverpb.RaftTruncatedState,
-	suggestedTruncatedState *kvserverpb.RaftTruncatedState,
-	loader StateLoader,
-	readWriter storage.ReadWriter,
-) (apply bool, _ error) {
-	if suggestedTruncatedState.Index <= currentTruncatedState.Index {
-		// The suggested truncated state moves us backwards; instruct the caller to
-		// not update the in-memory state.
-		return false, nil
-	}
-
-	// Truncate the Raft log from the entry after the previous truncation index to
-	// the new truncation index. This is performed atomically with the raft
-	// command application so that the TruncatedState index is always consistent
-	// with the state of the Raft log itself.
-	prefixBuf := &loader.RangeIDPrefixBuf
-	numTruncatedEntries := suggestedTruncatedState.Index - currentTruncatedState.Index
-	if numTruncatedEntries >= raftLogTruncationClearRangeThreshold {
-		start := prefixBuf.RaftLogKey(currentTruncatedState.Index + 1).Clone()
-		end := prefixBuf.RaftLogKey(suggestedTruncatedState.Index + 1).Clone() // end is exclusive
-		if err := readWriter.ClearRawRange(start, end, true, false); err != nil {
-			return false, errors.Wrapf(err,
-				"unable to clear truncated Raft entries for %+v between indexes %d-%d",
-				suggestedTruncatedState, currentTruncatedState.Index+1, suggestedTruncatedState.Index+1)
-		}
-	} else {
-		// NB: RangeIDPrefixBufs have sufficient capacity (32 bytes) to avoid
-		// allocating when constructing Raft log keys (16 bytes).
-		prefix := prefixBuf.RaftLogPrefix()
-		for idx := currentTruncatedState.Index + 1; idx <= suggestedTruncatedState.Index; idx++ {
-			if err := readWriter.ClearUnversioned(
-				keys.RaftLogKeyFromPrefix(prefix, idx),
-				storage.ClearOptions{},
-			); err != nil {
-				return false, errors.Wrapf(err, "unable to clear truncated Raft entries for %+v at index %d",
-					suggestedTruncatedState, idx)
-			}
-		}
-	}
-
-	// The suggested truncated state moves us forward; apply it and tell the
-	// caller as much.
-	if err := storage.MVCCPutProto(
-		ctx,
-		readWriter,
-		prefixBuf.RaftTruncatedStateKey(),
-		hlc.Timestamp{},
-		suggestedTruncatedState,
-		storage.MVCCWriteOptions{Category: fs.ReplicationReadCategory},
-	); err != nil {
-		return false, errors.Wrap(err, "unable to write RaftTruncatedState")
-	}
-
-	return true, nil
-}
-
-// ComputeSize computes the size (in bytes) of the raft log from the storage
-// engine. This will iterate over the raft log and sideloaded files, so
-// depending on the size of these it can be mildly to extremely expensive and
-// thus should not be called frequently.
-//
-// TODO(#136358): we should be able to maintain this size incrementally, and not
-// need scanning the log to re-compute it.
-func (s *LogStore) ComputeSize(ctx context.Context) (int64, error) {
-	prefix := keys.RaftLogPrefix(s.RangeID)
-	prefixEnd := prefix.PrefixEnd()
-	ms, err := storage.ComputeStats(ctx, s.Engine, prefix, prefixEnd, 0 /* nowNanos */)
-	if err != nil {
-		return 0, err
-	}
-	// The remaining bytes if one were to truncate [0, 0) gives us the total
-	// number of bytes in sideloaded files.
-	_, totalSideloaded, err := s.Sideload.BytesIfTruncatedFromTo(ctx, 0, 0)
-	if err != nil {
-		return 0, err
-	}
-	return ms.SysBytes + totalSideloaded, nil
-}
-
 // LoadTerm returns the term of the entry at the given index for the specified
 // range. The result is loaded from the storage engine if it's not in the cache.
-// The valid range for index is [FirstIndex-1, LastIndex].
-//
-// There are 3 cases for when the term is not found: (1) the index has been
-// compacted away, (2) index > LastIndex, or (3) there is a gap in the log. In
-// the first case, we return ErrCompacted, and ErrUnavailable otherwise. Most
-// callers never try to read indices above LastIndex, so an error means (3)
-// which is a serious issue. But if the caller is unsure, they can check the
-// LastIndex to distinguish.
-//
-// TODO(#132114): eliminate both ErrCompacted and ErrUnavailable.
 func LoadTerm(
 	ctx context.Context,
 	rsl StateLoader,
@@ -647,7 +478,7 @@ func LoadTerm(
 		// sideloaded entries here to keep the term fetching cheap.
 		// TODO(pavelkalinnikov): consider not caching here, after measuring if it
 		// makes any difference.
-		typ, _, err := raftlog.EncodingOf(entry)
+		typ, err := raftlog.EncodingOf(entry)
 		if err != nil {
 			return 0, err
 		}
@@ -656,35 +487,34 @@ func LoadTerm(
 		}
 		return kvpb.RaftTerm(entry.Term), nil
 	}
+	// Otherwise, the entry at the given index is not found. This can happen if
+	// the index is ahead of lastIndex, or it has been compacted away.
 
-	// Otherwise, the entry at the given index is not found. See the function
-	// comment for how this case is handled.
+	lastIndex, err := rsl.LoadLastIndex(ctx, reader)
+	if err != nil {
+		return 0, err
+	}
+	if index > lastIndex {
+		return 0, raft.ErrUnavailable
+	}
+
 	ts, err := rsl.LoadRaftTruncatedState(ctx, reader)
 	if err != nil {
 		return 0, err
-	} else if index == ts.Index {
-		return ts.Term, nil
-	} else if index < ts.Index {
-		return 0, raft.ErrCompacted
 	}
-	return 0, raft.ErrUnavailable
+	if index == ts.Index {
+		return ts.Term, nil
+	}
+	if index > ts.Index {
+		return 0, errors.Errorf("there is a gap at index %d", index)
+	}
+	return 0, raft.ErrCompacted
 }
 
-// LoadEntries loads a slice of consecutive log entries in [lo, hi), starting
-// from lo. It inlines the sideloaded entries, and caches all the loaded
-// entries. The size of the returned entries does not exceed maxSize, unless the
-// first entry exceeds the limit (in which case it is returned regardless).
+// LoadEntries retrieves entries from the engine. It inlines the sideloaded
+// entries, and caches all the loaded entries. The size of the returned entries
+// does not exceed maxSize, unless only one entry is returned.
 //
-// The valid range for lo/hi is: FirstIndex <= lo <= hi <= LastIndex+1.
-//
-// There are 3 cases for when an entry is not found: (1) the lo index has been
-// compacted away, (2) hi > LastIndex+1, or (3) there is a gap in the log. In
-// the first case, we return ErrCompacted, and ErrUnavailable otherwise. Most
-// callers never try to read indices above LastIndex, so an error means (3)
-// which is a serious issue. But if the caller is unsure, they can check the
-// LastIndex to distinguish.
-//
-// TODO(#132114): eliminate both ErrCompacted and ErrUnavailable.
 // TODO(pavelkalinnikov): return all entries we've read, consider maxSize a
 // target size. Currently we may read one extra entry and drop it.
 func LoadEntries(
@@ -741,7 +571,7 @@ func LoadEntries(
 		}
 		expectedIndex++
 
-		typ, _, err := raftlog.EncodingOf(ent)
+		typ, err := raftlog.EncodingOf(ent)
 		if err != nil {
 			return err
 		}
@@ -779,15 +609,30 @@ func LoadEntries(
 		return ents, cachedSize, sh.bytes - cachedSize, nil
 	}
 
-	// Something went wrong, and we could not load enough entries.
+	// Did we get any results at all? Because something went wrong.
+	if len(ents) > 0 {
+		// Was the missing index after the last index?
+		lastIndex, err := rsl.LoadLastIndex(ctx, reader)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		if lastIndex <= expectedIndex {
+			return nil, 0, 0, raft.ErrUnavailable
+		}
+
+		// We have a gap in the record, if so, return a nasty error.
+		return nil, 0, 0, errors.Errorf("there is a gap in the index record between lo:%d and hi:%d at index:%d", lo, hi, expectedIndex)
+	}
+
+	// No results, was it due to unavailability or truncation?
 	ts, err := rsl.LoadRaftTruncatedState(ctx, reader)
 	if err != nil {
 		return nil, 0, 0, err
-	} else if lo <= ts.Index {
+	}
+	if ts.Index >= lo {
 		// The requested lo index has already been truncated.
 		return nil, 0, 0, raft.ErrCompacted
 	}
-	// We either have a gap in the log, or hi > LastIndex. Let the caller
-	// distinguish if they need to.
+	// The requested lo index does not yet exist.
 	return nil, 0, 0, raft.ErrUnavailable
 }

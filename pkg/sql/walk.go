@@ -117,10 +117,10 @@ func (v *planVisitor) visitInternal(plan planNode, name string) {
 	case *scanNode:
 
 	case *filterNode:
-		n.input = v.visit(n.input)
+		n.source.plan = v.visit(n.source.plan)
 
 	case *renderNode:
-		n.input = v.visit(n.input)
+		n.source.plan = v.visit(n.source.plan)
 
 	case *indexJoinNode:
 		n.input = v.visit(n.input)
@@ -134,11 +134,11 @@ func (v *planVisitor) visitInternal(plan planNode, name string) {
 	case *zigzagJoinNode:
 
 	case *applyJoinNode:
-		n.input = v.visit(n.input)
+		n.input.plan = v.visit(n.input.plan)
 
 	case *joinNode:
-		n.left = v.visit(n.left)
-		n.right = v.visit(n.right)
+		n.left.plan = v.visit(n.left.plan)
+		n.right.plan = v.visit(n.right.plan)
 
 	case *invertedFilterNode:
 		n.input = v.visit(n.input)
@@ -147,55 +147,55 @@ func (v *planVisitor) visitInternal(plan planNode, name string) {
 		n.input = v.visit(n.input)
 
 	case *limitNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *max1RowNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *distinctNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *sortNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *topKNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *groupNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *windowNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *unionNode:
 		n.left = v.visit(n.left)
 		n.right = v.visit(n.right)
 
 	case *splitNode:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *unsplitNode:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *relocateNode:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *relocateRange:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *insertNode, *insertFastPathNode:
 		if ins, ok := n.(*insertNode); ok {
-			ins.input = v.visit(ins.input)
+			ins.source = v.visit(ins.source)
 		}
 
 	case *upsertNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 
 	case *updateNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 
 	case *deleteNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 
 	case *deleteRangeNode:
 
@@ -207,7 +207,7 @@ func (v *planVisitor) visitInternal(plan planNode, name string) {
 
 	case *createTableNode:
 		if n.n.As() {
-			n.input = v.visit(n.input)
+			n.sourcePlan = v.visit(n.sourcePlan)
 		}
 
 	case *alterTenantCapabilityNode:
@@ -219,8 +219,8 @@ func (v *planVisitor) visitInternal(plan planNode, name string) {
 	case *resetAllNode:
 
 	case *delayedNode:
-		if n.input != nil {
-			n.input = v.visit(n.input)
+		if n.plan != nil {
+			n.plan = v.visit(n.plan)
 		}
 
 	case *explainVecNode:
@@ -244,33 +244,33 @@ func (v *planVisitor) visitInternal(plan planNode, name string) {
 		n.plan.main.planNode = v.visit(n.plan.main.planNode)
 
 	case *ordinalityNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 
 	case *spoolNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 
 	case *saveTableNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 
 	case *showTraceReplicaNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *cancelQueriesNode:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *cancelSessionsNode:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *controlJobsNode:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *controlSchedulesNode:
-		n.input = v.visit(n.input)
+		n.rows = v.visit(n.rows)
 
 	case *setZoneConfigNode:
 
 	case *projectSetNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 
 	case *rowSourceToPlanNode:
 		// No need to recurse into the original planNode since
@@ -278,22 +278,18 @@ func (v *planVisitor) visitInternal(plan planNode, name string) {
 		// propagating signals via its own walker.
 
 	case *errorIfRowsNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *scanBufferNode:
 
 	case *bufferNode:
-		n.input = v.visit(n.input)
+		n.plan = v.visit(n.plan)
 
 	case *recursiveCTENode:
-		n.input = v.visit(n.input)
+		n.initial = v.visit(n.initial)
 
 	case *exportNode:
-		n.input = v.visit(n.input)
-
-	case *vectorSearchNode:
-	case *vectorMutationSearchNode:
-		n.input = v.visit(n.input)
+		n.source = v.visit(n.source)
 	}
 }
 
@@ -307,6 +303,10 @@ func nodeName(plan planNode) string {
 	case *scanNode:
 		if n.reverse {
 			return "revscan"
+		}
+	case *unionNode:
+		if n.emitAll {
+			return "append"
 		}
 
 	case *joinNode:
@@ -351,7 +351,6 @@ var planNodeNames = map[reflect.Type]string{
 	reflect.TypeOf(&alterFunctionDepExtensionNode{}):           "alter function depends on extension",
 	reflect.TypeOf(&alterIndexNode{}):                          "alter index",
 	reflect.TypeOf(&alterIndexVisibleNode{}):                   "alter index visibility",
-	reflect.TypeOf(&alterJobOwnerNode{}):                       "alter job owner",
 	reflect.TypeOf(&alterSequenceNode{}):                       "alter sequence",
 	reflect.TypeOf(&alterSchemaNode{}):                         "alter schema",
 	reflect.TypeOf(&alterTableNode{}):                          "alter table",
@@ -394,7 +393,6 @@ var planNodeNames = map[reflect.Type]string{
 	reflect.TypeOf(&createTypeNode{}):                          "create type",
 	reflect.TypeOf(&CreateRoleNode{}):                          "create user/role",
 	reflect.TypeOf(&createViewNode{}):                          "create view",
-	reflect.TypeOf(&checkExternalConnectionNode{}):             "check external connection",
 	reflect.TypeOf(&delayedNode{}):                             "virtual table",
 	reflect.TypeOf(&deleteNode{}):                              "delete",
 	reflect.TypeOf(&deleteRangeNode{}):                         "delete range",
@@ -418,7 +416,6 @@ var planNodeNames = map[reflect.Type]string{
 	reflect.TypeOf(&exportNode{}):                              "export",
 	reflect.TypeOf(&fetchNode{}):                               "fetch",
 	reflect.TypeOf(&filterNode{}):                              "filter",
-	reflect.TypeOf(&endPreparedTxnNode{}):                      "commit/rollback prepared",
 	reflect.TypeOf(&GrantRoleNode{}):                           "grant role",
 	reflect.TypeOf(&groupNode{}):                               "group",
 	reflect.TypeOf(&hookFnNode{}):                              "plugin",
@@ -434,6 +431,7 @@ var planNodeNames = map[reflect.Type]string{
 	reflect.TypeOf(&ordinalityNode{}):                          "ordinality",
 	reflect.TypeOf(&projectSetNode{}):                          "project set",
 	reflect.TypeOf(&reassignOwnedByNode{}):                     "reassign owned by",
+	reflect.TypeOf(&dropOwnedByNode{}):                         "drop owned by",
 	reflect.TypeOf(&recursiveCTENode{}):                        "recursive cte",
 	reflect.TypeOf(&refreshMaterializedViewNode{}):             "refresh materialized view",
 	reflect.TypeOf(&relocateNode{}):                            "relocate",
@@ -476,8 +474,6 @@ var planNodeNames = map[reflect.Type]string{
 	reflect.TypeOf(&updateNode{}):                              "update",
 	reflect.TypeOf(&upsertNode{}):                              "upsert",
 	reflect.TypeOf(&valuesNode{}):                              "values",
-	reflect.TypeOf(&vectorMutationSearchNode{}):                "vector mutation search",
-	reflect.TypeOf(&vectorSearchNode{}):                        "vector search",
 	reflect.TypeOf(&virtualTableNode{}):                        "virtual table values",
 	reflect.TypeOf(&vTableLookupJoinNode{}):                    "virtual table lookup join",
 	reflect.TypeOf(&windowNode{}):                              "window",

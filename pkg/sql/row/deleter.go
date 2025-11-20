@@ -15,11 +15,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
-	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/valueside"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/errors"
 )
 
 // Deleter abstracts the key/value operations for deleting table rows.
@@ -29,8 +27,7 @@ type Deleter struct {
 	// FetchColIDtoRowIndex must be kept in sync with FetchCols.
 	FetchColIDtoRowIndex catalog.TableColMap
 	// For allocation avoidance.
-	key         roachpb.Key
-	rawValueBuf []byte
+	key roachpb.Key
 }
 
 // MakeDeleter creates a Deleter for the given table.
@@ -91,7 +88,7 @@ func MakeDeleter(
 	}
 
 	rd := Deleter{
-		Helper:               NewRowHelper(codec, tableDesc, indexes, nil /* uniqueWithTombstoneIndexes */, sv, internal, metrics),
+		Helper:               NewRowHelper(codec, tableDesc, indexes, sv, internal, metrics),
 		FetchCols:            fetchCols,
 		FetchColIDtoRowIndex: fetchColIDtoRowIndex,
 	}
@@ -100,14 +97,11 @@ func MakeDeleter(
 }
 
 // DeleteRow adds to the batch the kv operations necessary to delete a table row
-// with the given values.
+// with the given values. It also will cascade as required and check for
+// orphaned rows. The bytesMonitor is only used if cascading/fk checking and can
+// be nil if not.
 func (rd *Deleter) DeleteRow(
-	ctx context.Context,
-	b *kv.Batch,
-	values []tree.Datum,
-	pm PartialIndexUpdateHelper,
-	oth *OriginTimestampCPutHelper,
-	traceKV bool,
+	ctx context.Context, b *kv.Batch, values []tree.Datum, pm PartialIndexUpdateHelper, traceKV bool,
 ) error {
 
 	// Delete the row from any secondary indices.
@@ -126,7 +120,6 @@ func (rd *Deleter) DeleteRow(
 			rd.Helper.Indexes[i],
 			rd.FetchColIDtoRowIndex,
 			values,
-			rowenc.EmptyVectorIndexEncodingHelper,
 			true, /* includeEmpty */
 		)
 		if err != nil {
@@ -139,7 +132,7 @@ func (rd *Deleter) DeleteRow(
 		}
 	}
 
-	primaryIndexKey, err := rd.Helper.encodePrimaryIndexKey(rd.FetchColIDtoRowIndex, values)
+	primaryIndexKey, err := rd.Helper.encodePrimaryIndex(rd.FetchColIDtoRowIndex, values)
 	if err != nil {
 		return err
 	}
@@ -157,72 +150,11 @@ func (rd *Deleter) DeleteRow(
 		}
 		familyID := family.ID
 		rd.key = keys.MakeFamilyKey(primaryIndexKey, uint32(familyID))
-
-		if oth.IsSet() {
-			var expValue []byte
-			if !oth.PreviousWasDeleted {
-				prevValue, err := rd.encodeValueForPrimaryIndexFamily(family, values)
-				if err != nil {
-					return err
-				}
-				if prevValue.IsPresent() {
-					expValue = prevValue.TagAndDataBytes()
-				}
-			}
-			oth.DelWithCPut(ctx, &KVBatchAdapter{b}, &rd.key, expValue, traceKV)
-		} else {
-			if traceKV {
-				log.VEventf(ctx, 2, "Del %s", keys.PrettyPrint(rd.Helper.primIndexValDirs, rd.key))
-			}
-			b.Del(&rd.key)
+		if traceKV {
+			log.VEventf(ctx, 2, "Del %s", keys.PrettyPrint(rd.Helper.primIndexValDirs, rd.key))
 		}
-
+		b.Del(&rd.key)
 		rd.key = nil
 		return nil
 	})
-}
-
-// encodeValueForPrimaryIndexFamily encodes the expected roachpb.Value
-// for the given family and valuses.
-//
-// TODO(ssd): Lots of duplication between this and
-// prepareInsertOrUpdateBatch. This is rather unfortunate.
-func (rd *Deleter) encodeValueForPrimaryIndexFamily(
-	family *descpb.ColumnFamilyDescriptor, values []tree.Datum,
-) (roachpb.Value, error) {
-	if len(family.ColumnIDs) == 1 && family.ColumnIDs[0] == family.DefaultColumnID && family.ID != 0 {
-		idx, ok := rd.FetchColIDtoRowIndex.Get(family.DefaultColumnID)
-		if !ok {
-			return roachpb.Value{}, nil
-		}
-		if skip, _ := rd.Helper.SkipColumnNotInPrimaryIndexValue(family.DefaultColumnID, values[idx]); skip {
-			return roachpb.Value{}, nil
-		}
-		typ := rd.FetchCols[idx].GetType()
-		marshaled, err := valueside.MarshalLegacy(typ, values[idx])
-		if err != nil {
-			return roachpb.Value{}, err
-		}
-
-		return marshaled, err
-	}
-
-	rd.rawValueBuf = rd.rawValueBuf[:0]
-	familySortedColumnIDs, ok := rd.Helper.SortedColumnFamily(family.ID)
-	if !ok {
-		return roachpb.Value{}, errors.AssertionFailedf("invalid family sorted column id map")
-	}
-
-	var err error
-	rd.rawValueBuf, err = rd.Helper.encodePrimaryIndexValuesToBuf(values, rd.FetchColIDtoRowIndex, familySortedColumnIDs, rd.FetchCols, rd.rawValueBuf)
-	if err != nil {
-		return roachpb.Value{}, err
-	}
-	ret := roachpb.Value{}
-	// For family 0, we expect a value even when no columns have
-	// been encoded to oldBytes.
-	if family.ID == 0 || len(rd.rawValueBuf) > 0 {
-		ret.SetTuple(rd.rawValueBuf)
-	}
-	return ret, nil
 }

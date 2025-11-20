@@ -20,7 +20,6 @@ import (
 var errEmptyColumnName = pgerror.New(pgcode.Syntax, "empty column name")
 
 type renameColumnNode struct {
-	zeroInputPlanNode
 	n         *tree.RenameColumn
 	tableDesc *tabledesc.Mutable
 }
@@ -53,7 +52,7 @@ func (p *planner) RenameColumn(ctx context.Context, n *tree.RenameColumn) (planN
 	}
 
 	// Disallow schema changes if this table's schema is locked.
-	if err := checkSchemaChangeIsAllowed(tableDesc, n); err != nil {
+	if err := checkTableSchemaUnlocked(tableDesc); err != nil {
 		return nil, err
 	}
 

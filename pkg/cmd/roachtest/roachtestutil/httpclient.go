@@ -9,11 +9,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -105,12 +103,12 @@ func (r *RoachtestHTTPClient) Get(ctx context.Context, url string) (*http.Respon
 }
 
 func (r *RoachtestHTTPClient) GetJSON(
-	ctx context.Context, path string, response protoutil.Message, opts ...httputil.JSONOption,
+	ctx context.Context, path string, response protoutil.Message,
 ) error {
 	if err := r.addCookies(ctx, path); err != nil {
 		return err
 	}
-	return httputil.GetJSONWithOptions(*r.client.Client, path, response, opts...)
+	return httputil.GetJSON(*r.client.Client, path, response)
 }
 
 func (r *RoachtestHTTPClient) PostProtobuf(
@@ -134,9 +132,6 @@ func (r *RoachtestHTTPClient) addCookies(ctx context.Context, cookieUrl string) 
 	if !r.cluster.IsSecure() {
 		return nil
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	// If we haven't extracted the sessionID yet, do so.
 	if r.sessionID == "" {
 		id, err := getSessionID(ctx, r.cluster, r.l, r.cluster.All(), r.virtualClusterName)
@@ -172,6 +167,8 @@ func (r *RoachtestHTTPClient) addCookies(ctx context.Context, cookieUrl string) 
 // SetCookies is a helper that checks if a client.CookieJar exists and creates
 // one if it doesn't. It then sets the provided cookies through CookieJar.SetCookies.
 func (r *RoachtestHTTPClient) SetCookies(u *url.URL, cookies []*http.Cookie) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.client.Jar == nil {
 		jar, err := cookiejar.New(nil)
 		if err != nil {
@@ -230,24 +227,4 @@ func getSessionID(
 	}
 	sessionID := strings.Split(cookie, ";")[0]
 	return sessionID, nil
-}
-
-// Download downloads the file at the given url and saves it to filename.
-func (r *RoachtestHTTPClient) Download(ctx context.Context, url string, filename string) error {
-	out, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	resp, err := r.Get(ctx, url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return err
-	}
-	return nil
 }

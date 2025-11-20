@@ -24,9 +24,10 @@ func (r *raftTruncatorReplica) getRangeID() roachpb.RangeID {
 }
 
 func (r *raftTruncatorReplica) getTruncatedState() kvserverpb.RaftTruncatedState {
-	r.mu.Lock() // TODO(pav-kv): not needed if raftMu is held.
+	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.shMu.raftTruncState
+	// TruncatedState is guaranteed to be non-nil.
+	return *r.mu.state.TruncatedState
 }
 
 func (r *raftTruncatorReplica) setTruncatedStateAndSideEffects(
@@ -40,21 +41,20 @@ func (r *raftTruncatorReplica) setTruncatedStateAndSideEffects(
 }
 
 func (r *raftTruncatorReplica) setTruncationDeltaAndTrusted(deltaBytes int64, isDeltaTrusted bool) {
-	r.raftMu.AssertHeld()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.shMu.raftLogSize += deltaBytes
-	r.shMu.raftLogLastCheckSize += deltaBytes
+	r.mu.raftLogSize += deltaBytes
+	r.mu.raftLogLastCheckSize += deltaBytes
 	// Ensure raftLog{,LastCheck}Size is not negative since it isn't persisted
 	// between server restarts.
-	if r.shMu.raftLogSize < 0 {
-		r.shMu.raftLogSize = 0
+	if r.mu.raftLogSize < 0 {
+		r.mu.raftLogSize = 0
 	}
-	if r.shMu.raftLogLastCheckSize < 0 {
-		r.shMu.raftLogLastCheckSize = 0
+	if r.mu.raftLogLastCheckSize < 0 {
+		r.mu.raftLogLastCheckSize = 0
 	}
 	if !isDeltaTrusted {
-		r.shMu.raftLogSizeTrusted = false
+		r.mu.raftLogSizeTrusted = false
 	}
 }
 

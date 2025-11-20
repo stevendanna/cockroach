@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -30,8 +31,8 @@ import (
 var maxFingerprintNumWorkers = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
 	"sql.fingerprint.max_span_parallelism",
-	"the maximum number of workers per partition used to issue fingerprint ExportRequests",
-	5,
+	"the maximum number of workers used to issue fingerprint ExportRequests",
+	8,
 	settings.PositiveInt,
 )
 
@@ -43,7 +44,13 @@ func (p *planner) FingerprintSpan(
 ) (uint64, error) {
 	ctx, sp := tracing.ChildSpan(ctx, "sql.FingerprintSpan")
 	defer sp.Finish()
+
 	evalCtx := p.EvalContext()
+	if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_1) {
+		return 0, errors.Errorf("cannot fingeprint span until the cluster version is at least %s",
+			clusterversion.V23_1.String())
+	}
+
 	fingerprint, ssts, err := p.fingerprintSpanFanout(ctx, span, startTime, allRevisions, stripped)
 	if err != nil {
 		return 0, err
@@ -118,9 +125,20 @@ func (p *planner) fingerprintSpanFanout(
 		return 0, nil, err
 	}
 
-	spanPartitions, err := dsp.PartitionSpans(ctx, planCtx, []roachpb.Span{span}, PartitionSpansBoundDefault)
+	spanPartitions, err := dsp.PartitionSpans(ctx, planCtx, []roachpb.Span{span})
 	if err != nil {
 		return 0, nil, err
+	}
+
+	var workerPartitions []SpanPartition
+	if len(spanPartitions) <= maxWorkerCount {
+		workerPartitions = spanPartitions
+	} else {
+		workerPartitions = make([]SpanPartition, maxWorkerCount)
+		for i, sp := range spanPartitions {
+			idx := i % maxWorkerCount
+			workerPartitions[idx].Spans = append(workerPartitions[idx].Spans, sp.Spans...)
+		}
 	}
 
 	rv := struct {
@@ -128,75 +146,32 @@ func (p *planner) fingerprintSpanFanout(
 		ssts        [][]byte
 		fingerprint uint64
 	}{
-		ssts: make([][]byte, 0, len(spanPartitions)),
+		ssts: make([][]byte, 0, len(workerPartitions)),
 	}
 
-	fingerprintPartition := func(
-		partition roachpb.Spans,
-	) func(ctx context.Context) error {
-		return func(ctx context.Context) error {
-			ch := make(chan roachpb.Span)
-
-			grp := ctxgroup.WithContext(ctx)
-			for range maxWorkerCount {
-				grp.GoCtx(func(ctx context.Context) error {
-					// Run until channel is empty
-					for {
-						select {
-						case <-ctx.Done():
-							return ctx.Err()
-						case sp, ok := <-ch:
-							if !ok {
-								return nil
-							}
-							localFingerprint, localSSTs, err := fingerprintSpanImpl(ctx, evalCtx, sp, startTime, allRevisions, stripped)
-							if err != nil {
-								return err
-							}
-							rv.Lock()
-							rv.ssts = append(rv.ssts, localSSTs...) // nolint:deferunlockcheck
-							rv.fingerprint = rv.fingerprint ^ localFingerprint
-							rv.Unlock()
-						}
-					}
-				})
-			}
-
-			for _, part := range partition {
-				rdi, err := p.execCfg.RangeDescIteratorFactory.NewLazyIterator(ctx, part, 64)
+	grp := ctxgroup.WithContext(ctx)
+	for i := range workerPartitions {
+		workerIdx := i
+		grp.GoCtx(func(ctx context.Context) error {
+			spans := workerPartitions[workerIdx].Spans
+			for _, sp := range spans {
+				localFingerprint, localSSTs, err := fingerprintSpanImpl(ctx, evalCtx, sp, startTime, allRevisions, stripped)
 				if err != nil {
 					return err
 				}
-				remainingSpan := part
-				for ; rdi.Valid(); rdi.Next() {
-					rangeDesc := rdi.CurRangeDescriptor()
-					rangeSpan := roachpb.Span{Key: rangeDesc.StartKey.AsRawKey(), EndKey: rangeDesc.EndKey.AsRawKey()}
-					subspan := remainingSpan.Intersect(rangeSpan)
-					if !subspan.Valid() {
-						return errors.AssertionFailedf("%s not in %s of %s", rangeSpan, remainingSpan, part)
-					}
-					ch <- subspan
-					remainingSpan.Key = subspan.EndKey
-				}
-				if err := rdi.Error(); err != nil {
-					return err
-				}
+				rv.Lock()
+				rv.ssts = append(rv.ssts, localSSTs...) // nolint:deferunlockcheck
+				rv.fingerprint = rv.fingerprint ^ localFingerprint
+				rv.Unlock()
 			}
-			close(ch)
-			return grp.Wait()
-		}
-	}
-
-	// Start one span splitter/group of workers per partition, each of which waits
-	// for all its workers to finish before returning, and then wait for them all.
-	grp := ctxgroup.WithContext(ctx)
-	for _, part := range spanPartitions {
-		grp.GoCtx(fingerprintPartition(part.Spans))
+			return nil
+		})
 	}
 	if err := grp.Wait(); err != nil {
 		return 0, nil, err
 	}
-
+	rv.Lock()
+	defer rv.Unlock()
 	return rv.fingerprint, rv.ssts, nil
 }
 

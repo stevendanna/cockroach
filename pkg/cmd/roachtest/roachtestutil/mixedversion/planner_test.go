@@ -52,8 +52,6 @@ var (
 const seed = 12345 // expectations are based on this seed
 
 func TestTestPlanner(t *testing.T) {
-	// N.B. we must restore default versions since other tests may depend on it.
-	defer setDefaultVersions()
 	// Make some test-only mutators available to the test.
 	mutatorsAvailable := append([]mutator{
 		concurrentUserHooksMutator{},
@@ -78,7 +76,15 @@ func TestTestPlanner(t *testing.T) {
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "planner"), func(t *testing.T, path string) {
 		defer withTestBuildVersion("v24.3.0")()
 		resetMutators()
-		mvt := newTest()
+		// Unless specified, treat every test as a system-only deployment
+		// test. Tests can use the deployment-mode option in the
+		// mixed-version-test directive to change the deployment mode.
+		defaultOpts := []CustomOption{
+			EnabledDeploymentModes(SystemOnlyDeployment),
+			DisableSkipVersionUpgrades,
+		}
+
+		mvt := newTest(defaultOpts...)
 
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			if d.Cmd == "plan" {
@@ -112,7 +118,7 @@ func TestTestPlanner(t *testing.T) {
 					planMutators = append(planMutators, m)
 				}
 			case "mixed-version-test":
-				mvt = createDataDrivenMixedVersionTest(t, d.CmdArgs)
+				mvt = createDataDrivenMixedVersionTest(t, d.CmdArgs, defaultOpts)
 			case "on-startup":
 				mvt.OnStartup(d.CmdArgs[0].Vals[0], dummyHook)
 			case "in-mixed-version":
@@ -298,53 +304,6 @@ func Test_upgradeTimeout(t *testing.T) {
 	assertTimeout(30*time.Minute, UpgradeTimeout(30*time.Minute)) // custom timeout applies.
 }
 
-// Test_maxNumPlanSteps tests the behaviour of plan generation in
-// mixedversion tests. If no custom value is passed, the default
-// should yield a (valid) test plan. Otherwise, the length of a test plan
-// should be <= `maxNumPlanSteps`. If maxNumPlanSteps is too low, an error
-// should be returned.
-func Test_maxNumPlanSteps(t *testing.T) {
-	mvt := newBasicUpgradeTest()
-	plan, err := mvt.plan()
-	require.NoError(t, err)
-	// N.B. the upper bound is very conservative; largest "basic upgrade" plan is well below it.
-	require.LessOrEqual(t, plan.length, 100)
-
-	mvt = newBasicUpgradeTest(MaxNumPlanSteps(15))
-	plan, err = mvt.plan()
-	require.NoError(t, err)
-	require.LessOrEqual(t, plan.length, 15)
-
-	// There is in fact no "basic upgrade" test plan with fewer than 15 steps.
-	// The smallest plan is,
-	//planner_test.go:314: Seed:               12345
-	//Upgrades:           v24.1.1 → <current>
-	//Deployment mode:    system-only
-	//Mutators:           preserve_downgrade_option_randomizer
-	//Plan:
-	//	├── install fixtures for version "v24.1.1" (1)
-	//	├── start cluster at version "v24.1.1" (2)
-	//	├── wait for all nodes (:1-4) to acknowledge cluster version '24.1' on system tenant (3)
-	//	└── upgrade cluster from "v24.1.1" to "<current>"
-	//	├── prevent auto-upgrades on system tenant by setting `preserve_downgrade_option` (4)
-	//	├── upgrade nodes :1-4 from "v24.1.1" to "<current>"
-	//	│   ├── restart node 3 with binary version <current> (5)
-	//	│   ├── run "mixed-version 1" (6)
-	//	│   ├── restart node 2 with binary version <current> (7)
-	//	│   ├── run "on startup 1" (8)
-	//	│   ├── restart node 1 with binary version <current> (9)
-	//	│   ├── allow upgrade to happen on system tenant by resetting `preserve_downgrade_option` (10)
-	//	│   ├── run "mixed-version 2" (11)
-	//	│   └── restart node 4 with binary version <current> (12)
-	//	├── run "mixed-version 2" (13)
-	//	├── wait for all nodes (:1-4) to acknowledge cluster version <current> on system tenant (14)
-	//	└── run "after finalization" (15)
-	mvt = newBasicUpgradeTest(MaxNumPlanSteps(5))
-	plan, err = mvt.plan()
-	require.ErrorContains(t, err, "unable to generate a test plan")
-	require.Nil(t, plan)
-}
-
 // setDefaultVersions overrides the test's view of the current build
 // as well as the oldest supported version. This allows the test
 // output to remain stable as new versions are released and/or we bump
@@ -375,37 +334,21 @@ func newRand() *rand.Rand {
 
 func newTest(options ...CustomOption) *Test {
 	testOptions := defaultTestOptions()
-	// Enforce some default options by default in tests; those that test
-	// multitenant deployments or skip-version upgrades specifically
-	// should pass the corresponding option explicitly.
-	defaultTestOverrides := []CustomOption{
-		EnabledDeploymentModes(SystemOnlyDeployment),
-		DisableSkipVersionUpgrades,
-	}
-
-	for _, fn := range defaultTestOverrides {
-		fn(&testOptions)
-	}
-
 	for _, fn := range options {
 		fn(&testOptions)
 	}
 
-	// N.B. by setting this, we override the framework defaults that force
-	// separate process to use latestPredecessor. This is intentional as it
-	// prevents flaking whenever new versions are added.
-	testOptions.predecessorFunc = testPredecessorFunc
-
 	return &Test{
-		ctx:       ctx,
-		logger:    nilLogger,
-		crdbNodes: nodes,
-		options:   testOptions,
-		_arch:     archP(vm.ArchAMD64),
-		_isLocal:  boolP(false),
-		prng:      newRand(),
-		hooks:     &testHooks{crdbNodes: nodes},
-		seed:      seed,
+		ctx:             ctx,
+		logger:          nilLogger,
+		crdbNodes:       nodes,
+		options:         testOptions,
+		_arch:           archP(vm.ArchAMD64),
+		_isLocal:        boolP(false),
+		prng:            newRand(),
+		hooks:           &testHooks{crdbNodes: nodes},
+		seed:            seed,
+		predecessorFunc: testPredecessorFunc,
 	}
 }
 
@@ -435,7 +378,7 @@ func testPredecessorFunc(
 ) (*clusterupgrade.Version, error) {
 	pred, ok := testPredecessorMapping[v.Series()]
 	if !ok {
-		return nil, fmt.Errorf("no known predecessor for %q (%q series)", v, v.Series())
+		return nil, fmt.Errorf("no known predecessor for %q", v)
 	}
 
 	return pred, nil
@@ -444,8 +387,10 @@ func testPredecessorFunc(
 // createDataDrivenMixedVersionTest creates a `*Test` instance based
 // on the parameters passed to the `mixed-version-test` datadriven
 // directive.
-func createDataDrivenMixedVersionTest(t *testing.T, args []datadriven.CmdArg) *Test {
-	var opts []CustomOption
+func createDataDrivenMixedVersionTest(
+	t *testing.T, args []datadriven.CmdArg, defaultOpts []CustomOption,
+) *Test {
+	opts := append([]CustomOption{}, defaultOpts...)
 	var predecessors []*clusterupgrade.Version
 	var isLocal *bool
 
@@ -505,7 +450,7 @@ func createDataDrivenMixedVersionTest(t *testing.T, args []datadriven.CmdArg) *T
 		mvt._isLocal = isLocal
 	}
 	if predecessors != nil {
-		mvt.options.predecessorFunc = func(_ *rand.Rand, v, _ *clusterupgrade.Version) (*clusterupgrade.Version, error) {
+		mvt.predecessorFunc = func(_ *rand.Rand, v, _ *clusterupgrade.Version) (*clusterupgrade.Version, error) {
 			if v.IsCurrent() {
 				return predecessors[len(predecessors)-1], nil
 			}
@@ -884,46 +829,4 @@ func (removeUserHooksMutator) Generate(rng *rand.Rand, plan *TestPlan) []mutatio
 
 func dummyHook(context.Context, *logger.Logger, *rand.Rand, *Helper) error {
 	return nil
-}
-
-// This is a regression test to ensure that separate process deployments
-// correctly default to using latest predecessors.
-func Test_SeparateProcessUsesLatestPred(t *testing.T) {
-	testOptions := defaultTestOptions()
-	testOverrides := []CustomOption{
-		EnabledDeploymentModes(SeparateProcessDeployment),
-		DisableSkipVersionUpgrades,
-		MinUpgrades(5),
-		MaxUpgrades(5),
-	}
-
-	for _, fn := range testOverrides {
-		fn(&testOptions)
-	}
-	mvt := &Test{
-		ctx:       ctx,
-		logger:    nilLogger,
-		crdbNodes: nodes,
-		options:   testOptions,
-		_arch:     archP(vm.ArchAMD64),
-		_isLocal:  boolP(false),
-		prng:      newRand(),
-		hooks:     &testHooks{crdbNodes: nodes},
-		seed:      seed,
-	}
-
-	plan, err := mvt.plan()
-	require.NoError(t, err)
-	//
-	upgradePath := plan.Versions()
-	// Remove the last element as it's the current version which is a special case.
-	// The unit test framework hardcodes the current version which should have no
-	// patch releases but LatestPatchRelease will pull the actual latest patch.
-	upgradePath = upgradePath[:len(upgradePath)-1]
-	for _, version := range upgradePath {
-		series := version.Series()
-		latestVersion, err := clusterupgrade.LatestPatchRelease(series)
-		require.NoError(t, err)
-		require.Equal(t, latestVersion, version)
-	}
 }

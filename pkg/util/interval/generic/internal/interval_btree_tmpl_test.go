@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build ignore
+// +build ignore
 
 package internal
 
@@ -98,15 +99,15 @@ func (t *btree) isSorted(tt *testing.T) {
 
 func (n *node) isSorted(t *testing.T) {
 	for i := int16(1); i < n.count; i++ {
-		require.LessOrEqual(t, compare(n.items[i-1], n.items[i]), 0)
+		require.LessOrEqual(t, cmp(n.items[i-1], n.items[i]), 0)
 	}
 	if !n.leaf() {
 		for i := int16(0); i < n.count; i++ {
 			prev := n.children[i]
 			next := n.children[i+1]
 
-			require.LessOrEqual(t, compare(prev.items[prev.count-1], n.items[i]), 0)
-			require.LessOrEqual(t, compare(n.items[i], next.items[0]), 0)
+			require.LessOrEqual(t, cmp(prev.items[prev.count-1], n.items[i]), 0)
+			require.LessOrEqual(t, cmp(n.items[i], next.items[0]), 0)
 		}
 	}
 	n.recurse(func(child *node, _ int16) {
@@ -407,8 +408,8 @@ func TestBTreeSeekOverlap(t *testing.T) {
 	}
 }
 
-// TestBTreeCompare tests the btree item comparison.
-func TestBTreeCompare(t *testing.T) {
+// TestBTreeCmp tests the btree item comparison.
+func TestBTreeCmp(t *testing.T) {
 	// NB: go_generics doesn't do well with anonymous types, so name this type.
 	// Avoid the slice literal syntax, which GofmtSimplify mandates the use of
 	// anonymous constructors with.
@@ -477,13 +478,13 @@ func TestBTreeCompare(t *testing.T) {
 		},
 	)
 	for _, tc := range testCases {
-		name := fmt.Sprintf("compare(%s:%d,%s:%d)", tc.spanA, tc.idA, tc.spanB, tc.idB)
+		name := fmt.Sprintf("cmp(%s:%d,%s:%d)", tc.spanA, tc.idA, tc.spanB, tc.idB)
 		t.Run(name, func(t *testing.T) {
 			laA := newItem(tc.spanA)
 			laA.SetID(tc.idA)
 			laB := newItem(tc.spanB)
 			laB.SetID(tc.idB)
-			require.Equal(t, tc.exp, compare(laA, laB))
+			require.Equal(t, tc.exp, cmp(laA, laB))
 		})
 	}
 }
@@ -1058,7 +1059,7 @@ func BenchmarkBTreeIterPrev(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if !it.Valid() {
-			it.Last()
+			it.First()
 		}
 		it.Prev()
 	}

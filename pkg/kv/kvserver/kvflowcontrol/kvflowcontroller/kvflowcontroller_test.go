@@ -297,9 +297,9 @@ func TestBucketSignalingBug(t *testing.T) {
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
-	kvflowcontrol.RegularTokensPerStream.Override(ctx, &st.SV, 10)
-	kvflowcontrol.ElasticTokensPerStream.Override(ctx, &st.SV, 5)
-	kvflowcontrol.Mode.Override(ctx, &st.SV, kvflowcontrol.ApplyToAll)
+	regularTokensPerStream.Override(ctx, &st.SV, 10)
+	elasticTokensPerStream.Override(ctx, &st.SV, 5)
+	kvflowcontrol.Mode.Override(ctx, &st.SV, int64(kvflowcontrol.ApplyToAll))
 	controller := New(
 		metric.NewRegistry(),
 		st,
@@ -312,8 +312,8 @@ func TestBucketSignalingBug(t *testing.T) {
 	controller.DeductTokens(ctx, admissionpb.NormalPri, 10, stream)
 	controller.DeductTokens(ctx, admissionpb.BulkNormalPri, 10, stream)
 	streamState := controller.InspectStream(ctx, stream)
-	require.Equal(t, int64(0), streamState.AvailableEvalRegularTokens)
-	require.Equal(t, int64(-15), streamState.AvailableEvalElasticTokens)
+	require.Equal(t, int64(0), streamState.AvailableRegularTokens)
+	require.Equal(t, int64(-15), streamState.AvailableElasticTokens)
 
 	connectedStream := &mockConnectedStream{
 		stream: stream,
@@ -352,8 +352,8 @@ func TestBucketSignalingBug(t *testing.T) {
 
 	controller.ReturnTokens(ctx, admissionpb.NormalPri, 1, stream)
 	streamState = controller.InspectStream(ctx, stream)
-	require.Equal(t, int64(1), streamState.AvailableEvalRegularTokens)
-	require.Equal(t, int64(-14), streamState.AvailableEvalElasticTokens)
+	require.Equal(t, int64(1), streamState.AvailableRegularTokens)
+	require.Equal(t, int64(-14), streamState.AvailableElasticTokens)
 
 	// Sleep to give enough time for regular work to get admitted.
 	time.Sleep(2 * time.Second)
@@ -368,13 +368,13 @@ func TestBucketSignalingBug(t *testing.T) {
 	// Return enough tokens that the elastic work gets admitted.
 	controller.ReturnTokens(ctx, admissionpb.NormalPri, 9, stream)
 	streamState = controller.InspectStream(ctx, stream)
-	require.Equal(t, int64(10), streamState.AvailableEvalRegularTokens)
-	require.Equal(t, int64(-5), streamState.AvailableEvalElasticTokens)
+	require.Equal(t, int64(10), streamState.AvailableRegularTokens)
+	require.Equal(t, int64(-5), streamState.AvailableElasticTokens)
 
 	controller.ReturnTokens(ctx, admissionpb.BulkNormalPri, 7, stream)
 	streamState = controller.InspectStream(ctx, stream)
-	require.Equal(t, int64(10), streamState.AvailableEvalRegularTokens)
-	require.Equal(t, int64(2), streamState.AvailableEvalElasticTokens)
+	require.Equal(t, int64(10), streamState.AvailableRegularTokens)
+	require.Equal(t, int64(2), streamState.AvailableElasticTokens)
 	<-lowPriAdmitted
 }
 
@@ -393,10 +393,10 @@ func TestInspectController(t *testing.T) {
 	}
 	makeInspectStream := func(id uint64, availableElastic, availableRegular int64) kvflowinspectpb.Stream {
 		return kvflowinspectpb.Stream{
-			TenantID:                   roachpb.MustMakeTenantID(id),
-			StoreID:                    roachpb.StoreID(id),
-			AvailableEvalRegularTokens: availableRegular,
-			AvailableEvalElasticTokens: availableElastic,
+			TenantID:               roachpb.MustMakeTenantID(id),
+			StoreID:                roachpb.StoreID(id),
+			AvailableElasticTokens: availableElastic,
+			AvailableRegularTokens: availableRegular,
 		}
 	}
 	makeConnectedStream := func(id uint64) kvflowcontrol.ConnectedStream {
@@ -406,9 +406,9 @@ func TestInspectController(t *testing.T) {
 	}
 
 	st := cluster.MakeTestingClusterSettings()
-	kvflowcontrol.ElasticTokensPerStream.Override(ctx, &st.SV, 8<<20 /* 8 MiB */)
-	kvflowcontrol.RegularTokensPerStream.Override(ctx, &st.SV, 16<<20 /* 16 MiB */)
-	kvflowcontrol.Mode.Override(ctx, &st.SV, kvflowcontrol.ApplyToAll)
+	elasticTokensPerStream.Override(ctx, &st.SV, 8<<20 /* 8 MiB */)
+	regularTokensPerStream.Override(ctx, &st.SV, 16<<20 /* 16 MiB */)
+	kvflowcontrol.Mode.Override(ctx, &st.SV, int64(kvflowcontrol.ApplyToAll))
 	controller := New(metric.NewRegistry(), st, hlc.NewClockForTesting(nil))
 
 	// No streams connected -- inspect state should be empty.
@@ -467,9 +467,9 @@ func TestControllerLogging(t *testing.T) {
 
 	st := cluster.MakeTestingClusterSettings()
 	const numTokens = 1 << 20 /* 1 MiB */
-	kvflowcontrol.ElasticTokensPerStream.Override(ctx, &st.SV, numTokens)
-	kvflowcontrol.RegularTokensPerStream.Override(ctx, &st.SV, numTokens)
-	kvflowcontrol.Mode.Override(ctx, &st.SV, kvflowcontrol.ApplyToAll)
+	elasticTokensPerStream.Override(ctx, &st.SV, numTokens)
+	regularTokensPerStream.Override(ctx, &st.SV, numTokens)
+	kvflowcontrol.Mode.Override(ctx, &st.SV, int64(kvflowcontrol.ApplyToAll))
 	controller := New(metric.NewRegistry(), st, hlc.NewClockForTesting(nil))
 
 	numBlocked := 0
@@ -712,8 +712,8 @@ func BenchmarkController(b *testing.B) {
 	}
 
 	st := cluster.MakeTestingClusterSettings()
-	kvflowcontrol.ElasticTokensPerStream.Override(ctx, &st.SV, 8<<20 /* 8 MiB */)
-	kvflowcontrol.RegularTokensPerStream.Override(ctx, &st.SV, 16<<20 /* 16 MiB */)
+	elasticTokensPerStream.Override(ctx, &st.SV, 8<<20 /* 8 MiB */)
+	regularTokensPerStream.Override(ctx, &st.SV, 16<<20 /* 16 MiB */)
 	controller := New(metric.NewRegistry(), st, hlc.NewClockForTesting(nil))
 
 	// Deduct some {regular,elastic} tokens from s1/t1 and verify that Inspect()

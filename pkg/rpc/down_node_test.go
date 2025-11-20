@@ -38,7 +38,7 @@ func TestConnectingToDownNode(t *testing.T) {
 	testutils.RunTrueAndFalse(t, "refused", func(t *testing.T, refused bool) {
 		ctx := context.Background()
 
-		rpcCtx := newTestContext(uuid.MakeV4(), &timeutil.DefaultTimeSource{}, time.Second, stop.NewStopper())
+		rpcCtx := newTestContext(uuid.FastMakeV4(), &timeutil.DefaultTimeSource{}, time.Second, stop.NewStopper())
 		defer rpcCtx.Stopper.Stop(ctx)
 		rpcCtx.NodeID.Set(context.Background(), 1)
 

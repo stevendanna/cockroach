@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
@@ -26,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 	"github.com/dustin/go-humanize"
 )
@@ -94,41 +92,6 @@ func (v *ValuesCoreSpec) summary() (string, []string) {
 	}
 	detail := fmt.Sprintf("%s (%d chunks)", humanize.IBytes(bytes), len(v.RawBytes))
 	return "Values", []string{detail}
-}
-
-// summary implements the diagramCellType interface.
-func (v *VectorSearchSpec) summary() (string, []string) {
-	details := []string{
-		fmt.Sprintf("%s@%s", v.FetchSpec.TableName, v.FetchSpec.IndexName),
-		fmt.Sprintf("Nearest Neighbor Target Count: %d", v.TargetNeighborCount),
-		fmt.Sprintf("Query Vector: %s", vector.T(v.QueryVector).String()),
-	}
-	if len(v.PrefixKey) > 0 {
-		vals, _ := encoding.PrettyPrintValuesWithTypes(nil /* valDirs */, v.PrefixKey)
-		details = append(details, fmt.Sprintf("Prefix Vals: %s", strings.Join(vals, "/")))
-	}
-	return "VectorSearch", details
-}
-
-// summary implements the diagramCellType interface.
-func (v *VectorMutationSearchSpec) summary() (string, []string) {
-	var mutationType string
-	if v.IsIndexPut {
-		mutationType = "Index Put"
-	} else {
-		mutationType = "Index Delete"
-	}
-	details := []string{
-		fmt.Sprintf("%s@%s", v.FetchSpec.TableName, v.FetchSpec.IndexName),
-		mutationType,
-		fmt.Sprintf("Query Vector Col: @%d", v.QueryVectorColumnOrdinal+1),
-	}
-	if len(v.PrefixKeyColumnOrdinals) > 0 {
-		details = append(details,
-			fmt.Sprintf("Prefix Columns: %s", colListStr(v.PrefixKeyColumnOrdinals)),
-		)
-	}
-	return "VectorMutationSearch", details
 }
 
 // summary implements the diagramCellType interface.
@@ -209,12 +172,6 @@ func (tr *TableReaderSpec) summary() (string, []string) {
 		}
 
 		details = append(details, spanStr.String())
-	}
-
-	if tr.MaxTimestampAgeNanos != 0 {
-		details = append(details, fmt.Sprintf(
-			"Inconsistent scan (max ts age %s)", time.Duration(tr.MaxTimestampAgeNanos),
-		))
 	}
 
 	return "TableReader", details
@@ -593,56 +550,6 @@ func (s *StreamIngestionDataSpec) summary() (string, []string) {
 	}
 
 	return "StreamIngestionData", annotations
-}
-
-func (s *LogicalReplicationWriterSpec) summary() (string, []string) {
-	const spanLimit = 9
-
-	tableNames := []string{}
-	for _, table := range s.TableMetadataByDestID {
-		tableNames = append(tableNames, table.SourceDescriptor.Name)
-	}
-
-	annotations := []string{
-		fmt.Sprintf("Tables: %s", strings.Join(tableNames, ",")),
-		fmt.Sprintf("Source node %s", s.PartitionSpec.SrcInstanceID),
-		"Spans:",
-	}
-
-	for i, span := range s.PartitionSpec.Spans {
-		if i == spanLimit {
-			annotations = append(annotations, fmt.Sprintf("and %d more spans", len(s.PartitionSpec.Spans)-spanLimit))
-			break
-		}
-		annotations = append(annotations, fmt.Sprintf("%v", span))
-	}
-
-	return "LogicalReplicationWriter", annotations
-}
-
-func (s *LogicalReplicationOfflineScanSpec) summary() (string, []string) {
-	const spanLimit = 9
-
-	srcTableIDs := []string{}
-	for _, pair := range s.Rekey {
-		srcTableIDs = append(srcTableIDs, fmt.Sprintf("%d", pair.OldID))
-	}
-
-	annotations := []string{
-		fmt.Sprintf("Src Table IDs: %s", strings.Join(srcTableIDs, ",")),
-		fmt.Sprintf("Source node %s", s.PartitionSpec.SrcInstanceID),
-		"Spans:",
-	}
-
-	for i, span := range s.PartitionSpec.Spans {
-		if i == spanLimit {
-			annotations = append(annotations, fmt.Sprintf("and %d more spans", len(s.PartitionSpec.Spans)-spanLimit))
-			break
-		}
-		annotations = append(annotations, fmt.Sprintf("%v", span))
-	}
-
-	return "LogicalReplicationOfflineScanWriter", annotations
 }
 
 // summary implements the diagramCellType interface.

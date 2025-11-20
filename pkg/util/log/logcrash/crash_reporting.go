@@ -51,9 +51,8 @@ var (
 		settings.ApplicationLevel,
 		"diagnostics.reporting.enabled",
 		"enable reporting diagnostic metrics to cockroach labs, but is ignored for Trial or Free licenses",
-		true,
-		settings.WithPublic,
-	)
+		false,
+		settings.WithPublic)
 
 	// CrashReports wraps "diagnostics.reporting.send_crash_reports.enabled".
 	CrashReports = settings.RegisterBoolSetting(

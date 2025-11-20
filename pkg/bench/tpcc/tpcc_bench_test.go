@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -147,7 +146,7 @@ func (bm *benchmark) startCockroach(b testing.TB) {
 		sqlutils.MakeSQLRunner(db).Exec(b, stmt)
 	}
 
-	pgURL, cleanup, err := pgurlutils.PGUrlE(
+	pgURL, cleanup, err := sqlutils.PGUrlE(
 		s.AdvSQLAddr(), b.TempDir(), url.User("root"),
 	)
 	require.NoError(b, err)

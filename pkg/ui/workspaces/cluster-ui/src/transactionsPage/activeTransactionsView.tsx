@@ -3,44 +3,39 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { InlineAlert } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import moment, { Moment } from "moment-timezone";
 import React, { useEffect, useState } from "react";
+import classNames from "classnames/bind";
 import { useHistory } from "react-router-dom";
-
+import { SortSetting } from "src/sortedtable/sortedtable";
+import { Loading } from "src/loading/loading";
+import { PageConfig, PageConfigItem } from "src/pageConfig/pageConfig";
+import { Search } from "src/search/search";
 import {
   ActiveTransaction,
   ActiveStatementFilters,
   ActiveTransactionFilters,
   ExecutionStatus,
 } from "src/activeExecutions";
-import { ActiveTransactionsSection } from "src/activeExecutions/activeTransactionsSection";
-import { RefreshControl } from "src/activeExecutions/refreshControl";
-import { Loading } from "src/loading/loading";
-import { PageConfig, PageConfigItem } from "src/pageConfig/pageConfig";
-import { Pagination } from "src/pagination";
-import { getActiveTransactionFiltersFromURL } from "src/queryFilter/utils";
-import { Search } from "src/search/search";
-import { getTableSortFromURL } from "src/sortedtable/getTableSortFromURL";
-import {
-  ISortedTablePagination,
-  SortSetting,
-} from "src/sortedtable/sortedtable";
 import LoadingError from "src/sqlActivity/errorComponent";
-import { queryByName, syncHistory } from "src/util/query";
-
-import {
-  filterActiveTransactions,
-  getAppsFromActiveExecutions,
-} from "../activeExecutions/activeStatementUtils";
 import {
   calculateActiveFilters,
   Filter,
   getFullFiltersAsStringRecord,
   inactiveFiltersState,
 } from "../queryFilter";
+import { getAppsFromActiveExecutions } from "../activeExecutions/activeStatementUtils";
+import { ActiveTransactionsSection } from "src/activeExecutions/activeTransactionsSection";
+import { Pagination } from "src/pagination";
+
 import styles from "../statementsPage/statementsPage.module.scss";
+import { queryByName, syncHistory } from "src/util/query";
+import { getTableSortFromURL } from "src/sortedtable/getTableSortFromURL";
+import { getActiveTransactionFiltersFromURL } from "src/queryFilter/utils";
+import { filterActiveTransactions } from "../activeExecutions/activeStatementUtils";
+import { InlineAlert } from "@cockroachlabs/ui-components";
+import { RefreshControl } from "src/activeExecutions/refreshControl";
+import moment, { Moment } from "moment-timezone";
+import { usePagination } from "../util";
 
 const cx = classNames.bind(styles);
 
@@ -90,10 +85,10 @@ export const ActiveTransactionsView: React.FC<ActiveTransactionsViewProps> = ({
   lastUpdated,
   onManualRefresh,
 }: ActiveTransactionsViewProps) => {
-  const [pagination, setPagination] = useState<ISortedTablePagination>({
-    current: 1,
-    pageSize: PAGE_SIZE,
-  });
+  const [pagination, updatePagination, resetPagination] = usePagination(
+    1,
+    PAGE_SIZE,
+  );
 
   const history = useHistory();
   const [search, setSearch] = useState<string>(
@@ -190,13 +185,6 @@ export const ActiveTransactionsView: React.FC<ActiveTransactionsViewProps> = ({
     search,
   ]);
 
-  const resetPagination = () => {
-    setPagination({
-      current: 1,
-      pageSize: PAGE_SIZE,
-    });
-  };
-
   const onChangeSortSetting = (ss: SortSetting): void => {
     onSortChange(ss);
     resetPagination();
@@ -243,13 +231,6 @@ export const ActiveTransactionsView: React.FC<ActiveTransactionsViewProps> = ({
     internalAppNamePrefix,
     search,
   );
-
-  const onChangePage = (page: number) => {
-    setPagination({
-      ...pagination,
-      current: page,
-    });
-  };
 
   return (
     <div className={cx("root")}>
@@ -323,7 +304,8 @@ export const ActiveTransactionsView: React.FC<ActiveTransactionsViewProps> = ({
             pageSize={pagination.pageSize}
             current={pagination.current}
             total={filteredTransactions?.length}
-            onChange={onChangePage}
+            onChange={updatePagination}
+            onShowSizeChange={updatePagination}
           />
           {maxSizeApiReached && (
             <InlineAlert

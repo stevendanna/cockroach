@@ -12,9 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/ordering"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props/physical"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/errors"
 )
 
@@ -117,11 +115,10 @@ func (c *CustomFuncs) GenerateLimitedScans(
 	var sb indexScanBuilder
 	sb.Init(c, scanPrivate.Table)
 
-	// Iterate over all non-inverted, non-partial, non-vector indexes, looking for
-	// those that can be limited.
+	// Iterate over all non-inverted, non-partial indexes, looking for those
+	// that can be limited.
 	var iter scanIndexIter
-	reject := rejectInvertedIndexes | rejectPartialIndexes | rejectVectorIndexes
-	iter.Init(c.e.evalCtx, c.e, c.e.mem, &c.im, scanPrivate, nil /* filters */, reject)
+	iter.Init(c.e.evalCtx, c.e, c.e.mem, &c.im, scanPrivate, nil /* filters */, rejectInvertedIndexes|rejectPartialIndexes)
 	iter.ForEach(func(index cat.Index, filters memo.FiltersExpr, indexCols opt.ColSet, isCovering bool, constProj memo.ProjectionsExpr) {
 		// The iterator rejects partial indexes because there are no filters to
 		// imply a partial index predicate. constProj is a projection of
@@ -191,7 +188,7 @@ func (c *CustomFuncs) ScanIsLimited(sp *memo.ScanPrivate) bool {
 func (c *CustomFuncs) ScanIsInverted(sp *memo.ScanPrivate) bool {
 	md := c.e.mem.Metadata()
 	idx := md.Table(sp.Table).Index(sp.Index)
-	return idx.Type() == idxtype.INVERTED
+	return idx.IsInverted()
 }
 
 // SplitLimitedScanIntoUnionScans returns a UnionAll tree of Scan operators with
@@ -285,13 +282,12 @@ func (c *CustomFuncs) GenerateLimitedTopKScans(
 	if len(requiredOrdering.Columns) == 0 {
 		return
 	}
-	// Iterate over all non-inverted and non-vector secondary indexes.
+	// Iterate over all non-inverted and non-partial secondary indexes.
 	var pkCols opt.ColSet
 	var iter scanIndexIter
 	var sb indexScanBuilder
 	sb.Init(c, sp.Table)
-	reject := rejectPrimaryIndex | rejectInvertedIndexes | rejectVectorIndexes
-	iter.Init(c.e.evalCtx, c.e, c.e.mem, &c.im, sp, nil /* filters */, reject)
+	iter.Init(c.e.evalCtx, c.e, c.e.mem, &c.im, sp, nil /* filters */, rejectPrimaryIndex|rejectInvertedIndexes)
 	iter.ForEach(func(index cat.Index, filters memo.FiltersExpr, indexCols opt.ColSet, isCovering bool, constProj memo.ProjectionsExpr) {
 		// The iterator only produces pseudo-partial indexes (the predicate is
 		// true) because no filters are passed to iter.Init to imply a partial
@@ -347,7 +343,7 @@ func (c *CustomFuncs) GenerateLimitedTopKScans(
 		input := sb.BuildNewExpr()
 		// Use the overlapping indexes and requiredOrdering ordering.
 		newPrivate := *tp
-		c.e.mem.AddTopKToGroup(&memo.TopKExpr{Input: input, TopKPrivate: newPrivate}, grp)
+		grp.Memo().AddTopKToGroup(&memo.TopKExpr{Input: input, TopKPrivate: newPrivate}, grp)
 	})
 }
 
@@ -406,7 +402,7 @@ func getPrefixFromOrdering(
 func (c *CustomFuncs) GeneratePartialOrderTopK(
 	grp memo.RelExpr, required *physical.Required, input memo.RelExpr, private *memo.TopKPrivate,
 ) {
-	orders := ordering.DeriveInterestingOrderings(c.e.mem, input)
+	orders := ordering.DeriveInterestingOrderings(input)
 	intraOrd := private.Ordering
 	for _, ord := range orders {
 		newOrd, fullPrefix, found := getPrefixFromOrdering(ord.ToOrdering(), intraOrd, input, func(id opt.ColumnID) bool {
@@ -422,7 +418,7 @@ func (c *CustomFuncs) GeneratePartialOrderTopK(
 		newPrivate := *private
 		newPrivate.PartialOrdering = newOrd
 
-		c.e.mem.AddTopKToGroup(&memo.TopKExpr{Input: input, TopKPrivate: newPrivate}, grp)
+		grp.Memo().AddTopKToGroup(&memo.TopKExpr{Input: input, TopKPrivate: newPrivate}, grp)
 	}
 }
 
@@ -430,78 +426,4 @@ func (c *CustomFuncs) GeneratePartialOrderTopK(
 // optimizer_push_offset_into_index_join is enabled.
 func (c *CustomFuncs) CanPushOffsetIntoIndexJoin() bool {
 	return c.e.evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin
-}
-
-// IsFixedWidthVectorCol returns true if the given column is a fixed-width
-// vector.
-func (c *CustomFuncs) IsFixedWidthVectorCol(col opt.ColumnID) bool {
-	typ := c.e.mem.Metadata().ColumnMeta(col).Type
-	if typ.Family() != types.PGVectorFamily {
-		return false
-	}
-	return typ.Width() > 0
-}
-
-// OrderingBySingleColAsc returns true if the given ordering choice allows an
-// ordering that is simply a single column in ascending order. It does not allow
-// the empty ordering.
-func (c *CustomFuncs) OrderingBySingleColAsc(ordering props.OrderingChoice, col opt.ColumnID) bool {
-	cols := ordering.Columns
-	return len(cols) == 1 && !cols[0].Descending && cols[0].Group.Contains(col)
-}
-
-// TryGenerateVectorSearch attempts to generate a vector search plan for the
-// given query vector, which is assumed to be part of a KNN search against the
-// given vector column.
-func (c *CustomFuncs) TryGenerateVectorSearch(
-	grp memo.RelExpr,
-	_ *physical.Required,
-	sp *memo.ScanPrivate,
-	passthrough opt.ColSet,
-	vectorCol, distanceCol opt.ColumnID,
-	distanceExpr, queryVector opt.ScalarExpr,
-	limit tree.Datum,
-) {
-	var iter scanIndexIter
-	iter.Init(c.e.evalCtx, c.e, c.e.mem, &c.im, sp, nil /* filters */, rejectNonVectorIndexes)
-	iter.ForEach(func(index cat.Index, _ memo.FiltersExpr, _ opt.ColSet, _ bool, _ memo.ProjectionsExpr) {
-		if sp.Table.ColumnID(index.VectorColumn().Ordinal()) != vectorCol {
-			// This index is for a different vector column.
-			return
-		}
-		var prefixVals memo.ScalarListExpr
-		if index.PrefixColumnCount() > 0 {
-			// TODO(drewk, mw5h): support multi-column vector indexes.
-			return
-		}
-
-		// VectorSearch operators return the primary-key columns.
-		limitInt := int64(*limit.(*tree.DInt))
-		indexCols := c.PrimaryKeyCols(sp.Table)
-		vectorSearch := c.e.f.ConstructVectorSearch(
-			prefixVals, queryVector,
-			&memo.VectorSearchPrivate{
-				Table:               sp.Table,
-				Index:               index.Ordinal(),
-				Cols:                indexCols,
-				TargetNeighborCount: limitInt,
-			},
-		)
-		// Add an index join to get the rest of the columns. The index join is
-		// always necessary because the vector column is not projected by the
-		// VectorSearch operator.
-		indexJoinPrivate := memo.IndexJoinPrivate{Table: sp.Table, Cols: sp.Cols}
-		vectorSearch = c.e.f.ConstructIndexJoin(vectorSearch, &indexJoinPrivate)
-
-		// Project the distance column.
-		projections := memo.ProjectionsExpr{c.e.f.ConstructProjectionsItem(distanceExpr, distanceCol)}
-		vectorSearch = c.e.f.ConstructProject(vectorSearch, projections, passthrough)
-
-		// Build a top-k operator ordering by the distance column and limited by the
-		// NN count to obtain the final result.
-		var ord props.OrderingChoice
-		ord.AppendCol(distanceCol, false /* descending */)
-		topKPrivate := memo.TopKPrivate{K: limitInt, Ordering: ord}
-		c.e.mem.AddTopKToGroup(&memo.TopKExpr{Input: vectorSearch, TopKPrivate: topKPrivate}, grp)
-	})
 }

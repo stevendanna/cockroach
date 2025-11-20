@@ -7,14 +7,15 @@ package persistedsqlstats
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/redact"
 )
 
 // Controller implements the SQL Stats subsystem control plane. This exposes
@@ -81,6 +82,10 @@ func (s *Controller) ResetActivityTables(ctx context.Context) error {
 // ResetInsightsTables implements the tree.SQLStatsController interface. This
 // method reset the {statement|transaction}_execution_insights tables.
 func (s *Controller) ResetInsightsTables(ctx context.Context) error {
+	if !s.st.Version.IsActive(ctx, clusterversion.V23_2_AddSystemExecInsightsTable) {
+		return nil
+	}
+
 	if err := s.resetSysTableStats(ctx, "system.statement_execution_insights"); err != nil {
 		return err
 	}
@@ -92,7 +97,7 @@ func (s *Controller) resetSysTableStats(ctx context.Context, tableName string) (
 	ex := s.db.Executor()
 	_, err = ex.ExecEx(
 		ctx,
-		redact.Sprintf("reset-%s", tableName),
+		fmt.Sprintf("reset-%s", tableName),
 		nil, /* txn */
 		sessiondata.NodeUserSessionDataOverride,
 		"TRUNCATE "+tableName)

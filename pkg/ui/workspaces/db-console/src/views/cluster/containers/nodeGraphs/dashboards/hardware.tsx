@@ -3,11 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
 import LineGraph from "src/views/cluster/components/linegraph";
-import { AvailableDiscCapacityGraphTooltip } from "src/views/cluster/containers/nodeGraphs/dashboards/graphTooltips";
 import { Metric, Axis } from "src/views/shared/components/metricQuery";
 
 import {
@@ -15,6 +13,8 @@ import {
   nodeDisplayName,
   storeIDsForNode,
 } from "./dashboardUtils";
+import { AvailableDiscCapacityGraphTooltip } from "src/views/cluster/containers/nodeGraphs/dashboards/graphTooltips";
+import { AxisUnits } from "@cockroachlabs/cluster-ui";
 
 // TODO(vilterp): tooltips
 

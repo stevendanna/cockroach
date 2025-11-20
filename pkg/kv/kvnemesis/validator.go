@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -62,7 +61,7 @@ func Validate(steps []Step, kvs *Engine, dt *SeqTracker) []error {
 	// by `After` timestamp is sufficient to get us the necessary ordering. This
 	// is because txns cannot be used concurrently, so none of the (Begin,After)
 	// timespans for a given transaction can overlap.
-	slices.SortFunc(steps, func(a, b Step) int { return a.After.Compare(b.After) })
+	sort.Slice(steps, func(i, j int) bool { return steps[i].After.Less(steps[j].After) })
 	for _, s := range steps {
 		v.processOp(s.Op)
 	}
@@ -809,7 +808,10 @@ func (v *validator) processOp(op Operation) {
 		//
 		// So we ignore the results of failIfError, calling it only for its side
 		// effect of perhaps registering a failure with the validator.
-		v.failIfError(op, t.Result, exceptRollback, exceptAmbiguous)
+		v.failIfError(
+			op, t.Result,
+			exceptRollback, exceptAmbiguous, exceptSharedLockPromotionError,
+		)
 
 		ops := t.Ops
 		if t.CommitInBatch != nil {
@@ -887,14 +889,6 @@ func (v *validator) processOp(op Operation) {
 		execTimestampStrictlyOptional = true
 		if !transferLeaseResultIsIgnorable(t.Result) {
 			v.failIfError(op, t.Result) // fail on all other errors
-		}
-	case *ChangeSettingOperation:
-		execTimestampStrictlyOptional = true
-		// It's possible that reading the modified setting times out. Ignore these
-		// errors for now, at least until we do some validation that depends on the
-		// cluster settings being fully propagated.
-		if !resultIsErrorStr(t.Result, `setting updated but timed out waiting to read new value`) {
-			v.failIfError(op, t.Result)
 		}
 	case *ChangeZoneOperation:
 		execTimestampStrictlyOptional = true
@@ -1404,7 +1398,9 @@ func (v *validator) checkError(
 	op Operation, r Result, extraExceptions ...func(err error) bool,
 ) (ambiguous, hadError bool) {
 	sl := []func(error) bool{
-		exceptAmbiguous, exceptOmitted, exceptRetry, exceptDelRangeUsingTombstoneStraddlesRangeBoundary,
+		exceptAmbiguous, exceptOmitted, exceptRetry,
+		exceptDelRangeUsingTombstoneStraddlesRangeBoundary,
+		exceptSharedLockPromotionError,
 	}
 	sl = append(sl, extraExceptions...)
 	return v.failIfError(op, r, sl...)
@@ -1586,8 +1582,8 @@ func validReadTimes(
 		hist = append(hist, v)
 	}
 	// The slice isn't sorted due to MVCC rangedels. Sort in descending order.
-	slices.SortFunc(hist, func(a, b storage.MVCCValue) int {
-		return -a.Value.Timestamp.Compare(b.Value.Timestamp)
+	sort.Slice(hist, func(i, j int) bool {
+		return hist[j].Value.Timestamp.Less(hist[i].Value.Timestamp)
 	})
 
 	sv := mustGetStringValue(value)

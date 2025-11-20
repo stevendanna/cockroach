@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/cloud"
+	"github.com/cockroachdb/cockroach/pkg/cloud/cloudprivilege"
 	"github.com/cockroachdb/cockroach/pkg/docs"
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
@@ -99,9 +100,9 @@ const (
 	pgDumpUnsupportedSchemaStmtLog = "unsupported_schema_stmts"
 	pgDumpUnsupportedDataStmtLog   = "unsupported_data_stmts"
 
-	// statusImportBundleParseSchema indicates to the user that a bundle format
+	// RunningStatusImportBundleParseSchema indicates to the user that a bundle format
 	// schema is being parsed
-	statusImportBundleParseSchema jobs.StatusMessage = "parsing schema on Import Bundle"
+	runningStatusImportBundleParseSchema jobs.RunningStatus = "parsing schema on Import Bundle"
 )
 
 var importOptionExpectValues = map[string]exprutil.KVStringOptValidate{
@@ -249,7 +250,7 @@ func importJobDescription(
 	sort.Slice(stmt.Options, func(i, j int) bool { return stmt.Options[i].Key < stmt.Options[j].Key })
 	ann := p.ExtendedEvalContext().Annotations
 	return tree.AsStringWithFlags(
-		&stmt, tree.FmtAlwaysQualifyNames|tree.FmtShowFullURIs, tree.FmtAnnotations(ann),
+		&stmt, tree.FmtAlwaysQualifyTableNames|tree.FmtShowFullURIs, tree.FmtAnnotations(ann),
 	), nil
 }
 
@@ -295,13 +296,13 @@ func resolveUDTsUsedByImportInto(
 	err := sql.DescsTxn(ctx, p.ExecCfg(), func(
 		ctx context.Context, txn isql.Txn, descriptors *descs.Collection,
 	) (err error) {
-		dbDesc, err = descriptors.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, table.GetParentID())
+		dbDesc, err = descriptors.ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, table.GetParentID())
 		if err != nil {
 			return err
 		}
 		typeIDs, _, err := table.GetAllReferencedTypeIDs(dbDesc,
 			func(id descpb.ID) (catalog.TypeDescriptor, error) {
-				immutDesc, err := descriptors.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Type(ctx, id)
+				immutDesc, err := descriptors.ByID(txn.KV()).WithoutNonPublic().Get().Type(ctx, id)
 				if err != nil {
 					return nil, err
 				}
@@ -312,7 +313,7 @@ func resolveUDTsUsedByImportInto(
 		}
 
 		for _, typeID := range typeIDs {
-			immutDesc, err := descriptors.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Type(ctx, typeID)
+			immutDesc, err := descriptors.ByID(txn.KV()).WithoutNonPublic().Get().Type(ctx, typeID)
 			if err != nil {
 				return err
 			}
@@ -351,10 +352,10 @@ func importTypeCheck(
 // importPlanHook implements sql.PlanHookFn.
 func importPlanHook(
 	ctx context.Context, stmt tree.Statement, p sql.PlanHookState,
-) (sql.PlanHookRowFn, colinfo.ResultColumns, bool, error) {
+) (sql.PlanHookRowFn, colinfo.ResultColumns, []sql.PlanNode, bool, error) {
 	importStmt, ok := stmt.(*tree.Import)
 	if !ok {
-		return nil, nil, false, nil
+		return nil, nil, nil, false, nil
 	}
 
 	if !importStmt.Bundle && !importStmt.Into {
@@ -378,7 +379,7 @@ func importPlanHook(
 		featureImportEnabled,
 		"IMPORT",
 	); err != nil {
-		return nil, nil, false, err
+		return nil, nil, nil, false, err
 	}
 
 	exprEval := p.ExprEvaluator("IMPORT")
@@ -386,7 +387,7 @@ func importPlanHook(
 		ctx, importStmt.Options, importOptionExpectValues,
 	)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, nil, false, err
 	}
 
 	var isDetached bool
@@ -396,7 +397,7 @@ func importPlanHook(
 
 	filenamePatterns, err := exprEval.StringArray(ctx, importStmt.Files)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, nil, false, err
 	}
 
 	// Certain ExternalStorage URIs require super-user access. Check all the
@@ -409,14 +410,14 @@ func importPlanHook(
 			if _, workloadErr := parseWorkloadConfig(file); workloadErr == nil {
 				continue
 			}
-			return nil, nil, false, err
+			return nil, nil, nil, false, err
 		}
-		if err := sql.CheckDestinationPrivileges(ctx, p, []string{file}); err != nil {
-			return nil, nil, false, err
+		if err := cloudprivilege.CheckDestinationPrivileges(ctx, p, []string{file}); err != nil {
+			return nil, nil, nil, false, err
 		}
 	}
 
-	fn := func(ctx context.Context, resultsCh chan<- tree.Datums) error {
+	fn := func(ctx context.Context, _ []sql.PlanNode, resultsCh chan<- tree.Datums) error {
 		// TODO(dan): Move this span into sql.
 		ctx, span := tracing.ChildSpan(ctx, importStmt.StatementTag())
 		defer span.Finish()
@@ -813,23 +814,6 @@ func importPlanHook(
 				return err
 			}
 
-			if len(found.LDRJobIDs) > 0 {
-				return errors.Newf("cannot run an import on table %s which is apart of a Logical Data Replication stream", table)
-			}
-
-			// Import into an RLS table is blocked, unless this is the admin. It is
-			// allowed for admins since they are exempt from RLS policies and have
-			// unrestricted read/write access.
-			if found.IsRowLevelSecurityEnabled() {
-				admin, err := p.HasAdminRole(ctx)
-				if err != nil {
-					return err
-				} else if !admin {
-					return pgerror.New(pgcode.FeatureNotSupported,
-						"IMPORT INTO not supported with row-level security for non-admin users")
-				}
-			}
-
 			// Validate target columns.
 			var intoCols []string
 			isTargetCol := make(map[string]bool)
@@ -1042,9 +1026,9 @@ func importPlanHook(
 	}
 
 	if isDetached {
-		return fn, jobs.DetachedJobExecutionResultHeader, false, nil
+		return fn, jobs.DetachedJobExecutionResultHeader, nil, false, nil
 	}
-	return fn, jobs.BulkJobExecutionResultHeader, false, nil
+	return fn, jobs.BulkJobExecutionResultHeader, nil, false, nil
 }
 
 func parseAvroOptions(

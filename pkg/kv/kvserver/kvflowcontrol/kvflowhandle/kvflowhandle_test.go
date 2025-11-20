@@ -84,7 +84,7 @@ func TestHandleAdmit(t *testing.T) {
 			clock := hlc.NewClockForTesting(nil)
 			st := cluster.MakeTestingClusterSettings()
 			kvflowcontrol.Enabled.Override(ctx, &st.SV, true)
-			kvflowcontrol.Mode.Override(ctx, &st.SV, kvflowcontrol.ApplyToAll)
+			kvflowcontrol.Mode.Override(ctx, &st.SV, int64(kvflowcontrol.ApplyToAll))
 
 			controller := kvflowcontroller.New(registry, st, clock)
 			handle := kvflowhandle.New(
@@ -168,7 +168,7 @@ func TestFlowControlMode(t *testing.T) {
 			clock := hlc.NewClockForTesting(nil)
 			st := cluster.MakeTestingClusterSettings()
 			kvflowcontrol.Enabled.Override(ctx, &st.SV, true)
-			kvflowcontrol.Mode.Override(ctx, &st.SV, tc.mode)
+			kvflowcontrol.Mode.Override(ctx, &st.SV, int64(tc.mode))
 
 			controller := kvflowcontroller.New(registry, st, clock)
 			handle := kvflowhandle.New(
@@ -248,7 +248,7 @@ func TestInspectHandle(t *testing.T) {
 	clock := hlc.NewClockForTesting(nil)
 	st := cluster.MakeTestingClusterSettings()
 	kvflowcontrol.Enabled.Override(ctx, &st.SV, true)
-	kvflowcontrol.Mode.Override(ctx, &st.SV, kvflowcontrol.ApplyToAll)
+	kvflowcontrol.Mode.Override(ctx, &st.SV, int64(kvflowcontrol.ApplyToAll))
 
 	pos := func(d uint64) kvflowcontrolpb.RaftLogPosition {
 		return kvflowcontrolpb.RaftLogPosition{Term: 1, Index: d}

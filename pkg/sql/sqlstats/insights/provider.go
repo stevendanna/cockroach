@@ -8,33 +8,47 @@ package insights
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 )
 
-// Provider offers access to the insights subsystem.
-type Provider struct {
-	store           *LockingStore
-	ingester        *ConcurrentBufferIngester
-	anomalyDetector *AnomalyDetector
+type defaultProvider struct {
+	store           *lockingStore
+	ingester        *concurrentBufferIngester
+	anomalyDetector *anomalyDetector
 }
 
-// Start launches the background tasks necessary for processing insights.
-func (p *Provider) Start(ctx context.Context, stopper *stop.Stopper) {
+var _ Provider = &defaultProvider{}
+
+func (p *defaultProvider) Start(ctx context.Context, stopper *stop.Stopper) {
 	p.ingester.Start(ctx, stopper)
 }
 
-// Writer returns an object that observes statement and transaction executions.
-func (p *Provider) Writer() *ConcurrentBufferIngester {
+func (p *defaultProvider) Writer(internal bool) Writer {
+	// We ignore statements and transactions run by the internal executor.
+	if internal {
+		return nullWriterInstance
+	}
 	return p.ingester
 }
 
-// Store returns an object that offers read access to any detected insights.
-func (p *Provider) Store() *LockingStore {
+func (p *defaultProvider) Reader() Reader {
 	return p.store
 }
 
-// Anomalies returns an object that offers read access to latency information,
-// such as percentiles.
-func (p *Provider) Anomalies() *AnomalyDetector {
+func (p *defaultProvider) LatencyInformation() LatencyInformation {
 	return p.anomalyDetector
 }
+
+type nullWriter struct{}
+
+func (n *nullWriter) ObserveStatement(_ clusterunique.ID, _ *Statement) {
+}
+
+func (n *nullWriter) ObserveTransaction(_ clusterunique.ID, _ *Transaction) {
+}
+
+func (n *nullWriter) Clear() {
+}
+
+var nullWriterInstance Writer = &nullWriter{}

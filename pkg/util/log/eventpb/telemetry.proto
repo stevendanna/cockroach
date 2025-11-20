@@ -284,15 +284,9 @@ message SampledQuery {
   // execution.
   repeated int32 sql_instance_ids = 77 [(gogoproto.jsontag) = ',omitempty', (gogoproto.customname) = "SQLInstanceIDs", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
-  // KVNodeIDs is a list of all the KV nodes used in this statement's execution.
-  repeated int32 kv_node_ids = 78 [(gogoproto.jsontag) = ',omitempty', (gogoproto.customname) = "KVNodeIDs", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
   // Statement fingerprint ID of the query.
   string statement_fingerprint_id = 79 [(gogoproto.customname) = "StatementFingerprintID", (gogoproto.jsontag) = ',omitempty', (gogoproto.moretags) = "redact:\"nonsensitive\""];
-
-  // UsedFollowerRead indicates whether at least some reads were served by the
-  // follower replicas.
-  bool used_follower_read = 80 [(gogoproto.jsontag) = ',omitempty', (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
   reserved 12;
 
@@ -301,7 +295,11 @@ message SampledQuery {
   // more details see: https://github.com/cockroachdb/cockroach/issues/123665
   reserved 13;
 
-  // Next available ID: 81.
+  // PR #124681 used this field for KVNodeIDs, but isn't being backported to 23.2. Instead, it
+  // is reserved for visibility and to ensure compatability in the future.
+  reserved 78;
+
+  // Next available ID: 80.
 }
 
 // SampledExecStats contains execution statistics that apply to both statements
@@ -551,6 +549,45 @@ message CapturedIndexUsageStats {
   string schema_name = 13 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 }
 
+// CreateChangefeed is an event for any CREATE CHANGEFEED query that
+// successfully starts running.  Failed CREATE statements will show up as
+// ChangefeedFailed events.
+message CreateChangefeed {
+  CommonChangefeedEventDetails common = 1 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "", (gogoproto.embed) = true];
+
+  bool transformation = 2 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+}
+
+// ChangefeedFailed is an event for any Changefeed failure since the plan hook
+// was triggered.
+message ChangefeedFailed {
+  CommonChangefeedEventDetails common = 1 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "", (gogoproto.embed) = true];
+
+  // The reason / environment with which the changefeed failed (ex:
+  // connection_closed, changefeed_behind)
+  string failure_type = 2 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+}
+
+// ChangefeedEmittedBytes is an event representing the bytes emitted by a changefeed over an interval.
+message ChangefeedEmittedBytes {
+  CommonChangefeedEventDetails common = 1 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "", (gogoproto.embed) = true];
+
+  // The job id for enterprise changefeeds.
+  int64 job_id = 2 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) =  "redact:\"nonsensitive\""];
+
+  // The number of bytes emitted.
+  int64 emitted_bytes = 3 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+
+  // The number of messages emitted.
+  int64 emitted_messages = 6 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+
+  // The time period in nanoseconds between emitting telemetry events of this type (per-aggregator).
+  int64 logging_interval = 4 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+
+  // Flag to indicate that the changefeed is closing.
+  bool closing = 5 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+}
+
 // RecoveryEvent is an event that is logged on every invocation of BACKUP,
 // RESTORE, and on every BACKUP schedule creation, with the appropriate subset
 // of fields populated depending on the type of event. This event is is also
@@ -736,6 +773,15 @@ message HotRangesStats {
 
   double qps = 3 [(gogoproto.jsontag) = ",includeempty"];
 
+  // DatabaseName is the name of the database in which the index was created.
+  string database_name = 4 [(gogoproto.jsontag) = ",omitempty"];
+
+  // TableName is the name of the table on which the index was created.
+  string table_name = 5 [(gogoproto.jsontag) = ",omitempty"];
+
+  // IndexName is the name of the index within the scope of the given table.
+  string index_name = 6 [(gogoproto.jsontag) = ",omitempty"];
+
   // SchemaName is the name of the schema in which the index was created.
   string schema_name = 7 [(gogoproto.jsontag) = ",omitempty"];
 
@@ -760,17 +806,4 @@ message HotRangesStats {
 
   // CPU time per second is the recent cpu usage in nanoseconds of this range.
   double cpu_time_per_second = 13 [(gogoproto.customname) = "CPUTimePerSecond", (gogoproto.jsontag) = ",omitempty"];
-
-  // Databases for the range.
-  repeated string databases = 16;
-  // Tables for the range
-  repeated string tables = 17;
-  // Indexes for the range
-  repeated string indexes = 18;
-
-  // previously used for database, table, and index name
-  // syntax reserved 4 to 6 breaks json encoding checks
-  reserved 4;
-  reserved 5;
-  reserved 6;
 }

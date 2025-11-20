@@ -124,13 +124,6 @@ func TestCCLLogic_pgcrypto_builtins(
 	runCCLLogicTest(t, "pgcrypto_builtins")
 }
 
-func TestCCLLogic_plpgsql_assign(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_assign")
-}
-
 func TestCCLLogic_plpgsql_block(
 	t *testing.T,
 ) {
@@ -143,13 +136,6 @@ func TestCCLLogic_plpgsql_call(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "plpgsql_call")
-}
-
-func TestCCLLogic_plpgsql_cte(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "plpgsql_cte")
 }
 
 func TestCCLLogic_plpgsql_cursor(
@@ -283,11 +269,4 @@ func TestCCLLogic_unique_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "unique_read_committed")
-}
-
-func TestCCLLogic_vector(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "vector")
 }

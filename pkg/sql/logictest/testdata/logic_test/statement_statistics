@@ -207,7 +207,7 @@ SET application_name = 'implicit_txn_test'
 statement ok
 BEGIN; SELECT x FROM test where y=1; COMMIT;
 
-# Upgraded implicit txn. All statements should be in explicit txn.
+# Upgraded implicit txn.
 statement ok
 select 1; BEGIN; select 1; select 1; COMMIT
 
@@ -231,6 +231,7 @@ ORDER BY key, implicit_txn;
 ----
 key                             implicit_txn
 SELECT _                        false
+SELECT _                        true
 SELECT x FROM test WHERE y = _  false
 SELECT x FROM test WHERE y = _  false
 SELECT x FROM test WHERE y = _  true
@@ -284,7 +285,7 @@ SELECT * FROM txn_fingerprint_view
 ----
 7184384531886178123  {10543509969653713419,5745311157220589902,5153809228704478461}  1
 
-statement ok
+statement OK
 COMMIT
 
 # Change the limit for unique fingerprint.

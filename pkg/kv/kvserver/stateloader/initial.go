@@ -17,26 +17,13 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// RaftInitialLog{Index,Term} are the starting points for the raft log. We
+// raftInitialLog{Index,Term} are the starting points for the raft log. We
 // bootstrap the raft membership by synthesizing a snapshot as if there were
 // some discarded prefix to the log, so we must begin the log at an arbitrary
 // index greater than 1.
 const (
-	RaftInitialLogIndex = 10
-	RaftInitialLogTerm  = 5
-)
-
-const (
-	// InitialLeaseAppliedIndex is the starting LAI of a Range. All proposals are
-	// assigned higher LAIs.
-	//
-	// The LAIs <= InitialLeaseAppliedIndex are reserved, e.g. for injected
-	// out-of-order proposals in tests. A bunch of tests override LAI to 1, in
-	// order to force re-proposals. We don't want "real" proposals racing with
-	// injected ones, this can cause a closed timestamp regression.
-	//
-	// https://github.com/cockroachdb/cockroach/issues/70894#issuecomment-1881165404
-	InitialLeaseAppliedIndex = 10
+	raftInitialLogIndex = 10
+	raftInitialLogTerm  = 5
 )
 
 // WriteInitialReplicaState sets up a new Range, but without writing an
@@ -56,27 +43,25 @@ func WriteInitialReplicaState(
 	gcHint roachpb.GCHint,
 	replicaVersion roachpb.Version,
 ) (enginepb.MVCCStats, error) {
-	truncState := &kvserverpb.RaftTruncatedState{
-		Term:  RaftInitialLogTerm,
-		Index: RaftInitialLogIndex,
+	rsl := Make(desc.RangeID)
+	var s kvserverpb.ReplicaState
+	s.TruncatedState = &kvserverpb.RaftTruncatedState{
+		Term:  raftInitialLogTerm,
+		Index: raftInitialLogIndex,
 	}
-	s := kvserverpb.ReplicaState{
-		RaftAppliedIndex:     truncState.Index,
-		RaftAppliedIndexTerm: truncState.Term,
-		LeaseAppliedIndex:    InitialLeaseAppliedIndex,
-		Desc: &roachpb.RangeDescriptor{
-			RangeID: desc.RangeID,
-		},
-		Lease:       &lease,
-		Stats:       &ms,
-		GCThreshold: &gcThreshold,
-		GCHint:      &gcHint,
+	s.RaftAppliedIndex = s.TruncatedState.Index
+	s.RaftAppliedIndexTerm = s.TruncatedState.Term
+	s.Desc = &roachpb.RangeDescriptor{
+		RangeID: desc.RangeID,
 	}
+	s.Stats = &ms
+	s.Lease = &lease
+	s.GCThreshold = &gcThreshold
+	s.GCHint = &gcHint
 	if (replicaVersion != roachpb.Version{}) {
 		s.Version = &replicaVersion
 	}
 
-	rsl := Make(desc.RangeID)
 	if existingLease, err := rsl.LoadLease(ctx, readWriter); err != nil {
 		return enginepb.MVCCStats{}, errors.Wrap(err, "error reading lease")
 	} else if (existingLease != roachpb.Lease{}) {
@@ -101,11 +86,6 @@ func WriteInitialReplicaState(
 		log.Fatalf(ctx, "expected trivial version, but found %+v", existingVersion)
 	}
 
-	// TODO(sep-raft-log): SetRaftTruncatedState will be in a separate batch when
-	// the Raft log engine is separated. Figure out the ordering required here.
-	if err := rsl.SetRaftTruncatedState(ctx, readWriter, truncState); err != nil {
-		return enginepb.MVCCStats{}, err
-	}
 	newMS, err := rsl.Save(ctx, readWriter, s)
 	if err != nil {
 		return enginepb.MVCCStats{}, err

@@ -1345,7 +1345,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 		stmt.AggregatedTs = startTs
 		stmt.Key.App = server.CrdbInternalStmtStatsPersisted
 		stmt.Key.TransactionFingerprintID = 1
-		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemStmtStats(ctx, ie, []appstatspb.CollectedStatementStatistics{stmt}, 1))
+		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemStmtStats(ctx, ie, &stmt, 1 /* nodeId */, nil))
 
 		stmt.Key.App = server.CrdbInternalStmtStatsCached
 		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemStmtActivity(ctx, ie, &stmt, nil))
@@ -1355,7 +1355,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 		txn.TransactionFingerprintID = 1
 		txn.AggregatedTs = startTs
 		txn.App = server.CrdbInternalTxnStatsPersisted
-		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemTxnStats(ctx, ie, []appstatspb.CollectedTransactionStatistics{txn}, 1))
+		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemTxnStats(ctx, ie, &txn, 1, nil))
 		txn.App = server.CrdbInternalTxnStatsCached
 		require.NoError(t, sqlstatstestutil.InsertMockedIntoSystemTxnActivity(ctx, ie, &txn, nil))
 
@@ -1425,6 +1425,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(0)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(1)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(2)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(3)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(4)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(5)},
 			},
@@ -1440,6 +1441,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(0)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(1)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(2)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(3)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(4)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(5)},
 			},
@@ -1452,6 +1454,8 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 			expectedTxnsTable:  server.CrdbInternalTxnStatsPersisted,
 			// These sort options do not exist on the activity table.
 			reqs: []serverpb.CombinedStatementsStatsRequest{
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(6)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(7)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(8)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(9)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createTxnFetchMode(10)},
@@ -1491,6 +1495,7 @@ func TestCombinedStatementUsesCorrectSourceTable(t *testing.T) {
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(0)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(1)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(2)},
+				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(3)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(4)},
 				{Start: defaultMockInsertedAggTs.Unix(), FetchMode: createStmtFetchMode(5)},
 			},
@@ -1631,27 +1636,25 @@ func generateStatisticsColumn(
 
 	// Create stats JSON
 	stats := struct {
-		BytesRead        appstatspb.NumericStat `json:"bytesRead"`
-		Cnt              int64                  `json:"cnt"`
-		FirstAttemptCnt  int64                  `json:"firstAttemptCnt"`
-		IdleLat          appstatspb.NumericStat `json:"idleLat"`
-		Indexes          []string               `json:"indexes"`
-		LastErrorCode    string                 `json:"lastErrorCode"`
-		LastExecAt       time.Time              `json:"lastExecAt"`
-		MaxRetries       int                    `json:"maxRetries"`
-		Nodes            []int64                `json:"nodes"`
-		KVNodeIDs        []int32                `json:"kvNodeIds"`
-		NumRows          appstatspb.NumericStat `json:"numRows"`
-		OvhLat           appstatspb.NumericStat `json:"ovhLat"`
-		ParseLat         appstatspb.NumericStat `json:"parseLat"`
-		PlanGists        []string               `json:"planGists"`
-		PlanLat          appstatspb.NumericStat `json:"planLat"`
-		Regions          []string               `json:"regions"`
-		UsedFollowerRead bool                   `json:"usedFollowerRead"`
-		RowsRead         appstatspb.NumericStat `json:"rowsRead"`
-		RowsWritten      appstatspb.NumericStat `json:"rowsWritten"`
-		RunLat           appstatspb.NumericStat `json:"runLat"`
-		SvcLat           appstatspb.NumericStat `json:"svcLat"`
+		BytesRead       appstatspb.NumericStat `json:"bytesRead"`
+		Cnt             int64                  `json:"cnt"`
+		FirstAttemptCnt int64                  `json:"firstAttemptCnt"`
+		IdleLat         appstatspb.NumericStat `json:"idleLat"`
+		Indexes         []string               `json:"indexes"`
+		LastErrorCode   string                 `json:"lastErrorCode"`
+		LastExecAt      time.Time              `json:"lastExecAt"`
+		MaxRetries      int                    `json:"maxRetries"`
+		Nodes           []int64                `json:"nodes"`
+		NumRows         appstatspb.NumericStat `json:"numRows"`
+		OvhLat          appstatspb.NumericStat `json:"ovhLat"`
+		ParseLat        appstatspb.NumericStat `json:"parseLat"`
+		PlanGists       []string               `json:"planGists"`
+		PlanLat         appstatspb.NumericStat `json:"planLat"`
+		Regions         []string               `json:"regions"`
+		RowsRead        appstatspb.NumericStat `json:"rowsRead"`
+		RowsWritten     appstatspb.NumericStat `json:"rowsWritten"`
+		RunLat          appstatspb.NumericStat `json:"runLat"`
+		SvcLat          appstatspb.NumericStat `json:"svcLat"`
 	}{
 		BytesRead: appstatspb.NumericStat{
 			Mean:         0,
@@ -1668,7 +1671,6 @@ func generateStatisticsColumn(
 		LastExecAt:    statement.AggregatedTs.Add(time.Minute * 10),
 		MaxRetries:    0,
 		Nodes:         statement.Stats.Nodes,
-		KVNodeIDs:     statement.Stats.KVNodeIDs,
 		NumRows: appstatspb.NumericStat{
 			Mean:         0,
 			SquaredDiffs: 0,
@@ -1686,8 +1688,7 @@ func generateStatisticsColumn(
 			Mean:         0,
 			SquaredDiffs: 0,
 		},
-		Regions:          statement.Stats.Regions,
-		UsedFollowerRead: statement.Stats.UsedFollowerRead,
+		Regions: statement.Stats.Regions,
 		RowsRead: appstatspb.NumericStat{
 			Mean:         0,
 			SquaredDiffs: 0,

@@ -189,6 +189,16 @@ func runBundleRecreate(cmd *cobra.Command, args []string) (resErr error) {
 			}
 		}
 		initStmts = append(initStmts, setStmts...)
+		// 'default_transaction_use_follower_reads' session variable can break
+		// recreation of the bundle, so if we see it being set, we'll also add
+		// the corresponding RESET statement.
+		for _, stmt := range setStmts {
+			stmt = strings.TrimSpace(stmt)
+			if strings.HasPrefix(stmt, "SET default_transaction_use_follower_reads = ") {
+				initStmts = append(initStmts, "RESET default_transaction_use_follower_reads; -- added by 'recreate'")
+				break
+			}
+		}
 		// Disable auto stats collection (which would override the injected
 		// stats).
 		initStmts = append(initStmts, "SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false;")
@@ -412,11 +422,7 @@ func getExplainCombinations(
 				if err != nil {
 					panic("failed parsing datum string as " + datum.String() + " " + err.Error())
 				}
-				if maxUpperBound == nil {
-					maxUpperBound = datum
-				} else if cmp, err := maxUpperBound.Compare(ctx, &evalCtx, datum); err != nil {
-					panic(err)
-				} else if cmp < 0 {
+				if maxUpperBound == nil || maxUpperBound.Compare(&evalCtx, datum) < 0 {
 					maxUpperBound = datum
 				}
 				// If we have any datums within the bucket (i.e. not equal to
@@ -434,7 +440,7 @@ func getExplainCombinations(
 					addPrevious = true
 				}
 				if addPrevious {
-					if prev, ok := tree.DatumPrev(ctx, datum, &evalCtx, &evalCtx.CollationEnv); ok {
+					if prev, ok := tree.DatumPrev(datum, &evalCtx, &evalCtx.CollationEnv); ok {
 						bucketMap[key] = append(bucketMap[key], tree.AsStringWithFlags(prev, fmtCtx))
 						addedNonExistent = addedNonExistent || numRange == 0
 					}
@@ -446,7 +452,7 @@ func getExplainCombinations(
 			}
 			// Create a value that's outside of histogram range by incrementing the
 			// max value that we've seen.
-			if outside, ok := tree.DatumNext(ctx, maxUpperBound, &evalCtx, &evalCtx.CollationEnv); ok {
+			if outside, ok := tree.DatumNext(maxUpperBound, &evalCtx, &evalCtx.CollationEnv); ok {
 				colSamples = append(colSamples, tree.AsStringWithFlags(outside, fmtCtx))
 			}
 			sort.Strings(colSamples)

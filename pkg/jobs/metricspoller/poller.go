@@ -89,7 +89,6 @@ type pollerMetrics struct {
 var metricPollerTasks = map[string]func(ctx context.Context, execCtx sql.JobExecContext) error{
 	"paused-jobs": updatePausedMetrics,
 	"manage-pts":  manageProtectedTimestamps,
-	"resolved-ts": updateTSMetrics,
 }
 
 func (m pollerMetrics) MetricStruct() {}

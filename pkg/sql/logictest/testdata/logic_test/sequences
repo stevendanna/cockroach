@@ -133,11 +133,11 @@ CREATE SEQUENCE ignored_options_test NO CYCLE
 statement ok
 CREATE SEQUENCE show_create_test
 
-query ITTITTTTTTTTTBBBB colnames
+query ITTITTTTTTTTBBBB colnames
 SELECT * FROM crdb_internal.create_statements WHERE descriptor_name = 'show_create_test'
 ----
-database_id  database_name  schema_name  descriptor_id  descriptor_type  descriptor_name   create_statement                                                                                     state   create_nofks                                                                                         policy_statements  alter_statements  validate_statements  create_redactable                                                                                    has_partitions  is_multi_region  is_virtual  is_temporary
-104          test           public       111            sequence         show_create_test  CREATE SEQUENCE public.show_create_test MINVALUE 1 MAXVALUE 9223372036854775807 INCREMENT 1 START 1  PUBLIC  CREATE SEQUENCE public.show_create_test MINVALUE 1 MAXVALUE 9223372036854775807 INCREMENT 1 START 1  {}                 {}                {}                   CREATE SEQUENCE public.show_create_test MINVALUE 1 MAXVALUE 9223372036854775807 INCREMENT 1 START 1  false           false            false       false
+database_id  database_name  schema_name  descriptor_id  descriptor_type  descriptor_name   create_statement                                                                                     state   create_nofks                                                                                         alter_statements  validate_statements  create_redactable                                                                                    has_partitions  is_multi_region  is_virtual  is_temporary
+104          test           public       111            sequence         show_create_test  CREATE SEQUENCE public.show_create_test MINVALUE 1 MAXVALUE 9223372036854775807 INCREMENT 1 START 1  PUBLIC  CREATE SEQUENCE public.show_create_test MINVALUE 1 MAXVALUE 9223372036854775807 INCREMENT 1 START 1  {}                {}                   CREATE SEQUENCE public.show_create_test MINVALUE 1 MAXVALUE 9223372036854775807 INCREMENT 1 START 1  false           false            false       false
 
 query TT colnames
 SHOW CREATE SEQUENCE show_create_test
@@ -1554,9 +1554,6 @@ statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 
 statement ok
-SET LOCAL autocommit_before_ddl=off;
-
-statement ok
 ALTER SEQUENCE cache_test INCREMENT 5
 
 # The cache is invalidated due to the above schema change, and 10 new values (15,20,...,60) are cached.
@@ -2454,10 +2451,14 @@ CREATE TABLE public.t72820 (
 
 # Also make sure that creating a sequence directly handles the name conflict.
 skipif config local-legacy-schema-changer
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error relation "test.public.t72820_i_seq" already exists
 CREATE SEQUENCE t72820_i_seq
 
 onlyif config local-legacy-schema-changer
+onlyif config local-mixed-23.1
+onlyif config local-mixed-23.2
 statement error type "test.public.t72820_i_seq" already exists
 CREATE SEQUENCE t72820_i_seq
 
@@ -2475,35 +2476,47 @@ statement ok
 CREATE SEQUENCE sq_119108;
 
 query T
-SELECT crdb_internal.pb_to_json('desc', descriptor)->'table'->'columns' FROM system.descriptor WHERE id = 'sq_119108'::REGCLASS::OID;
+SELECT column_name from [SHOW COLUMNS FROM sq_119108]
 ----
-[{"id": 1, "name": "value", "type": {"family": "IntFamily", "oid": 20, "width": 64}}]
+value
 
 subtest end
 
 subtest geo_types
 
 onlyif config local-legacy-schema-changer
+onlyif config local-mixed-23.1
+onlyif config local-mixed-23.2
 statement error type "geography" already exists
 CREATE SEQUENCE geography
 
 onlyif config local-legacy-schema-changer
+onlyif config local-mixed-23.1
+onlyif config local-legacy-schema-changer local-mixed-23.1 local-mixed-23.2
 statement error type "geometry" already exists
 CREATE SEQUENCE geometry
 
-onlyif config local-legacy-schema-changer
+onlyif config local-legacy-schema-changer local-mixed-23.1 local-mixed-23.2
+onlyif config local-mixed-23.1
+onlyif config local-legacy-schema-changer local-mixed-23.1 local-mixed-23.2
 statement error type "box2d" already exists
 CREATE SEQUENCE box2d
 
 skipif config local-legacy-schema-changer
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error geography is a built-in type and cannot be modified
 CREATE SEQUENCE geography
 
 skipif config local-legacy-schema-changer
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error geometry is a built-in type and cannot be modified
 CREATE SEQUENCE geometry
 
 skipif config local-legacy-schema-changer
+skipif config local-mixed-23.1
+skipif config local-mixed-23.2
 statement error box2d is a built-in type and cannot be modified
 CREATE SEQUENCE box2d
 
@@ -2524,5 +2537,41 @@ query TT
 SELECT substring(sequence_schema FOR 7), sequence_name FROM [SHOW SEQUENCES] WHERE sequence_name = 'temp_seq'
 ----
 pg_temp  temp_seq
+
+subtest end
+
+
+subtest incorrect_cleanup_of_owned_by
+
+statement ok
+CREATE TABLE t_seq_owner (id BIGSERIAL NOT NULL);
+
+statement ok
+CREATE SEQUENCE id_seq_owned OWNED BY t_seq_owner.id;
+
+statement ok
+ALTER TABLE t_seq_owner ALTER COLUMN id SET DEFAULT nextval('id_seq_owned');
+
+# Confirm the sequence still exists.
+query I
+SELECT count(*) FROM pg_sequences WHERE sequencename='id_seq_owned';
+----
+1
+
+
+statement ok
+drop table t_seq_owner;
+
+# Confirm the sequence is dropped.
+query I
+SELECT count(*) FROM pg_sequences WHERE sequencename='id_seq_owned';
+----
+0
+
+# Confirm the table is dropped.
+query I
+SELECT count(*) FROM pg_tables WHERE tablename='t_seq_owner';
+----
+0
 
 subtest end

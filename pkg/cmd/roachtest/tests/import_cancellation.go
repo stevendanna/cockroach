@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -40,11 +39,14 @@ func registerImportCancellation(r registry.Registry) {
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runImportCancellation(ctx, t, c)
 		},
+		// Disable metamorphic variables as otherwise TPCH queries might take
+		// extremely long time to complete.
+		CockroachBinary: registry.StandardCockroach,
 	})
 }
 
 func runImportCancellation(ctx context.Context, t test.Test, c cluster.Cluster) {
-	startOpts := roachtestutil.MaybeUseMemoryBudget(t, 50)
+	startOpts := maybeUseMemoryBudget(t, 50)
 	startOpts.RoachprodOpts.ScheduleBackups = true
 	c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings())
 	t.Status("starting csv servers")

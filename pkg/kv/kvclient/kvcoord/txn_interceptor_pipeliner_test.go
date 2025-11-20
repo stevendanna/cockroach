@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
@@ -35,8 +36,6 @@ import (
 // to SendLocked will return the default successful response.
 type mockLockedSender struct {
 	mockFn func(*kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error)
-	// numCalled is the number of times the mock function has been called.
-	numCalled int
 }
 
 func (m *mockLockedSender) SendLocked(
@@ -47,7 +46,6 @@ func (m *mockLockedSender) SendLocked(
 		br.Txn = ba.Txn
 		return br, nil
 	}
-	m.numCalled++
 	return m.mockFn(ba)
 }
 
@@ -56,11 +54,6 @@ func (m *mockLockedSender) MockSend(
 	fn func(*kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error),
 ) {
 	m.mockFn = fn
-}
-
-// NumCalled returns the number of times the mock function has been called.
-func (m *mockLockedSender) NumCalled() int {
-	return m.numCalled
 }
 
 // ChainMockSend sets a series of mocking functions on the mockLockedSender.
@@ -1668,6 +1661,71 @@ func TestTxnPipelinerDisableLockingReads(t *testing.T) {
 	require.Equal(t, 2, tp.ifWrites.len())
 }
 
+// TestTxnPipelinerMixedVersionLockingReads tests that the txnPipeliner behaves
+// correctly if in a mixed-version cluster when locking reads are not supported.
+func TestTxnPipelinerMixedVersionLockingReads(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	ctx := context.Background()
+	tp, mockSender := makeMockTxnPipeliner(nil /* iter */)
+
+	// Start in a mixed-version cluster. Should NOT use async consensus.
+	tp.st = cluster.MakeTestingClusterSettingsWithVersions(
+		clusterversion.Latest.Version(),
+		clusterversion.MinSupported.Version(),
+		false, // initializeVersion
+	)
+	require.NoError(t, clusterversion.Initialize(
+		ctx, clusterversion.MinSupported.Version(), &tp.st.SV))
+
+	txn := makeTxnProto()
+	keyA, keyB, keyC := roachpb.Key("a"), roachpb.Key("b"), roachpb.Key("c")
+
+	ba := &kvpb.BatchRequest{}
+	ba.Header = kvpb.Header{Txn: &txn}
+	ba.Add(&kvpb.ScanRequest{
+		RequestHeader:        kvpb.RequestHeader{Key: keyA, EndKey: keyC},
+		KeyLockingStrength:   lock.Exclusive,
+		KeyLockingDurability: lock.Replicated,
+	})
+
+	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+		require.Len(t, ba.Requests, 1)
+		require.False(t, ba.AsyncConsensus)
+		require.IsType(t, &kvpb.ScanRequest{}, ba.Requests[0].GetInner())
+
+		br := ba.CreateReply()
+		br.Txn = ba.Txn
+		br.Responses[0].GetScan().Rows = []roachpb.KeyValue{{Key: keyA}, {Key: keyB}}
+		return br, nil
+	})
+
+	br, pErr := tp.SendLocked(ctx, ba)
+	require.Nil(t, pErr)
+	require.NotNil(t, br)
+	require.Equal(t, 0, tp.ifWrites.len())
+
+	// Upgrade to the latest version. Should use async consensus.
+	require.NoError(t, clusterversion.Initialize(
+		ctx, clusterversion.Latest.Version(), &tp.st.SV))
+
+	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
+		require.Len(t, ba.Requests, 1)
+		require.True(t, ba.AsyncConsensus)
+		require.IsType(t, &kvpb.ScanRequest{}, ba.Requests[0].GetInner())
+
+		br = ba.CreateReply()
+		br.Txn = ba.Txn
+		br.Responses[0].GetScan().Rows = []roachpb.KeyValue{{Key: keyA}, {Key: keyB}}
+		return br, nil
+	})
+
+	br, pErr = tp.SendLocked(ctx, ba)
+	require.Nil(t, pErr)
+	require.NotNil(t, br)
+	require.Equal(t, 2, tp.ifWrites.len())
+}
+
 // TestTxnPipelinerMaxInFlightSize tests that batches are not pipelined if doing
 // so would push the memory used to track locks and in-flight writes over the
 // limit allowed by the kv.transaction.max_intents_bytes setting.
@@ -2532,13 +2590,11 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 		// request is expected to be rejected.
 		expRejectIdx int
 		maxSize      int64
-		maxCount     int64
 	}{
 		{name: "large request",
 			reqs:         []*kvpb.BatchRequest{largeWrite},
 			expRejectIdx: 0,
 			maxSize:      int64(len(largeAs)) - 1 + roachpb.SpanOverhead,
-			maxCount:     0,
 		},
 		{name: "requests that add up",
 			reqs: []*kvpb.BatchRequest{
@@ -2548,17 +2604,7 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 			expRejectIdx: 2,
 			// maxSize is such that first two requests fit and the third one
 			// goes above the limit.
-			maxSize:  9 + 2*roachpb.SpanOverhead,
-			maxCount: 0,
-		},
-		{name: "requests that count up",
-			reqs: []*kvpb.BatchRequest{
-				putBatchNoAsyncConsensus(roachpb.Key("aaaa"), nil),
-				putBatchNoAsyncConsensus(roachpb.Key("bbbb"), nil),
-				putBatchNoAsyncConsensus(roachpb.Key("cccc"), nil)},
-			expRejectIdx: 2,
-			maxSize:      0,
-			maxCount:     2,
+			maxSize: 9 + 2*roachpb.SpanOverhead,
 		},
 		{name: "async requests that add up",
 			// Like the previous test, but this time the requests run with async
@@ -2570,19 +2616,6 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 				putBatch(roachpb.Key("cccc"), nil)},
 			expRejectIdx: 2,
 			maxSize:      10 + roachpb.SpanOverhead,
-			maxCount:     0,
-		},
-		{name: "async requests that count up",
-			// Like the previous test, but this time the requests run with async
-			// consensus. Being tracked as in-flight writes, this test shows that
-			// in-flight writes count towards the budget.
-			reqs: []*kvpb.BatchRequest{
-				putBatch(roachpb.Key("aaaa"), nil),
-				putBatch(roachpb.Key("bbbb"), nil),
-				putBatch(roachpb.Key("cccc"), nil)},
-			expRejectIdx: 2,
-			maxSize:      0,
-			maxCount:     2,
 		},
 		{
 			name: "scan response goes over budget, next request rejected",
@@ -2592,17 +2625,6 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 			resp:         []*kvpb.BatchResponse{lockingScanResp},
 			expRejectIdx: 1,
 			maxSize:      10 + roachpb.SpanOverhead,
-			maxCount:     0,
-		},
-		{
-			name: "scan response goes over count, next request rejected",
-			// A request returns a response with many locked keys. Then the next
-			// request will be rejected.
-			reqs:         []*kvpb.BatchRequest{lockingScanRequest, putBatch(roachpb.Key("a"), nil)},
-			resp:         []*kvpb.BatchResponse{lockingScanResp},
-			expRejectIdx: 1,
-			maxSize:      0,
-			maxCount:     1,
 		},
 		{
 			name: "scan response goes over budget",
@@ -2613,18 +2635,6 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 			resp:         []*kvpb.BatchResponse{lockingScanResp},
 			expRejectIdx: -1,
 			maxSize:      10 + roachpb.SpanOverhead,
-			maxCount:     0,
-		},
-		{
-			name: "scan response goes over count",
-			// Like the previous test, except here we don't have a followup request
-			// once we're above budget. The test runner will commit the txn, and this
-			// test checks that committing is allowed.
-			reqs:         []*kvpb.BatchRequest{lockingScanRequest},
-			resp:         []*kvpb.BatchResponse{lockingScanResp},
-			expRejectIdx: -1,
-			maxSize:      0,
-			maxCount:     1,
 		},
 		{
 			name: "del range response goes over budget, next request rejected",
@@ -2634,17 +2644,6 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 			resp:         []*kvpb.BatchResponse{delRangeResp},
 			expRejectIdx: 1,
 			maxSize:      10 + roachpb.SpanOverhead,
-			maxCount:     0,
-		},
-		{
-			name: "del range response goes over count, next request rejected",
-			// A request returns a response with a large set of locked keys, which
-			// takes up the budget. Then the next request will be rejected.
-			reqs:         []*kvpb.BatchRequest{delRange, putBatch(roachpb.Key("a"), nil)},
-			resp:         []*kvpb.BatchResponse{delRangeResp},
-			expRejectIdx: 1,
-			maxSize:      0,
-			maxCount:     1,
 		},
 		{
 			name: "del range response goes over budget",
@@ -2655,18 +2654,6 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 			resp:         []*kvpb.BatchResponse{delRangeResp},
 			expRejectIdx: -1,
 			maxSize:      10 + roachpb.SpanOverhead,
-			maxCount:     0,
-		},
-		{
-			name: "del range response goes over count",
-			// Like the previous test, except here we don't have a followup request
-			// once we're above budget. The test runner will commit the txn, and this
-			// test checks that committing is allowed.
-			reqs:         []*kvpb.BatchRequest{delRange},
-			resp:         []*kvpb.BatchResponse{delRangeResp},
-			expRejectIdx: -1,
-			maxSize:      0,
-			maxCount:     1,
 		},
 	}
 	for _, tc := range testCases {
@@ -2676,13 +2663,8 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 			}
 
 			tp, mockSender := makeMockTxnPipeliner(nil /* iter */)
-			if tc.maxCount > 0 {
-				rejectTxnMaxCount.Override(ctx, &tp.st.SV, tc.maxCount)
-			}
-			if tc.maxSize > 0 {
-				TrackedWritesMaxSize.Override(ctx, &tp.st.SV, tc.maxSize)
-				rejectTxnOverTrackedWritesBudget.Override(ctx, &tp.st.SV, true)
-			}
+			TrackedWritesMaxSize.Override(ctx, &tp.st.SV, tc.maxSize)
+			rejectTxnOverTrackedWritesBudget.Override(ctx, &tp.st.SV, true)
 
 			txn := makeTxnProto()
 
@@ -2721,12 +2703,7 @@ func TestTxnPipelinerRejectAboveBudget(t *testing.T) {
 						t.Fatalf("expected lockSpansOverBudgetError, got %+v", pErr.GoError())
 					}
 					require.Equal(t, pgcode.ConfigurationLimitExceeded, pgerror.GetPGCode(pErr.GoError()))
-					if tc.maxSize > 0 {
-						require.Equal(t, int64(1), tp.txnMetrics.TxnsRejectedByLockSpanBudget.Count())
-					}
-					if tc.maxCount > 0 {
-						require.Equal(t, int64(1), tp.txnMetrics.TxnsRejectedByCountLimit.Count())
-					}
+					require.Equal(t, int64(1), tp.txnMetrics.TxnsRejectedByLockSpanBudget.Count())
 
 					// Make sure rolling back the txn works.
 					rollback := &kvpb.BatchRequest{}

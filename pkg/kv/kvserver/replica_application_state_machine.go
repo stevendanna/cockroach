@@ -129,8 +129,9 @@ func (sm *replicaStateMachine) NewEphemeralBatch() apply.EphemeralBatch {
 	r := sm.r
 	mb := &sm.ephemeralBatch
 	mb.r = r
-	r.raftMu.AssertHeld()
-	mb.state = r.shMu.state
+	r.mu.RLock()
+	mb.state = r.mu.state
+	r.mu.RUnlock()
 	return mb
 }
 
@@ -138,16 +139,21 @@ func (sm *replicaStateMachine) NewEphemeralBatch() apply.EphemeralBatch {
 func (sm *replicaStateMachine) NewBatch() apply.Batch {
 	r := sm.r
 	b := &sm.batch
+	// TODO(pav-kv): replicaAppBatch initialization below is bug-prone, we need to
+	// not forget resetting the fields that are local to one batch. Find a way to
+	// make it safer.
 	b.r = r
 	b.applyStats = &sm.applyStats
 	b.batch = r.store.TODOEngine().NewBatch()
 	r.mu.RLock()
-	b.state = r.shMu.state
-	b.truncState = r.shMu.raftTruncState
+	b.state = r.mu.state
 	b.state.Stats = &sm.stats
-	*b.state.Stats = *r.shMu.state.Stats
+	*b.state.Stats = *r.mu.state.Stats
 	b.closedTimestampSetter = r.mu.closedTimestampSetter
 	r.mu.RUnlock()
+	b.changeRemovesReplica = false
+	b.changeTruncatesSideloadedFiles = false
+	// TODO(pav-kv): what about b.ab and b.followerStoreWriteBytes?
 	b.start = timeutil.Now()
 	return b
 }
@@ -282,11 +288,7 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 		log.Fatalf(ctx, "zero-value ReplicatedEvalResult passed to handleNonTrivialReplicatedEvalResult")
 	}
 
-	truncState := rResult.RaftTruncatedState
-	if truncState != nil {
-		rResult.RaftTruncatedState = nil
-	}
-
+	isRaftLogTruncationDeltaTrusted := true
 	if rResult.State != nil {
 		if newLease := rResult.State.Lease; newLease != nil {
 			sm.r.handleLeaseResult(ctx, newLease, rResult.PriorReadSummary)
@@ -294,12 +296,17 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 			rResult.PriorReadSummary = nil
 		}
 
+		// This strongly coupled truncation code will be removed in the release
+		// following LooselyCoupledRaftLogTruncation.
 		if newTruncState := rResult.State.TruncatedState; newTruncState != nil {
-			if truncState != nil {
-				log.Fatalf(ctx, "double RaftTruncatedState in ReplicatedEvalResult")
+			raftLogDelta, expectedFirstIndexWasAccurate := sm.r.handleTruncatedStateResult(
+				ctx, newTruncState, rResult.RaftExpectedFirstIndex)
+			if !expectedFirstIndexWasAccurate && rResult.RaftExpectedFirstIndex != 0 {
+				isRaftLogTruncationDeltaTrusted = false
 			}
-			truncState = newTruncState
+			rResult.RaftLogDelta += raftLogDelta
 			rResult.State.TruncatedState = nil
+			rResult.RaftExpectedFirstIndex = 0
 		}
 
 		if newVersion := rResult.State.Version; newVersion != nil {
@@ -317,25 +324,12 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 		}
 	}
 
-	// TODO(#93248): the strongly coupled truncation code will be removed once the
-	// loosely coupled truncations are the default.
-	if truncState != nil {
-		// NB: raftLogDelta reflects removals of any sideloaded entries.
-		raftLogDelta, expectedFirstIndexWasAccurate := sm.r.handleTruncatedStateResult(
-			ctx, truncState, rResult.RaftExpectedFirstIndex)
-		// NB: The RaftExpectedFirstIndex field is zero if this proposal is from
-		// before v22.1 that added it, when all truncations were strongly coupled.
-		// The delta in these historical proposals is thus accurate.
-		// TODO(pav-kv): remove the zero check after any below-raft migration.
-		isRaftLogTruncationDeltaTrusted := expectedFirstIndexWasAccurate ||
-			rResult.RaftExpectedFirstIndex == 0
-		// The proposer hasn't included the sideloaded entries into the delta. We
-		// counted these above, and combine the deltas.
-		raftLogDelta += rResult.RaftLogDelta
-		sm.r.handleRaftLogDeltaResult(ctx, raftLogDelta, isRaftLogTruncationDeltaTrusted)
-
+	if rResult.RaftLogDelta != 0 {
+		// This code path will be taken exactly when the preceding block has
+		// newTruncState != nil. It is needlessly confusing that these two are not
+		// in the same place.
+		sm.r.handleRaftLogDeltaResult(ctx, rResult.RaftLogDelta, isRaftLogTruncationDeltaTrusted)
 		rResult.RaftLogDelta = 0
-		rResult.RaftExpectedFirstIndex = 0
 	}
 
 	// The rest of the actions are "nontrivial" and may have large effects on the

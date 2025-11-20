@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -32,9 +31,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/redact"
@@ -60,7 +59,7 @@ func TestLastUpdateTimesMap(t *testing.T) {
 
 	t4 := t3.Add(time.Second)
 	descs = append(descs, []roachpb.ReplicaDescriptor{{ReplicaID: 5}, {ReplicaID: 6}}...)
-	prs := map[raftpb.PeerID]tracker.Progress{
+	prs := map[uint64]tracker.Progress{
 		1: {State: tracker.StateReplicate}, // should be updated
 		// 2 is missing because why not
 		3: {State: tracker.StateProbe},     // should be ignored
@@ -83,9 +82,9 @@ func Test_handleRaftReadyStats_SafeFormat(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	now := crtime.NowMono()
-	ts := func(s int) crtime.Mono {
-		return now + crtime.Mono(time.Duration(s)*time.Second)
+	now := timeutil.Now()
+	ts := func(s int) time.Time {
+		return now.Add(time.Duration(s) * time.Second)
 	}
 
 	stats := handleRaftReadyStats{

@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 subtest cursor
 
 # Verify that SQL and PL/pgSQL cursors run under READ COMMITTED correctly.
@@ -84,12 +86,12 @@ SELECT aisle FROM supermarket WHERE person = 'matilda' FOR UPDATE
 statement ok
 ROLLBACK
 
-# Use SELECT FOR UPDATE under repeatable read isolation.
+# Use SELECT FOR UPDATE under snapshot isolation.
 statement ok
-SET CLUSTER SETTING sql.txn.repeatable_read_isolation.enabled = true
+SET CLUSTER SETTING sql.txn.snapshot_isolation.enabled = true
 
 statement ok
-BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ
+BEGIN TRANSACTION ISOLATION LEVEL SNAPSHOT
 
 query I
 SELECT aisle FROM supermarket WHERE person = 'matilda' FOR UPDATE
@@ -100,7 +102,7 @@ statement ok
 ROLLBACK
 
 statement ok
-RESET CLUSTER SETTING sql.txn.repeatable_read_isolation.enabled
+RESET CLUSTER SETTING sql.txn.snapshot_isolation.enabled
 
 # Use SELECT FOR UPDATE in a subquery under read committed isolation.
 statement ok
@@ -317,9 +319,6 @@ subtest schema_changes_multi-stmt
 # They are allowed in single-statement explicit transactions.
 
 statement ok
-SET autocommit_before_ddl = false
-
-statement ok
 BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;
 CREATE TABLE single_stmt_explicit (a INT PRIMARY KEY);
 COMMIT
@@ -477,9 +476,6 @@ ALTER SCHEMA s RENAME TO foo;
 statement ok
 ROLLBACK
 
-statement ok
-RESET autocommit_before_ddl
-
 subtest end
 
 statement ok
@@ -489,20 +485,10 @@ SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE
 
 statement ok
 CREATE USER testuser2 WITH VIEWACTIVITY;
-
-statement ok
 DROP TABLE IF EXISTS t;
-
-statement ok
 CREATE TABLE t(a INT PRIMARY KEY);
-
-statement ok
 INSERT INTO t VALUES(1), (2);
-
-statement ok
 GRANT ALL ON t TO testuser;
-
-statement ok
 GRANT ALL ON t TO testuser2;
 
 user testuser
@@ -553,8 +539,6 @@ user testuser
 statement ok
 COMMIT
 
-subtest end
-
 subtest regression_130661
 
 statement ok
@@ -577,20 +561,5 @@ SELECT * FROM t130661 WHERE id = 1 FOR UPDATE
 
 statement ok
 COMMIT
-
-subtest end
-
-subtest regression_141961
-
-statement ok
-BEGIN ISOLATION LEVEL READ COMMITTED;
-
-query I
-SELECT * FROM (WITH foo AS (SELECT * FROM t FOR UPDATE LIMIT 1) SELECT 1);
-----
-1
-
-statement ok
-ROLLBACK;
 
 subtest end

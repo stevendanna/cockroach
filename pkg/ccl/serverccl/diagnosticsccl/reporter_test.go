@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -41,14 +40,6 @@ import (
 )
 
 const elemName = "somestring"
-
-var setTelemetryHttpTimeout = func(newVal time.Duration) func() {
-	prior := diagnostics.TelemetryHttpTimeout
-	diagnostics.TelemetryHttpTimeout = newVal
-	return func() {
-		diagnostics.TelemetryHttpTimeout = prior
-	}
-}
 
 func TestTenantReport(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -148,24 +139,9 @@ func TestServerReport(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// We want to ensure that non-reportable settings, sensitive
-	// settings, and all string settings are redacted. Below we override
-	// one of each.
-	schemaAndQueriesForTest := []string{
-		`CREATE TABLE diagnostics_test_table (diagnostics_test_id int)`,
-		`ALTER TABLE diagnostics_test_table ADD COLUMN diagnostics_test_name string`,
-		`INSERT INTO diagnostics_test_table VALUES (123456, 'diagnostics_test_name_value') ON CONFLICT DO NOTHING`,
-	}
-	for _, s := range schemaAndQueriesForTest {
-		_, err := rt.serverDB.Exec(s)
-		require.NoError(t, err)
-	}
-
 	expectedUsageReports := 0
 
 	clusterSecret := sql.ClusterSecret.Get(&rt.settings.SV)
-
-	foundStmt := false
 	testutils.SucceedsSoon(t, func() error {
 		expectedUsageReports++
 
@@ -195,22 +171,6 @@ func TestServerReport(t *testing.T) {
 
 		last := rt.diagServer.LastRequestData()
 
-		// Verify SQL Stats fingerprinting. We need to run this check
-		// inside the `SucceedsSoon` call because the diagnostic reporter
-		// resets SQL stats once it's completed the report. This means that
-		// if this procedure is retried, subsequent values of `last` will
-		// be missing the sql stats since they will have been "consumed".
-		// Hence, we proactively look through them for the fingerprint.
-		if len(last.SqlStats) > 0 {
-			for _, s := range last.SqlStats {
-				require.False(t, strings.HasPrefix(s.Key.App, "$ internal"), "expected app name %s to not be internal", s.Key.App)
-				if s.Key.Query == "INSERT INTO _ VALUES (_, __more__) ON CONFLICT DO NOTHING" {
-					foundStmt = true
-					require.Equal(t, int64(1), s.Stats.Count)
-				}
-			}
-		}
-
 		if minExpected, actual := totalKeys, last.Node.KeyCount; minExpected > actual {
 			return errors.Errorf("expected node keys at least %v got %v", minExpected, actual)
 		}
@@ -231,8 +191,6 @@ func TestServerReport(t *testing.T) {
 		}
 		return nil
 	})
-
-	require.True(t, foundStmt, "expected to find INSERT INTO _ VALUES (_, __more__) ON CONFLICT DO NOTHING in stats")
 
 	last := rt.diagServer.LastRequestData()
 	require.Equal(t, rt.server.StorageClusterID().String(), last.UUID)
@@ -332,14 +290,6 @@ func TestServerReport(t *testing.T) {
 			require.Equal(t, prefs, zone.LeasePreferences)
 		}
 	}
-
-	// Verify schema name redaction.
-	require.Equal(t, 1, len(last.Schema))
-	require.Equal(t, "_", last.Schema[0].Name)
-	require.Equal(t, 3, len(last.Schema[0].Columns))
-	for _, c := range last.Schema[0].Columns {
-		require.Equal(t, "_", c.Name)
-	}
 }
 
 func TestTelemetry_SuccessfulTelemetryPing(t *testing.T) {
@@ -347,7 +297,7 @@ func TestTelemetry_SuccessfulTelemetryPing(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	defer setTelemetryHttpTimeout(3 * time.Second)()
+	diagnostics.TelemetryHttpTimeout = 3 * time.Second
 	rt := startReporterTest(t, base.TestIsSpecificToStorageLayerAndNeedsASystemTenant)
 	defer rt.Close()
 
@@ -414,29 +364,6 @@ func TestTelemetry_SuccessfulTelemetryPing(t *testing.T) {
 		})
 	}
 
-}
-
-// This test will block on `stopper.Stop` if the diagnostics reporter
-// doesn't honor stopper quiescence when making its HTTP request.
-func TestTelemetryQuiesce(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	defer setTelemetryHttpTimeout(10 * time.Minute)()
-	rt := startReporterTest(t, base.TestIsSpecificToStorageLayerAndNeedsASystemTenant)
-	defer rt.Close()
-
-	ctx := context.Background()
-	setupCluster(t, rt.serverDB)
-
-	// Ensure that we block for long enough to trigger test timeout.
-	defer rt.diagServer.SetWaitSeconds(15 * 60)()
-	dr := rt.server.DiagnosticsReporter().(*diagnostics.Reporter)
-	stopper := rt.server.Stopper()
-
-	dr.PeriodicallyReportDiagnostics(ctx, stopper)
-	stopper.Stop(ctx)
-	<-stopper.IsStopped()
 }
 
 func TestUsageQuantization(t *testing.T) {

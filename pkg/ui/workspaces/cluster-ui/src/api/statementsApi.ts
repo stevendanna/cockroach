@@ -4,9 +4,6 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import Long from "long";
-import moment from "moment-timezone";
-
 import { fetchData } from "src/api/fetchData";
 import {
   FixFingerprintHexValue,
@@ -15,6 +12,8 @@ import {
   propsToQueryString,
   stringToTimestamp,
 } from "src/util";
+import Long from "long";
+import moment from "moment-timezone";
 
 import { AggregateStatistics } from "../statementsTable";
 const STATEMENTS_PATH = "_status/combinedstmts";
@@ -120,7 +119,7 @@ export const getStatementDetails = (
     end: req.end.toInt(),
   });
   for (const app of req.app_names) {
-    queryStr += `&appNames=${app}`;
+    queryStr += `&appNames=${encodeURIComponent(app)}`;
   }
   return fetchData(
     cockroach.server.serverpb.StatementDetailsResponse,
@@ -146,6 +145,9 @@ export type StatementMetadata = {
 type LatencyInfo = {
   max: number;
   min: number;
+  p50: number;
+  p90: number;
+  p99: number;
 };
 
 type Statistics = {
@@ -159,7 +161,6 @@ type Statistics = {
   latencyInfo: LatencyInfo;
   maxRetries: Long;
   nodes: Long[];
-  kvNodeIds: number[];
   numRows: NumericStat;
   ovhLat: NumericStat;
   parseLat: NumericStat;
@@ -238,10 +239,12 @@ export function convertStatementRawFormatToAggregatedStatistics(
       latency_info: {
         max: s.statistics.statistics.latencyInfo.max,
         min: s.statistics.statistics.latencyInfo.min,
+        p50: s.statistics.statistics.latencyInfo.p50,
+        p90: s.statistics.statistics.latencyInfo.p90,
+        p99: s.statistics.statistics.latencyInfo.p99,
       },
       max_retries: s.statistics.statistics.maxRetries,
       nodes: s.statistics.statistics.nodes,
-      kv_node_ids: s.statistics.statistics.kvNodeIds,
       num_rows: s.statistics.statistics.numRows,
       overhead_lat: s.statistics.statistics.ovhLat,
       parse_lat: s.statistics.statistics.parseLat,

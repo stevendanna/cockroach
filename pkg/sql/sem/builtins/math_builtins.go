@@ -8,6 +8,7 @@ package builtins
 import (
 	"context"
 	"math"
+	"time"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -16,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -593,7 +595,7 @@ var mathBuiltins = map[string]builtinDefinition{
 			Volatility: volatility.Immutable,
 		},
 		tree.Overload{
-			Types:      tree.ParamTypes{{Name: "operand", Typ: types.AnyElement}, {Name: "thresholds", Typ: types.AnyArray}},
+			Types:      tree.ParamTypes{{Name: "operand", Typ: types.Any}, {Name: "thresholds", Typ: types.AnyArray}},
 			ReturnType: tree.FixedReturnType(types.Int),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				operand := args[0]
@@ -604,7 +606,7 @@ var mathBuiltins = map[string]builtinDefinition{
 				}
 
 				for i, v := range thresholds.Array {
-					if cmp, err := operand.Compare(ctx, evalCtx, v); err != nil {
+					if cmp, err := operand.CompareError(evalCtx, v); err != nil {
 						return tree.NewDInt(0), err
 					} else if cmp < 0 {
 						return tree.NewDInt(tree.DInt(i)), nil
@@ -769,6 +771,13 @@ func roundDecimal(x *apd.Decimal, scale int32) (tree.Datum, error) {
 	}
 	return dd, err
 }
+
+var uniqueIntState struct {
+	syncutil.Mutex
+	timestamp uint64
+}
+
+var uniqueIntEpoch = time.Date(2015, time.January, 1, 0, 0, 0, 0, time.UTC).UnixNano()
 
 // widthBucket returns the bucket number to which operand would be assigned in a histogram having count
 // equal-width buckets spanning the range b1 to b2

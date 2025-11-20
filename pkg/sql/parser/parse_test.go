@@ -53,27 +53,21 @@ func TestParseDataDriven(t *testing.T) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			switch d.Cmd {
 			case "parse":
-				reparseWithoutLiterals := true
-				for _, arg := range d.CmdArgs {
-					if arg.Key == "no-parse-without-literals" {
-						reparseWithoutLiterals = false
-					}
-				}
-				return sqlutils.VerifyParseFormat(t, d.Input, d.Pos, sqlutils.SQL, reparseWithoutLiterals)
+				return sqlutils.VerifyParseFormat(t, d.Input, false /* plpgsql */)
 			case "parse-no-verify":
 				_, err := parser.Parse(d.Input)
 				if err != nil {
-					d.Fatalf(t, "%s\nunexpected error: %s", d.Pos, err)
+					d.Fatalf(t, "unexpected error: %s", err)
 				}
 				return ""
 			case "error":
 				_, err := parser.Parse(d.Input)
 				if err == nil {
-					d.Fatalf(t, "%s\nexpected error, found none", d.Pos)
+					d.Fatalf(t, "expected error, found none")
 				}
 				return sqlutils.VerifyParseError(err)
 			}
-			d.Fatalf(t, "%s\nunsupported command: %s", d.Pos, d.Cmd)
+			d.Fatalf(t, "unsupported command: %s", d.Cmd)
 			return ""
 		})
 	})
@@ -404,6 +398,7 @@ func TestUnimplementedSyntax(t *testing.T) {
 		{`CREATE SUBSCRIPTION a`, 0, `create subscription`, ``},
 		{`CREATE TABLESPACE a`, 54113, `create tablespace`, ``},
 		{`CREATE TEXT SEARCH a`, 7821, `create text`, ``},
+		{`CREATE TRIGGER a`, 28296, `create`, ``},
 
 		{`DROP ACCESS METHOD a`, 0, `drop access method`, ``},
 		{`DROP AGGREGATE a`, 74775, `drop aggregate`, ``},
@@ -422,6 +417,7 @@ func TestUnimplementedSyntax(t *testing.T) {
 		{`DROP SERVER a`, 0, `drop server`, ``},
 		{`DROP SUBSCRIPTION a`, 0, `drop subscription`, ``},
 		{`DROP TEXT SEARCH a`, 7821, `drop text`, ``},
+		{`DROP TRIGGER a`, 28296, `drop`, ``},
 
 		{`DISCARD PLANS`, 0, `discard plans`, ``},
 
@@ -509,6 +505,7 @@ func TestUnimplementedSyntax(t *testing.T) {
 		{`CREATE TABLE a(b BOX)`, 21286, `box`, ``},
 		{`CREATE TABLE a(b CIDR)`, 18846, `cidr`, ``},
 		{`CREATE TABLE a(b CIRCLE)`, 21286, `circle`, ``},
+		{`CREATE TABLE a(b JSONPATH)`, 22513, `jsonpath`, ``},
 		{`CREATE TABLE a(b LINE)`, 21286, `line`, ``},
 		{`CREATE TABLE a(b LSEG)`, 21286, `lseg`, ``},
 		{`CREATE TABLE a(b MACADDR)`, 45813, `macaddr`, ``},

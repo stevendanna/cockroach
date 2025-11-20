@@ -128,7 +128,6 @@ func TestNoForbiddenSystemTablesInDebugZip(t *testing.T) {
 		"system.join_tokens",
 		"system.comments",
 		"system.ui",
-		"system.zones",
 		"system.statement_bundle_chunks",
 		"system.statement_statistics",
 		"system.transaction_statistics",
@@ -228,9 +227,6 @@ func TestNonSensitiveColumns(t *testing.T) {
 			// in a system tenant. These would fail if pointed to a
 			// secondary tenant.
 			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-			//We are seeing certificate issue in CI test job. Hence,we are
-			//running cluster in insecure mode.
-			Insecure: true,
 		},
 	})
 	defer cluster.Stopper().Stop(context.Background())

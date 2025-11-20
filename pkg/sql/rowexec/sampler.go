@@ -11,21 +11,16 @@ import (
 	"math/rand"
 	"time"
 
-	hllNew "github.com/axiomhq/hyperloglog"
-	hllOld "github.com/axiomhq/hyperloglog/000"
+	"github.com/axiomhq/hyperloglog"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/execversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/collatedstring"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
@@ -36,14 +31,11 @@ import (
 
 // sketchInfo contains the specification and run-time state for each sketch.
 type sketchInfo struct {
-	spec execinfrapb.SketchSpec
-	// Exactly one of sketchOld and sketchNew will be set.
-	sketchOld            *hllOld.Sketch
-	sketchNew            *hllNew.Sketch
-	numNulls             int64
-	numRows              int64
-	size                 int64
-	legacyFingerprinting bool
+	spec     execinfrapb.SketchSpec
+	sketch   *hyperloglog.Sketch
+	numNulls int64
+	numRows  int64
+	size     int64
 }
 
 // A sampler processor returns a random sample of rows, as well as "global"
@@ -83,6 +75,12 @@ const samplerProcName = "sampler"
 // for testing.
 var SamplerProgressInterval = 10000
 
+var supportedSketchTypes = map[execinfrapb.SketchType]struct{}{
+	// The code currently hardcodes the use of this single type of sketch
+	// (which avoids the extra complexity until we actually have multiple types).
+	execinfrapb.SketchType_HLL_PLUS_PLUS_V1: {},
+}
+
 // maxIdleSleepTime is the maximum amount of time we sleep for throttling
 // (we sleep once every SamplerProgressInterval rows).
 const maxIdleSleepTime = 10 * time.Second
@@ -103,8 +101,11 @@ func newSamplerProcessor(
 	input execinfra.RowSource,
 	post *execinfrapb.PostProcessSpec,
 ) (*samplerProcessor, error) {
-	useNewHLL := execversion.FromContext(ctx) >= execversion.V25_1
-	legacyFingerprinting := execversion.FromContext(ctx) < execversion.V25_2
+	for _, s := range spec.Sketches {
+		if _, ok := supportedSketchTypes[s.SketchType]; !ok {
+			return nil, errors.Errorf("unsupported sketch type %s", s.SketchType)
+		}
+	}
 
 	// Limit the memory use by creating a child monitor with a hard limit.
 	// The processor will disable histogram collection if this limit is not
@@ -132,15 +133,10 @@ func newSamplerProcessor(
 	var sampleCols intsets.Fast
 	for i := range spec.Sketches {
 		s.sketches[i] = sketchInfo{
-			spec:                 spec.Sketches[i],
-			numNulls:             0,
-			numRows:              0,
-			legacyFingerprinting: legacyFingerprinting,
-		}
-		if useNewHLL {
-			s.sketches[i].sketchNew = hllNew.New14()
-		} else {
-			s.sketches[i].sketchOld = hllOld.New14()
+			spec:     spec.Sketches[i],
+			sketch:   hyperloglog.New14(),
+			numNulls: 0,
+			numRows:  0,
 		}
 		if spec.Sketches[i].GenerateHistogram {
 			sampleCols.Add(int(spec.Sketches[i].Columns[0]))
@@ -160,13 +156,9 @@ func newSamplerProcessor(
 		sketchSpec.Columns = []uint32{0}
 		s.invSketch[col] = &sketchInfo{
 			spec:     sketchSpec,
+			sketch:   hyperloglog.New14(),
 			numNulls: 0,
 			numRows:  0,
-		}
-		if useNewHLL {
-			s.invSketch[col].sketchNew = hllNew.New14()
-		} else {
-			s.invSketch[col].sketchOld = hllOld.New14()
 		}
 	}
 
@@ -226,6 +218,10 @@ func newSamplerProcessor(
 	return s, nil
 }
 
+func (s *samplerProcessor) pushTrailingMeta(ctx context.Context, output execinfra.RowReceiver) {
+	execinfra.SendTraceData(ctx, s.FlowCtx, output)
+}
+
 // Run is part of the Processor interface.
 func (s *samplerProcessor) Run(ctx context.Context, output execinfra.RowReceiver) {
 	ctx = s.StartInternal(ctx, samplerProcName)
@@ -233,9 +229,9 @@ func (s *samplerProcessor) Run(ctx context.Context, output execinfra.RowReceiver
 
 	earlyExit, err := s.mainLoop(ctx, output)
 	if err != nil {
-		execinfra.DrainAndClose(ctx, s.FlowCtx, s.input, output, err)
+		execinfra.DrainAndClose(ctx, output, err, s.pushTrailingMeta, s.input)
 	} else if !earlyExit {
-		execinfra.SendTraceData(ctx, s.FlowCtx, output)
+		s.pushTrailingMeta(ctx, output)
 		s.input.ConsumerClosed()
 		output.ProducerDone()
 	}
@@ -258,7 +254,7 @@ func (s *samplerProcessor) mainLoop(
 	for {
 		row, meta := s.input.Next()
 		if meta != nil {
-			if !emitHelper(ctx, s.FlowCtx, s.input, output, &s.OutputHelper, nil /* row */, meta) {
+			if !emitHelper(ctx, output, &s.OutputHelper, nil /* row */, meta, s.pushTrailingMeta, s.input) {
 				// No cleanup required; emitHelper() took care of it.
 				return true, nil
 			}
@@ -275,7 +271,7 @@ func (s *samplerProcessor) mainLoop(
 			meta := &execinfrapb.ProducerMetadata{SamplerProgress: &execinfrapb.RemoteProducerMetadata_SamplerProgress{
 				RowsProcessed: uint64(SamplerProgressInterval),
 			}}
-			if !emitHelper(ctx, s.FlowCtx, s.input, output, &s.OutputHelper, nil /* row */, meta) {
+			if !emitHelper(ctx, output, &s.OutputHelper, nil /* row */, meta, s.pushTrailingMeta, s.input) {
 				return true, nil
 			}
 
@@ -374,7 +370,7 @@ func (s *samplerProcessor) mainLoop(
 	for _, sample := range s.sr.Get() {
 		copy(outRow, sample.Row)
 		outRow[s.rankCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(sample.Rank))}
-		if !emitHelper(ctx, s.FlowCtx, s.input, output, &s.OutputHelper, outRow, nil /* meta */) {
+		if !emitHelper(ctx, output, &s.OutputHelper, outRow, nil /* meta */, s.pushTrailingMeta, s.input) {
 			return true, nil
 		}
 	}
@@ -390,7 +386,7 @@ func (s *samplerProcessor) mainLoop(
 			// Reuse the rank column for inverted index keys.
 			outRow[s.rankCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(sample.Rank))}
 			outRow[s.invIdxKeyCol] = sample.Row[0]
-			if !emitHelper(ctx, s.FlowCtx, s.input, output, &s.OutputHelper, outRow, nil /* meta */) {
+			if !emitHelper(ctx, output, &s.OutputHelper, outRow, nil /* meta */, s.pushTrailingMeta, s.input) {
 				return true, nil
 			}
 		}
@@ -425,7 +421,7 @@ func (s *samplerProcessor) mainLoop(
 	meta := &execinfrapb.ProducerMetadata{SamplerProgress: &execinfrapb.RemoteProducerMetadata_SamplerProgress{
 		RowsProcessed: uint64(rowCount % SamplerProgressInterval),
 	}}
-	if !emitHelper(ctx, s.FlowCtx, s.input, output, &s.OutputHelper, nil /* row */, meta) {
+	if !emitHelper(ctx, output, &s.OutputHelper, nil /* row */, meta, s.pushTrailingMeta, s.input) {
 		return true, nil
 	}
 
@@ -438,17 +434,12 @@ func (s *samplerProcessor) emitSketchRow(
 	outRow[s.numRowsCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(si.numRows))}
 	outRow[s.numNullsCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(si.numNulls))}
 	outRow[s.sizeCol] = rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(si.size))}
-	var data []byte
-	if si.sketchNew != nil {
-		data, err = si.sketchNew.MarshalBinary()
-	} else {
-		data, err = si.sketchOld.MarshalBinary()
-	}
+	data, err := si.sketch.MarshalBinary()
 	if err != nil {
 		return false, err
 	}
 	outRow[s.sketchCol] = rowenc.EncDatum{Datum: tree.NewDBytes(tree.DBytes(data))}
-	if !emitHelper(ctx, s.FlowCtx, s.input, output, &s.OutputHelper, outRow, nil /* meta */) {
+	if !emitHelper(ctx, output, &s.OutputHelper, outRow, nil /* meta */, s.pushTrailingMeta, s.input) {
 		return true, nil
 	}
 	return false, nil
@@ -465,7 +456,7 @@ func (s *samplerProcessor) sampleRow(
 	// Use Int63 so we don't have headaches converting to DInt.
 	rank := uint64(rng.Int63())
 	prevCapacity := sr.Cap()
-	if err := sr.SampleRow(ctx, s.FlowCtx.EvalCtx, row, rank); err != nil {
+	if err := sr.SampleRow(ctx, s.EvalCtx, row, rank); err != nil {
 		if !sqlerrors.IsOutOfMemoryError(err) {
 			return false, err
 		}
@@ -480,7 +471,7 @@ func (s *samplerProcessor) sampleRow(
 		meta := &execinfrapb.ProducerMetadata{SamplerProgress: &execinfrapb.RemoteProducerMetadata_SamplerProgress{
 			HistogramDisabled: true,
 		}}
-		if !emitHelper(ctx, s.FlowCtx, s.input, output, &s.OutputHelper, nil /* row */, meta) {
+		if !emitHelper(ctx, output, &s.OutputHelper, nil /* row */, meta, s.pushTrailingMeta, s.input) {
 			return true, nil
 		}
 	} else if sr.Cap() != prevCapacity {
@@ -490,12 +481,6 @@ func (s *samplerProcessor) sampleRow(
 		)
 	}
 	return false, nil
-}
-
-// Close is part of the execinfra.Processor interface.
-func (s *samplerProcessor) Close(context.Context) {
-	s.input.ConsumerClosed()
-	s.close()
 }
 
 func (s *samplerProcessor) close() {
@@ -515,127 +500,6 @@ func (s *samplerProcessor) DoesNotUseTxn() bool {
 
 // addRow adds a row to the sketch and updates row counts.
 func (s *sketchInfo) addRow(
-	ctx context.Context, row rowenc.EncDatumRow, typs []*types.T, buf *[]byte,
-) (err error) {
-	if s.legacyFingerprinting {
-		return s.addRowLegacy(ctx, row, typs, buf)
-	}
-
-	s.numRows++
-	allNulls := true
-	*buf = (*buf)[:0]
-	for _, col := range s.spec.Columns {
-		// Avoid calling IsNull() if the datum is unset because it will panic.
-		// Instead, return an assertion error that might help in debugging.
-		if row[col].IsUnset() {
-			return errors.AssertionFailedf("unset datum: col=%d row=%s", col, row.String(typs))
-		}
-		isNull := row[col].IsNull()
-		allNulls = allNulls && isNull
-		if b := row[col].EncodedBytes(); b != nil && !containsCollatedString(typs[col]) && !isNull {
-			// Composite, value encoded datums may have different encodings for
-			// semantically equivalent types, so using the encoded bytes can
-			// skew the cardinality estimate slightly. This should be rare and
-			// hyperloglog cardinality is already an estimate, so it is
-			// considered acceptable. For floats, the only values affected are 0
-			// and -0, which are semantically equivalent but have different
-			// value encodings. For decimals, 0 and -0 are affected, as well as
-			// any equal values with different numbers of trailing zeros. JSON
-			// and array types containing decimals are also affected similarly.
-			//
-			// Value-encoded collated strings are more likely than other types
-			// to cause cardinality over-estimations because the ratio of
-			// physically distinct strings to semantically distinct strings can
-			// be much higher. For example, the und-u-ks-level2 locale is
-			// case-insensitive, so there are 8 different physical strings all
-			// equivalent to "foo": "foo", "Foo", "fOo", "foO", "FOo", "FoO",
-			// "fOO", and "FOO". For this reason, we fall-back to using
-			// Fingerprint for collated strings.
-			//
-			// For NULL datums we use the Fingerprint method so that regardless
-			// of datum encoding, all of them got the same encoding.
-			//
-			// TODO(mgartner): We should probably truncate b to some max size to
-			// prevent a really wide value from growing buf. Since the distinct
-			// count is an estimate anyway, truncating the value shouldn't have
-			// any real impact.
-			if enc, _ := row[col].Encoding(); enc == catenumpb.DatumEncoding_VALUE {
-				// Value encoding includes column ID delta in the prefix which
-				// can differ based on the values of other columns within the
-				// same row (i.e. whether the previous columns had NULL or
-				// non-NULL values). To prevent this detail from artificially
-				// increasing the distinct estimate, we'll remove the column ID
-				// delta from encoding that we use for the current datum.
-				_, dataOffset, _, typ, err := encoding.DecodeValueTag(b)
-				if err != nil {
-					return err
-				}
-				// Including the value tag (i.e. the type) allows us to
-				// differentiate some non-NULL values (like integer 0) from NULL
-				// ones.
-				*buf = append(*buf, byte(typ))
-				*buf = append(*buf, b[dataOffset:]...)
-			} else {
-				// Key-encoded datums can be used as is.
-				*buf = append(*buf, b...)
-			}
-		} else {
-			// Fallback to using the Fingerprint method to generate bytes to
-			// insert into the sketch.
-			//
-			// We pass nil DatumAlloc so that each datum allocation was
-			// independent (to prevent bounded memory leaks like we've seen in
-			// #136394). The problem in that issue was that the same backing
-			// slice of datums was shared across rows, so if a single row was
-			// kept as a sample, it could keep many garbage datums alive. To go
-			// around that we simply disabled the batching.
-			//
-			// We choose to not perform the memory accounting for possibly
-			// decoded tree.Datum because we will lose the references to row
-			// very soon.
-			*buf, err = row[col].Fingerprint(ctx, typs[col], nil /* da */, *buf, nil /* acc */)
-			if err != nil {
-				return err
-			}
-		}
-		s.size += int64(row[col].DiskSize())
-	}
-
-	if allNulls {
-		s.numNulls++
-	}
-	if s.sketchNew != nil {
-		s.sketchNew.Insert(*buf)
-	} else {
-		s.sketchOld.Insert(*buf)
-	}
-	return nil
-}
-
-// containsCollatedString returns true if the type is a collated string type
-// or a container type included a collated string type. It does not return
-// true with collated string types with a default-equivalent collation.
-func containsCollatedString(t *types.T) bool {
-	switch t.Family() {
-	case types.CollatedStringFamily:
-		return !collatedstring.IsDefaultEquivalentCollation(t.Locale())
-	case types.ArrayFamily:
-		return containsCollatedString(t.ArrayContents())
-	case types.TupleFamily:
-		for _, t := range t.TupleContents() {
-			if containsCollatedString(t) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// addRowLegacy adds a row to the sketch and updates row counts. This is the
-// legacy implementation from versions prior to 25.2.
-//
-// TODO(mgartner): Remove this once compatibility with 25.1 is no longer needed.
-func (s *sketchInfo) addRowLegacy(
 	ctx context.Context, row rowenc.EncDatumRow, typs []*types.T, buf *[]byte,
 ) error {
 	var err error
@@ -679,11 +543,7 @@ func (s *sketchInfo) addRowLegacy(
 		// be uniformly distributed in the 2^64 range). Experiments (on tpcc
 		// order_line) with simplistic functions yielded bad results.
 		binary.LittleEndian.PutUint64(*buf, uint64(val))
-		if s.sketchNew != nil {
-			s.sketchNew.Insert(*buf)
-		} else {
-			s.sketchOld.Insert(*buf)
-		}
+		s.sketch.Insert(*buf)
 		return nil
 	}
 	isNull := true
@@ -716,10 +576,6 @@ func (s *sketchInfo) addRowLegacy(
 	if isNull {
 		s.numNulls++
 	}
-	if s.sketchNew != nil {
-		s.sketchNew.Insert(*buf)
-	} else {
-		s.sketchOld.Insert(*buf)
-	}
+	s.sketch.Insert(*buf)
 	return nil
 }

@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
 import React, { ReactElement } from "react";
-
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { InsightExecEnum } from "src/insights/types";
-import { Timezone } from "src/timestamp";
-
-import { Anchor } from "../../../anchor";
 import { contentModifiers } from "../../../statsTableUtil/statsTableUtil";
+import { Anchor } from "../../../anchor";
 import { contentionTime, readFromDisk, writtenToDisk } from "../../../util";
+import { Timezone } from "src/timestamp";
 
 export const insightsColumnLabels = {
   executionID: "Execution ID",

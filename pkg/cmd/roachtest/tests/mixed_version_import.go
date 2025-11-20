@@ -24,7 +24,7 @@ func registerImportMixedVersions(r registry.Registry) {
 		Owner:            registry.OwnerSQLQueries,
 		Cluster:          r.MakeClusterSpec(4),
 		CompatibleClouds: registry.AllExceptAWS,
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
+		Suites:           registry.Suites(registry.Nightly),
 		Randomized:       true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			warehouses := 100
@@ -53,7 +53,7 @@ func runImportMixedVersions(ctx context.Context, t test.Test, c cluster.Cluster,
 			return err
 		}
 		node := c.All().SeededRandNode(r)[0]
-		cmd := tpccImportCmdWithCockroachBinary(test.DefaultCockroachPath, "", "tpcc", warehouses) + fmt.Sprintf(" {pgurl%s}", c.Node(node))
+		cmd := tpccImportCmdWithCockroachBinary(test.DefaultCockroachPath, "", warehouses) + fmt.Sprintf(" {pgurl%s}", c.Node(node))
 		l.Printf("executing %q on node %d", cmd, node)
 		return c.RunE(ctx, option.WithNodes(c.Node(node)), cmd)
 	}

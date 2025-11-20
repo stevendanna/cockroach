@@ -112,15 +112,14 @@ const (
 
 	// CREATE ...
 
-	createTypeEnum      // CREATE TYPE <type> ENUM AS <def>
-	createTypeComposite // CREATE TYPE <type> AS <def>
-	createIndex         // CREATE INDEX <index> ON <table> <def>
-	createSchema        // CREATE SCHEMA <schema>
-	createSequence      // CREATE SEQUENCE <sequence> <def>
-	createTable         // CREATE TABLE <table> <def>
-	createTableAs       // CREATE TABLE <table> AS <def>
-	createView          // CREATE VIEW <view> AS <def>
-	createFunction      // CREATE FUNCTION <function> ...
+	createTypeEnum // CREATE TYPE <type> ENUM AS <def>
+	createIndex    // CREATE INDEX <index> ON <table> <def>
+	createSchema   // CREATE SCHEMA <schema>
+	createSequence // CREATE SEQUENCE <sequence> <def>
+	createTable    // CREATE TABLE <table> <def>
+	createTableAs  // CREATE TABLE <table> AS <def>
+	createView     // CREATE VIEW <view> AS <def>
+	createFunction // CREATE FUNCTION <function> ...
 
 	// COMMENT ON ...
 
@@ -195,10 +194,6 @@ const (
 	numOpTypes int = iota
 )
 
-func isDMLOpType(t opType) bool {
-	return t == insertRow || t == selectStmt || t == validate
-}
-
 var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, error){
 	// Non-DDL
 	insertRow:  (*operationGenerator).insertRow,
@@ -237,7 +232,6 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 	createTable:                       (*operationGenerator).createTable,
 	createTableAs:                     (*operationGenerator).createTableAs,
 	createTypeEnum:                    (*operationGenerator).createEnum,
-	createTypeComposite:               (*operationGenerator).createCompositeType,
 	createView:                        (*operationGenerator).createView,
 	dropFunction:                      (*operationGenerator).dropFunction,
 	dropIndex:                         (*operationGenerator).dropIndex,
@@ -253,7 +247,7 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 
 var opWeights = []int{
 	// Non-DDL
-	insertRow:  10,
+	insertRow:  0, // Disabled and tracked with #127263
 	selectStmt: 10,
 	validate:   2, // validate twice more often
 
@@ -267,12 +261,12 @@ var opWeights = []int{
 	alterFunctionSetSchema:            1,
 	alterTableAddColumn:               1,
 	alterTableAddConstraintForeignKey: 1,
-	alterTableAddConstraintUnique:     1,
-	alterTableAlterColumnType:         1,
+	alterTableAddConstraintUnique:     0,
+	alterTableAlterColumnType:         0, // Disabled and tracked with #66662.
 	alterTableAlterPrimaryKey:         1,
-	alterTableDropColumn:              1,
+	alterTableDropColumn:              0, // Disabled and tracked with #127286.
 	alterTableDropColumnDefault:       1,
-	alterTableDropConstraint:          1,
+	alterTableDropConstraint:          0, // Disabled and tracked with #127273.
 	alterTableDropNotNull:             1,
 	alterTableDropStored:              1,
 	alterTableLocality:                1,
@@ -280,25 +274,24 @@ var opWeights = []int{
 	alterTableSetColumnDefault:        1,
 	alterTableSetColumnNotNull:        1,
 	alterTypeDropValue:                1,
-	commentOn:                         1,
+	commentOn:                         0, // Disabled and tracked with #128095.
 	createFunction:                    1,
-	createIndex:                       1,
+	createIndex:                       0, // Disabled and tracked with #127280.
 	createSchema:                      1,
 	createSequence:                    1,
 	createTable:                       10,
 	createTableAs:                     1,
 	createTypeEnum:                    1,
-	createTypeComposite:               1,
 	createView:                        1,
 	dropFunction:                      1,
 	dropIndex:                         1,
-	dropSchema:                        1,
+	dropSchema:                        0, // Disabled and tracked with #127977.
 	dropSequence:                      1,
 	dropTable:                         1,
 	dropView:                          1,
 	renameIndex:                       1,
 	renameSequence:                    1,
-	renameTable:                       1,
+	renameTable:                       0, // Disabled and tracked with #127980.
 	renameView:                        1,
 }
 
@@ -307,25 +300,18 @@ var opWeights = []int{
 // be downlevel. The declarative schema changer builder does have a supported
 // list, but it's not sufficient for that reason.
 var opDeclarativeVersion = map[opType]clusterversion.Key{
-	insertRow:  clusterversion.MinSupported,
-	selectStmt: clusterversion.MinSupported,
-	validate:   clusterversion.MinSupported,
-
 	alterTableAddColumn:               clusterversion.MinSupported,
 	alterTableAddConstraintForeignKey: clusterversion.MinSupported,
 	alterTableAddConstraintUnique:     clusterversion.MinSupported,
-	alterTableAlterPrimaryKey:         clusterversion.MinSupported,
 	alterTableDropColumn:              clusterversion.MinSupported,
 	alterTableDropConstraint:          clusterversion.MinSupported,
 	alterTableDropNotNull:             clusterversion.MinSupported,
 	alterTypeDropValue:                clusterversion.MinSupported,
 	commentOn:                         clusterversion.MinSupported,
 	createIndex:                       clusterversion.MinSupported,
-	createFunction:                    clusterversion.MinSupported,
-	createSchema:                      clusterversion.MinSupported,
+	createSchema:                      clusterversion.V23_2,
 	createSequence:                    clusterversion.MinSupported,
 	dropIndex:                         clusterversion.MinSupported,
-	dropFunction:                      clusterversion.MinSupported,
 	dropSchema:                        clusterversion.MinSupported,
 	dropSequence:                      clusterversion.MinSupported,
 	dropTable:                         clusterversion.MinSupported,

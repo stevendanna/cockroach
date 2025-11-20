@@ -107,9 +107,6 @@ func (b *Builder) buildUpdate(upd *tree.Update, inScope *scope) (outScope *scope
 	// Build each of the SET expressions.
 	mb.addUpdateCols(upd.Exprs)
 
-	// Project row-level BEFORE triggers for UPDATE.
-	mb.buildRowLevelBeforeTriggers(tree.TriggerEventUpdate, false /* cascade */)
-
 	// Build the final update statement, including any returned expressions.
 	if resultsNeeded(upd.Returning) {
 		mb.buildUpdate(upd.Returning.(*tree.ReturningExprs))
@@ -346,16 +343,11 @@ func (mb *mutationBuilder) buildUpdate(returning *tree.ReturningExprs) {
 	// Project partial index PUT and DEL boolean columns.
 	mb.projectPartialIndexPutAndDelCols()
 
-	// Project vector index PUT and DEL columns.
-	mb.projectVectorIndexColsForUpdate()
-
 	mb.buildUniqueChecksForUpdate()
 
 	mb.buildFKChecksForUpdate()
 
-	mb.buildRowLevelAfterTriggers(opt.UpdateOp)
-
-	private := mb.makeMutationPrivate(returning != nil, false /* vectorInsert */)
+	private := mb.makeMutationPrivate(returning != nil)
 	for _, col := range mb.extraAccessibleCols {
 		if col.id != 0 {
 			private.PassthroughCols = append(private.PassthroughCols, col.id)

@@ -8,7 +8,6 @@ package schemachanger_test
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 )
 
 // phaseOrdinal uniquely identifies a stage. The stageIdx cannot be used
@@ -117,9 +117,6 @@ type testCase struct {
 	schemaChange string
 	expectedErr  string
 	skipIssue    int
-	// Optional: If you want a query to run at each stage, you can include it here.
-	// We don't evaluate the results; we simply assert that the query executes without errors.
-	query string
 }
 
 // Captures testCase before t.Parallel is called.
@@ -168,67 +165,6 @@ func TestAlterTableDMLInjection(t *testing.T) {
 			setup:        []string{"CREATE SEQUENCE seq"},
 			schemaChange: "ALTER TABLE tbl ADD COLUMN new_col INT NOT NULL DEFAULT nextval('seq')",
 			expectedErr:  "cannot evaluate scalar expressions containing sequence operations in this context",
-		},
-		{
-			desc:         "add column default serial rowid",
-			setup:        []string{"SET serial_normalization=rowid"},
-			schemaChange: "ALTER TABLE tbl ADD COLUMN new_col SERIAL",
-		},
-		{
-			desc:         "add column default serial unordered_rowid",
-			setup:        []string{"SET serial_normalization=unordered_rowid"},
-			schemaChange: "ALTER TABLE tbl ADD COLUMN new_col SERIAL",
-		},
-		{
-			desc:         "add column default serial sql_sequence",
-			setup:        []string{"SET serial_normalization=sql_sequence"},
-			schemaChange: "ALTER TABLE tbl ADD COLUMN new_col SERIAL",
-			expectedErr:  "cannot evaluate scalar expressions containing sequence operations in this context",
-		},
-		{
-			desc:         "add column default serial sql_sequence_cached",
-			setup:        []string{"SET serial_normalization=sql_sequence_cached"},
-			schemaChange: "ALTER TABLE tbl ADD COLUMN new_col SERIAL",
-			expectedErr:  "cannot evaluate scalar expressions containing sequence operations in this context",
-		},
-		{
-			desc:         "add column default serial sql_sequence_cached_node",
-			setup:        []string{"SET serial_normalization=sql_sequence_cached_node"},
-			schemaChange: "ALTER TABLE tbl ADD COLUMN new_col SERIAL",
-			expectedErr:  "cannot evaluate scalar expressions containing sequence operations in this context",
-		},
-		{
-			desc:         "add column default serial virtual_sequence",
-			setup:        []string{"SET serial_normalization=virtual_sequence"},
-			schemaChange: "ALTER TABLE tbl ADD COLUMN new_col SERIAL",
-			expectedErr:  "cannot evaluate scalar expressions containing sequence operations in this context",
-		},
-		{
-			desc:         "alter column type trivial",
-			setup:        []string{"ALTER TABLE tbl ADD COLUMN new_col SMALLINT NOT NULL DEFAULT 100"},
-			schemaChange: "ALTER TABLE tbl ALTER COLUMN new_col SET DATA TYPE BIGINT",
-		},
-		{
-			desc:         "alter column type validate",
-			setup:        []string{"ALTER TABLE tbl ADD COLUMN new_col BIGINT NOT NULL DEFAULT 100"},
-			schemaChange: "ALTER TABLE tbl ALTER COLUMN new_col SET DATA TYPE SMALLINT",
-		},
-		{
-			desc: "alter column type general",
-			setup: []string{
-				"ALTER TABLE tbl ADD COLUMN new_col BIGINT NOT NULL DEFAULT 100",
-			},
-			schemaChange: "ALTER TABLE tbl ALTER COLUMN new_col SET DATA TYPE TEXT",
-			query:        "SELECT new_col FROM tbl LIMIT 1",
-		},
-		{
-			desc: "alter column type general compute",
-			setup: []string{
-				"ALTER TABLE tbl ADD COLUMN new_col DATE NOT NULL DEFAULT '2013-05-06', " +
-					"ADD COLUMN new_comp DATE AS (new_col) STORED",
-			},
-			schemaChange: "ALTER TABLE tbl ALTER COLUMN new_comp SET DATA TYPE DATE USING '2021-05-06'",
-			query:        "SELECT new_comp FROM tbl LIMIT 1",
 		},
 		{
 			desc:         "add column default udf",
@@ -360,17 +296,6 @@ func TestAlterTableDMLInjection(t *testing.T) {
 			schemaChange: "ALTER TABLE tbl ALTER PRIMARY KEY USING COLUMNS (insert_phase_ordinal, operation_phase_ordinal, operation)",
 		},
 		{
-			desc:        "alter primary key and replace rowid in PK",
-			createTable: createTableNoPK,
-			setup: []string{
-				"CREATE INDEX i1 ON tbl (val)",
-			},
-			// Run a query against the secondary index at each stage.
-			query:        "SELECT operation FROM tbl@i1",
-			schemaChange: "ALTER TABLE tbl ALTER PRIMARY KEY USING COLUMNS (insert_phase_ordinal, operation_phase_ordinal, operation)",
-			skipIssue:    133129,
-		},
-		{
 			desc:        "alter primary key using columns using hash",
 			createTable: createTableNoPK,
 			setup: []string{
@@ -378,14 +303,6 @@ func TestAlterTableDMLInjection(t *testing.T) {
 				"ALTER TABLE tbl ADD PRIMARY KEY (id)",
 			},
 			schemaChange: "ALTER TABLE tbl ALTER PRIMARY KEY USING COLUMNS (insert_phase_ordinal, operation_phase_ordinal, operation) USING HASH",
-		},
-		{
-			desc: "drop a column with a check constraint while querying pg_constraint",
-			setup: []string{
-				"ALTER TABLE tbl ADD COLUMN i INT CHECK (i is NOT NULL) DEFAULT 10",
-			},
-			schemaChange: "ALTER TABLE tbl DROP COLUMN i",
-			query:        "select * from pg_catalog.pg_constraint",
 		},
 		{
 			desc:         "create index",
@@ -503,7 +420,6 @@ func TestAlterTableDMLInjection(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range testCases {
 		t.Run(tc.desc, tc.capture(func(t *testing.T, tc testCase) {
-			t.Parallel() // SAFE FOR TESTING
 			if issue := tc.skipIssue; issue != 0 {
 				skip.WithIssue(t, issue)
 			}
@@ -588,11 +504,14 @@ func TestAlterTableDMLInjection(t *testing.T) {
 									}
 								}
 								// Sort expectedResults to match order returned by SELECT.
-								slices.SortFunc(expectedResults, func(a, b []string) int {
+								slices.SortFunc(expectedResults, func(a, b []string) bool {
 									require.Equal(t, len(a), len(b), errorMessage)
 									for i := 0; i < len(a); i++ {
-										if c := strings.Compare(a[i], b[i]); c != 0 {
-											return c
+										switch strings.Compare(a[i], b[i]) {
+										case -1:
+											return true
+										case 1:
+											return false
 										}
 									}
 									panic(fmt.Sprintf("slice contains duplicate elements a=%s b=%s %s", a, b, errorMessage))
@@ -606,12 +525,6 @@ func TestAlterTableDMLInjection(t *testing.T) {
 								// Use subset instead of equals for better error output.
 								require.Subset(t, expectedResults, actualResults, errorMessage)
 								require.Subset(t, actualResults, expectedResults, errorMessage)
-
-								// If a query is provided, run it without checking the results—just
-								// ensure it doesn't fail.
-								if tc.query != "" {
-									sqlDB.Exec(t, tc.query)
-								}
 
 								for i := 0; i < poIdx; i++ {
 									insertPO := poSlice[i]

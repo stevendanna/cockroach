@@ -34,7 +34,14 @@ func (env *InteractionEnv) handleRaftLog(t *testing.T, d datadriven.TestData) er
 // RaftLog pretty prints the raft log to the output buffer.
 func (env *InteractionEnv) RaftLog(idx int) error {
 	s := env.Nodes[idx].Storage
-	fi, li := s.FirstIndex(), s.LastIndex()
+	fi, err := s.FirstIndex()
+	if err != nil {
+		return err
+	}
+	li, err := s.LastIndex()
+	if err != nil {
+		return err
+	}
 	if li < fi {
 		// TODO(tbg): this is what MemoryStorage returns, but unclear if it's
 		// the "correct" thing to do.

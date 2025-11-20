@@ -278,7 +278,7 @@ func (c *CustomFuncs) mapJoinOpEquivalenceGroup(
 //
 // If src has a correlated subquery, CanMapJoinOpFilter returns false.
 func (c *CustomFuncs) CanMapJoinOpFilter(
-	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivGroups,
+	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivSet,
 ) bool {
 	// Fast path if src is already bound by dst.
 	if c.IsBoundBy(src, dstCols) {
@@ -300,7 +300,7 @@ func (c *CustomFuncs) CanMapJoinOpFilter(
 			// it.
 			continue
 		}
-		eqCols := c.GetEquivColsWithEquivTypeWithEquivGroups(i, equivSet, allowCompositeEncoding)
+		eqCols := c.GetEquivColsWithEquivTypeWithEquivSet(i, equivSet, allowCompositeEncoding)
 		if !eqCols.Intersects(dstCols) {
 			return false
 		}
@@ -332,7 +332,7 @@ func (c *CustomFuncs) CanMapJoinOpFilter(
 // equality predicate a.x = b.x, because it would just return the tautology
 // b.x = b.x.
 func (c *CustomFuncs) MapJoinOpFilter(
-	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivGroups,
+	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivSet,
 ) opt.ScalarExpr {
 	// Fast path if src is already bound by dst.
 	if c.IsBoundBy(src, dstCols) {
@@ -351,7 +351,7 @@ func (c *CustomFuncs) MapJoinOpFilter(
 			// it.
 			continue
 		}
-		eqCols := c.GetEquivColsWithEquivTypeWithEquivGroups(srcCol, equivSet, allowCompositeEncoding)
+		eqCols := c.GetEquivColsWithEquivTypeWithEquivSet(srcCol, equivSet, allowCompositeEncoding)
 		eqCols.IntersectionWith(dstCols)
 		dstCol, ok := eqCols.Next(0)
 		if !ok {
@@ -443,11 +443,11 @@ func (c *CustomFuncs) GetEquivColsWithEquivType(
 	return res
 }
 
-// GetEquivColsWithEquivTypeWithEquivGroups is identical to
-// GetEquivColsWithEquivType, but operates on EquivGroups instead of a
+// GetEquivColsWithEquivTypeWithEquivSet is identical to
+// GetEquivColsWithEquivType, but operates on an EquivSet instead of a
 // FuncDepSet.
-func (c *CustomFuncs) GetEquivColsWithEquivTypeWithEquivGroups(
-	col opt.ColumnID, equivSet props.EquivGroups, allowCompositeEncoding bool,
+func (c *CustomFuncs) GetEquivColsWithEquivTypeWithEquivSet(
+	col opt.ColumnID, equivSet props.EquivSet, allowCompositeEncoding bool,
 ) opt.ColSet {
 	var res opt.ColSet
 	colType := c.f.Metadata().ColumnMeta(col).Type
@@ -460,7 +460,7 @@ func (c *CustomFuncs) GetEquivColsWithEquivTypeWithEquivGroups(
 	}
 
 	// Compute all equivalent columns.
-	eqCols := equivSet.GroupForCol(col)
+	eqCols := equivSet.Group(col)
 
 	eqCols.ForEach(func(i opt.ColumnID) {
 		// Only include columns that have the same type as col.
@@ -473,9 +473,9 @@ func (c *CustomFuncs) GetEquivColsWithEquivTypeWithEquivGroups(
 	return res
 }
 
-func (c *CustomFuncs) GetEquivGroups(
+func (c *CustomFuncs) GetEquivSet(
 	filters memo.FiltersExpr, left, right memo.RelExpr,
-) (equivSet props.EquivGroups) {
+) (equivSet props.EquivSet) {
 	for i := range filters {
 		equivSet.AddFromFDs(&filters[i].ScalarProps().FuncDeps)
 	}
@@ -490,7 +490,7 @@ func (c *CustomFuncs) GetEquivGroups(
 func (c *CustomFuncs) JoinFiltersMatchAllLeftRows(
 	left, right memo.RelExpr, on memo.FiltersExpr,
 ) bool {
-	multiplicity := memo.DeriveJoinMultiplicityFromInputs(c.mem, left, right, on)
+	multiplicity := memo.DeriveJoinMultiplicityFromInputs(left, right, on)
 	return multiplicity.JoinFiltersMatchAllLeftRows()
 }
 

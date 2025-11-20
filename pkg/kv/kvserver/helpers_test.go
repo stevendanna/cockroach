@@ -32,9 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -53,10 +51,6 @@ import (
 
 func (s *Store) Transport() *RaftTransport {
 	return s.cfg.Transport
-}
-
-func (s *Store) StoreLivenessTransport() *storeliveness.Transport {
-	return s.cfg.StoreLivenessTransport
 }
 
 func (s *Store) FindTargetAndTransferLease(
@@ -329,7 +323,7 @@ func (r *Replica) RaftUnlock() {
 
 func (r *Replica) RaftReportUnreachable(id roachpb.ReplicaID) error {
 	return r.withRaftGroup(func(raftGroup *raft.RawNode) (bool, error) {
-		raftGroup.ReportUnreachable(raftpb.PeerID(id))
+		raftGroup.ReportUnreachable(uint64(id))
 		return false /* unquiesceAndWakeLeader */, nil
 	})
 }
@@ -349,10 +343,10 @@ func (r *Replica) Campaign(ctx context.Context) {
 }
 
 // ForceCampaign force-campaigns the replica.
-func (r *Replica) ForceCampaign(ctx context.Context, raftStatus raft.BasicStatus) {
+func (r *Replica) ForceCampaign(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.forceCampaignLocked(ctx, raftStatus)
+	r.forceCampaignLocked(ctx)
 }
 
 // LastAssignedLeaseIndexRLocked is like LastAssignedLeaseIndex, but requires
@@ -449,7 +443,7 @@ func (r *Replica) ShouldBackpressureWrites(_ context.Context) bool {
 func (r *Replica) GetRaftLogSize() (int64, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.shMu.raftLogSize, r.shMu.raftLogSizeTrusted
+	return r.mu.raftLogSize, r.mu.raftLogSizeTrusted
 }
 
 // GetCachedLastTerm returns the cached last term value. May return
@@ -457,7 +451,7 @@ func (r *Replica) GetRaftLogSize() (int64, bool) {
 func (r *Replica) GetCachedLastTerm() kvpb.RaftTerm {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.shMu.lastTermNotDurable
+	return r.mu.lastTermNotDurable
 }
 
 // SideloadedRaftMuLocked returns r.raftMu.sideloaded. Requires a previous call
@@ -661,9 +655,8 @@ func WatchForDisappearingReplicas(t testing.TB, store *Store) {
 		default:
 		}
 
-		store.mu.replicasByRangeID.Range(func(rangeID roachpb.RangeID, _ *Replica) bool {
-			m[rangeID] = struct{}{}
-			return true
+		store.mu.replicasByRangeID.Range(func(repl *Replica) {
+			m[repl.RangeID] = struct{}{}
 		})
 
 		for k := range m {
@@ -695,21 +688,4 @@ func NewRangefeedTxnPusher(
 		r:    r,
 		span: span,
 	}
-}
-
-// SupportFromEnabled exports (replicaRLockedStoreLiveness).SupportFromEnabled
-// for testing purposes.
-func (r *Replica) SupportFromEnabled() bool {
-	return (*replicaRLockedStoreLiveness)(r).SupportFromEnabled()
-}
-
-// RaftFortificationEnabledForRangeID exports raftFortificationEnabledForRangeID
-// for use in tests.
-func RaftFortificationEnabledForRangeID(fracEnabled float64, rangeID roachpb.RangeID) bool {
-	return raftFortificationEnabledForRangeID(fracEnabled, rangeID)
-}
-
-// ProcessTick exports processTick for use in tests.
-func (s *Store) ProcessTick(ctx context.Context, rangeID roachpb.RangeID) {
-	s.processTick(ctx, rangeID)
 }

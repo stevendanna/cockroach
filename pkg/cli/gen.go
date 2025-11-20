@@ -379,7 +379,6 @@ var genCmds = []*cobra.Command{
 	genHAProxyCmd,
 	genSettingsListCmd,
 	genMetricListCmd,
-	genEncryptionKeyCmd,
 }
 
 func init() {

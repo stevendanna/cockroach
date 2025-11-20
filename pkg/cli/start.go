@@ -6,6 +6,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -38,6 +39,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/cgroups"
@@ -602,14 +604,20 @@ func runStartInternal(
 		return errors.Wrapf(err, "failed to initialize %s", serverType)
 	}
 
-	// Derive temporary/auxiliary directory specifications.
-	serverCfg.ExternalIODir = startCtx.externalIODir
-
 	st := serverCfg.BaseConfig.Settings
+
+	// Derive temporary/auxiliary directory specifications.
+	st.ExternalIODir = startCtx.externalIODir
+
 	if serverCfg.SQLConfig.TempStorageConfig, err = initTempStorageConfig(
 		ctx, st, stopper, serverCfg.Stores,
 	); err != nil {
 		return err
+	}
+
+	// Configure the default storage engine.
+	if serverCfg.StorageEngine == enginepb.EngineTypeDefault {
+		serverCfg.StorageEngine = enginepb.EngineTypePebble
 	}
 
 	// The configuration is now ready to report to the user and the log
@@ -731,11 +739,8 @@ func getDefaultGoMemLimit(ctx context.Context) int64 {
 		log.Ops.Shoutf(
 			ctx, severity.WARNING, "recommended default value of "+
 				"--max-go-memory (%s) was truncated to %s, consider reducing "+
-				"--max-sql-memory (%s) and / or --cache (%s); total system/cgroup memory: %s.",
+				"--max-sql-memory and / or --cache",
 			humanizeutil.IBytes(limit), humanizeutil.IBytes(maxGoMemLimit),
-			humanizeutil.IBytes(serverCfg.MemoryPoolSize),
-			humanizeutil.IBytes(serverCfg.CacheSize),
-			humanizeutil.IBytes(sysMem),
 		)
 		limit = maxGoMemLimit
 	}
@@ -861,7 +866,7 @@ func createAndStartServerAsync(
 			// Now inform the user that the server is running and tell the
 			// user about its run-time derived parameters.
 			return reportServerInfo(ctx, tBegin, serverCfg, s.ClusterSettings(),
-				serverType, s.InitialStart(), s.LogicalClusterID(), startCtx.externalIODir)
+				serverType, s.InitialStart(), s.LogicalClusterID())
 		}(); err != nil {
 			shutdownReqC <- serverctl.MakeShutdownRequest(
 				serverctl.ShutdownReasonServerStartupError, errors.Wrapf(err, "server startup failed"))
@@ -1179,7 +1184,6 @@ func reportServerInfo(
 	serverType redact.SafeString,
 	initialStart bool,
 	tenantClusterID uuid.UUID,
-	externalIODir string,
 ) error {
 	var buf redact.StringBuilder
 	info := build.GetInfo()
@@ -1227,14 +1231,15 @@ func reportServerInfo(
 	if tmpDir := serverCfg.SQLConfig.TempStorageConfig.Path; tmpDir != "" {
 		buf.Printf("temp dir:\t%s\n", log.SafeManaged(tmpDir))
 	}
-	if externalIODir != "" {
-		buf.Printf("external I/O path: \t%s\n", log.SafeManaged(externalIODir))
+	if ext := st.ExternalIODir; ext != "" {
+		buf.Printf("external I/O path: \t%s\n", log.SafeManaged(ext))
 	} else {
 		buf.Printf("external I/O path: \t<disabled>\n")
 	}
 	for i, spec := range serverCfg.Stores.Specs {
 		buf.Printf("store[%d]:\t%s\n", i, log.SafeManaged(spec))
 	}
+	buf.Printf("storage engine: \t%s\n", &serverCfg.StorageEngine)
 
 	// Print the commong server identifiers.
 	if baseCfg.ClusterName != "" {
@@ -1348,16 +1353,16 @@ func reportConfiguration(ctx context.Context) {
 func maybeWarnMemorySizes(ctx context.Context) {
 	// Is the cache configuration OK?
 	if !startCtx.cacheSizeValue.IsSet() {
-		var buf redact.StringBuilder
-		buf.Printf("Using the default setting for --cache (%s).\n", &startCtx.cacheSizeValue)
-		buf.Printf("  A significantly larger value is usually needed for good performance.\n")
+		var buf bytes.Buffer
+		fmt.Fprintf(&buf, "Using the default setting for --cache (%s).\n", &startCtx.cacheSizeValue)
+		fmt.Fprintf(&buf, "  A significantly larger value is usually needed for good performance.\n")
 		if size, err := status.GetTotalMemory(ctx); err == nil {
-			buf.Printf("  If you have a dedicated server a reasonable setting is --cache=.25 (%s).",
+			fmt.Fprintf(&buf, "  If you have a dedicated server a reasonable setting is --cache=.25 (%s).",
 				humanizeutil.IBytes(size/4))
 		} else {
-			buf.Printf("  If you have a dedicated server a reasonable setting is 25%% of physical memory.")
+			fmt.Fprintf(&buf, "  If you have a dedicated server a reasonable setting is 25%% of physical memory.")
 		}
-		log.Ops.Warningf(ctx, "%s", buf.RedactableString())
+		log.Ops.Warningf(ctx, "%s", redact.Safe(buf.String()))
 	}
 
 	// Check that the total suggested "max" memory is well below the available memory.
@@ -1450,8 +1455,8 @@ func setupAndInitializeLoggingAndProfiling(
 				"consider --accept-sql-without-tls instead. For other options, see:\n\n"+
 				"- %s\n"+
 				"- %s",
-			redact.SafeString(build.MakeIssueURL(53404)),
-			redact.SafeString(docs.URL("secure-a-cluster.html")),
+			redact.Safe(build.MakeIssueURL(53404)),
+			redact.Safe(docs.URL("secure-a-cluster.html")),
 		)
 	}
 
@@ -1474,7 +1479,7 @@ func setupAndInitializeLoggingAndProfiling(
 	// We log build information to stdout (for the short summary), but also
 	// to stderr to coincide with the full logs.
 	info := build.GetInfo()
-	log.Ops.Infof(ctx, "%s", info.Short())
+	log.Ops.Infof(ctx, "%s", log.SafeManaged(info.Short()))
 
 	// Disable Stopper task tracking as performing that call site tracking is
 	// moderately expensive (certainly outweighing the infrequent benefit it

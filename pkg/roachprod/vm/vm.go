@@ -42,13 +42,20 @@ const (
 	ArchAMD64   = CPUArch("amd64")
 	ArchFIPS    = CPUArch("fips")
 	ArchUnknown = CPUArch("unknown")
-)
 
-// UnimplementedError is returned when a method is not implemented by a
-// provider. An error is returned instead of panicking to isolate failures to a
-// single test (in the context of `roachtest`), otherwise the entire test run
-// would fail.
-var UnimplementedError = errors.New("unimplemented")
+	// InitializedFile is the base name of the initialization paths defined below.
+	InitializedFile = ".roachprod-initialized"
+	// OSInitializedFile is a marker file that is created on a VM to indicate
+	// that it has been initialized at least once by the VM start-up script. This
+	// is used to avoid re-initializing a VM that has been stopped and restarted.
+	OSInitializedFile = "/" + InitializedFile
+	// DisksInitializedFile is a marker file that is created on a VM to indicate
+	// that the disks have been initialized by the VM start-up script. This is
+	// separate from OSInitializedFile, because the disks may be ephemeral and
+	// need to be re-initialized on every start. The presence of this file
+	// automatically implies the presence of OSInitializedFile.
+	DisksInitializedFile = "/mnt/data1/" + InitializedFile
+)
 
 type CPUArch string
 
@@ -337,6 +344,10 @@ type ProviderOpts interface {
 	// ConfigureCreateFlags configures a FlagSet with any options relevant to the
 	// `create` command.
 	ConfigureCreateFlags(*pflag.FlagSet)
+	// ConfigureClusterFlags configures a FlagSet with any options relevant to
+	// cluster manipulation commands (`create`, `destroy`, `list`, `sync` and
+	// `gc`).
+	ConfigureClusterFlags(*pflag.FlagSet, MultipleProjectsOption)
 }
 
 // VolumeSnapshot is an abstract representation of a specific volume snapshot.
@@ -416,25 +427,14 @@ type VolumeCreateOpts struct {
 }
 
 type ListOptions struct {
-	Username             string // if set, <username>-.* clusters are detected as 'mine'
 	IncludeVolumes       bool
 	IncludeEmptyClusters bool
 	ComputeEstimatedCost bool
-	IncludeProviders     []string
 }
 
 type PreemptedVM struct {
 	Name        string
 	PreemptedAt time.Time
-}
-
-// CreatePreemptedVMs returns a list of PreemptedVM created from given list of vmNames
-func CreatePreemptedVMs(vmNames []string) []PreemptedVM {
-	preemptedVMs := make([]PreemptedVM, len(vmNames))
-	for i, name := range vmNames {
-		preemptedVMs[i] = PreemptedVM{Name: name}
-	}
-	return preemptedVMs
 }
 
 // ServiceAddress stores the IP and port of a service.
@@ -445,23 +445,14 @@ type ServiceAddress struct {
 
 // A Provider is a source of virtual machines running on some hosting platform.
 type Provider interface {
-	// ConfigureProviderFlags is used to specify flags that apply to the provider
-	// instance and should be used for all clusters managed by the provider.
-	ConfigureProviderFlags(*pflag.FlagSet, MultipleProjectsOption)
-
-	// ConfigureClusterCleanupFlags configures a FlagSet with any options
-	// relevant to commands (`gc`)
-	ConfigureClusterCleanupFlags(*pflag.FlagSet)
-
 	CreateProviderOpts() ProviderOpts
 	CleanSSH(l *logger.Logger) error
 
 	// ConfigSSH takes a list of zones and configures SSH for machines in those
 	// zones for the given provider.
 	ConfigSSH(l *logger.Logger, zones []string) error
-	Create(l *logger.Logger, names []string, opts CreateOpts, providerOpts ProviderOpts) (List, error)
-	Grow(l *logger.Logger, vms List, clusterName string, names []string) (List, error)
-	Shrink(l *logger.Logger, vmsToRemove List, clusterName string) error
+	Create(l *logger.Logger, names []string, opts CreateOpts, providerOpts ProviderOpts) error
+	Grow(l *logger.Logger, vms List, clusterName string, names []string) error
 	Reset(l *logger.Logger, vms List) error
 	Delete(l *logger.Logger, vms List) error
 	Extend(l *logger.Logger, vms List, lifetime time.Duration) error
@@ -606,9 +597,7 @@ func FindActiveAccounts(l *logger.Logger) (map[string]string, error) {
 		err := ProvidersSequential(AllProviderNames(), func(p Provider) error {
 			account, err := p.FindActiveAccount(l)
 			if err != nil {
-				l.Printf("WARN: provider=%q has no active account", p.Name())
-				//nolint:returnerrcheck
-				return nil
+				return err
 			}
 			if len(account) > 0 {
 				source[p.Name()] = account

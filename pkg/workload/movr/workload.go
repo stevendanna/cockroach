@@ -32,7 +32,10 @@ type movrWorker struct {
 }
 
 func (m *movrWorker) getRandomUser(city string) (string, error) {
-	id := uuid.NewV4()
+	id, err := uuid.NewV4()
+	if err != nil {
+		return "", err
+	}
 	var user string
 	q := `
 		SELECT
@@ -45,12 +48,15 @@ func (m *movrWorker) getRandomUser(city string) (string, error) {
 					(SELECT id FROM users WHERE city = $1 ORDER BY id LIMIT 1) AS b
 			);
 		`
-	err := m.db.QueryRow(q, city, id.String()).Scan(&user)
+	err = m.db.QueryRow(q, city, id.String()).Scan(&user)
 	return user, err
 }
 
 func (m *movrWorker) getRandomPromoCode() (string, error) {
-	id := uuid.NewV4()
+	id, err := uuid.NewV4()
+	if err != nil {
+		return "", err
+	}
 	q := `
 		SELECT
 			IFNULL(a, b)
@@ -63,12 +69,15 @@ func (m *movrWorker) getRandomPromoCode() (string, error) {
 			);
 		`
 	var code string
-	err := m.db.QueryRow(q, id.String()).Scan(&code)
+	err = m.db.QueryRow(q, id.String()).Scan(&code)
 	return code, err
 }
 
 func (m *movrWorker) getRandomVehicle(city string) (string, error) {
-	id := uuid.NewV4()
+	id, err := uuid.NewV4()
+	if err != nil {
+		return "", err
+	}
 	q := `
 		SELECT
 			IFNULL(a, b)
@@ -81,7 +90,7 @@ func (m *movrWorker) getRandomVehicle(city string) (string, error) {
 			);
 		`
 	var vehicle string
-	err := m.db.QueryRow(q, city, id.String()).Scan(&vehicle)
+	err = m.db.QueryRow(q, city, id.String()).Scan(&vehicle)
 	return vehicle, err
 }
 
@@ -249,7 +258,10 @@ func (m *movrWorker) generateWorkSimulation() func(context.Context) error {
 
 	return func(ctx context.Context) error {
 		activeCity := randCity(m.rng)
-		id := uuid.NewV4()
+		id, err := uuid.NewV4()
+		if err != nil {
+			return err
+		}
 		// Our workload is as follows: with 95% chance, do a simple read operation.
 		// Else, update all active vehicle locations, then pick a random "write" operation
 		// weighted by the weights in movrWorkloadFns.
@@ -258,7 +270,7 @@ func (m *movrWorker) generateWorkSimulation() func(context.Context) error {
 				return m.readVehicles(activeCity)
 			})
 		}
-		err := runAndRecord("updateActiveRides", func() error {
+		err = runAndRecord("updateActiveRides", func() error {
 			return m.updateActiveRides()
 		})
 		if err != nil {
@@ -286,7 +298,11 @@ func (m *movr) Ops(
 	m.fakerOnce.Do(func() {
 		m.faker = faker.NewFaker()
 	})
-	ql := workload.QueryLoad{}
+	sqlDatabase, err := workload.SanitizeUrls(m, m.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	db, err := workload.NewRoundRobinDB(urls)
 	if err != nil {
 		return workload.QueryLoad{}, err

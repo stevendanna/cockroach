@@ -12,11 +12,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -48,30 +46,21 @@ func NewStateLoader(rangeID roachpb.RangeID) StateLoader {
 	}
 }
 
-// EntryID is an (index, term) pair identifying a raft log entry.
-//
-// TODO(pav-kv): should be the other way around - RaftTruncatedState is an
-// EntryID.
-type EntryID = kvserverpb.RaftTruncatedState
-
-// LoadLastEntryID loads the ID of the last entry in the raft log. Returns the
-// passed in RaftTruncatedState if the log has no entries. RaftTruncatedState
-// must have been just read, or otherwise exist in memory and be consistent with
-// the content of the log.
-func (sl StateLoader) LoadLastEntryID(
-	ctx context.Context, reader storage.Reader, ts kvserverpb.RaftTruncatedState,
-) (EntryID, error) {
+// LoadLastIndex loads the last index.
+func (sl StateLoader) LoadLastIndex(
+	ctx context.Context, reader storage.Reader,
+) (kvpb.RaftIndex, error) {
 	prefix := sl.RaftLogPrefix()
 	// NB: raft log has no intents.
 	iter, err := reader.NewMVCCIterator(
 		ctx, storage.MVCCKeyIterKind, storage.IterOptions{
-			LowerBound: prefix, ReadCategory: fs.ReplicationReadCategory})
+			LowerBound: prefix, ReadCategory: storage.ReplicationReadCategory})
 	if err != nil {
-		return EntryID{}, err
+		return 0, err
 	}
 	defer iter.Close()
 
-	var last EntryID
+	var lastIndex kvpb.RaftIndex
 	iter.SeekLT(storage.MakeMVCCMetadataKey(keys.RaftLogKeyFromPrefix(prefix, math.MaxUint64)))
 	if ok, _ := iter.Valid(); ok {
 		key := iter.UnsafeKey().Key
@@ -80,27 +69,22 @@ func (sl StateLoader) LoadLastEntryID(
 		}
 		suffix := key[len(prefix):]
 		var err error
-		last.Index, err = keys.DecodeRaftLogKeyFromSuffix(suffix)
+		lastIndex, err = keys.DecodeRaftLogKeyFromSuffix(suffix)
 		if err != nil {
 			log.Fatalf(ctx, "unable to decode Raft log index key: %s; %v", key.String(), err)
 		}
-		v, err := iter.UnsafeValue()
-		if err != nil {
-			log.Fatalf(ctx, "unable to read Raft log entry %d (%s): %v", last.Index, key.String(), err)
-		}
-		entry, err := raftlog.RaftEntryFromRawValue(v)
-		if err != nil {
-			log.Fatalf(ctx, "unable to decode Raft log entry %d (%s): %v", last.Index, key.String(), err)
-		}
-		last.Term = kvpb.RaftTerm(entry.Term)
 	}
 
-	if last.Index == 0 {
+	if lastIndex == 0 {
 		// The log is empty, which means we are either starting from scratch
 		// or the entire log has been truncated away.
-		return ts, nil
+		lastEnt, err := sl.LoadRaftTruncatedState(ctx, reader)
+		if err != nil {
+			return 0, err
+		}
+		lastIndex = lastEnt.Index
 	}
-	return last, nil
+	return lastIndex, nil
 }
 
 // LoadRaftTruncatedState loads the truncated state.
@@ -110,7 +94,7 @@ func (sl StateLoader) LoadRaftTruncatedState(
 	var truncState kvserverpb.RaftTruncatedState
 	if _, err := storage.MVCCGetProto(
 		ctx, reader, sl.RaftTruncatedStateKey(), hlc.Timestamp{}, &truncState,
-		storage.MVCCGetOptions{ReadCategory: fs.ReplicationReadCategory},
+		storage.MVCCGetOptions{ReadCategory: storage.ReplicationReadCategory},
 	); err != nil {
 		return kvserverpb.RaftTruncatedState{}, err
 	}
@@ -141,7 +125,7 @@ func (sl StateLoader) LoadHardState(
 ) (raftpb.HardState, error) {
 	var hs raftpb.HardState
 	found, err := storage.MVCCGetProto(ctx, reader, sl.RaftHardStateKey(),
-		hlc.Timestamp{}, &hs, storage.MVCCGetOptions{ReadCategory: fs.ReplicationReadCategory})
+		hlc.Timestamp{}, &hs, storage.MVCCGetOptions{ReadCategory: storage.ReplicationReadCategory})
 
 	if !found || err != nil {
 		return raftpb.HardState{}, err
@@ -168,7 +152,7 @@ func (sl StateLoader) SetHardState(
 // taking care that a HardState compatible with the existing data is written.
 func (sl StateLoader) SynthesizeHardState(
 	ctx context.Context,
-	writer storage.Writer,
+	readWriter storage.ReadWriter,
 	oldHS raftpb.HardState,
 	truncState kvserverpb.RaftTruncatedState,
 	raftAppliedIndex kvpb.RaftIndex,
@@ -184,11 +168,6 @@ func (sl StateLoader) SynthesizeHardState(
 		return errors.Newf("can't decrease HardState.Commit from %d to %d",
 			redact.Safe(oldHS.Commit), redact.Safe(newHS.Commit))
 	}
-
-	// TODO(arul): This function can be called with an empty OldHS. In all other
-	// cases, where a term is included, we should be able to assert that the term
-	// isn't regressing (i.e. oldHS.Term >= newHS.Term).
-
 	if oldHS.Term > newHS.Term {
 		// The existing HardState is allowed to be ahead of us, which is
 		// relevant in practice for the split trigger. We already checked above
@@ -196,14 +175,11 @@ func (sl StateLoader) SynthesizeHardState(
 		// updated votes yet.
 		newHS.Term = oldHS.Term
 	}
-	// If the existing HardState voted in this term and knows who the leader is,
-	// remember that.
+	// If the existing HardState voted in this term, remember that.
 	if oldHS.Term == newHS.Term {
 		newHS.Vote = oldHS.Vote
-		newHS.Lead = oldHS.Lead
-		newHS.LeadEpoch = oldHS.LeadEpoch
 	}
-	err := sl.SetHardState(ctx, writer, newHS)
+	err := sl.SetHardState(ctx, readWriter, newHS)
 	return errors.Wrapf(err, "writing HardState %+v", &newHS)
 }
 
@@ -229,7 +205,7 @@ func (sl StateLoader) LoadRaftReplicaID(
 ) (*kvserverpb.RaftReplicaID, error) {
 	var replicaID kvserverpb.RaftReplicaID
 	found, err := storage.MVCCGetProto(ctx, reader, sl.RaftReplicaIDKey(),
-		hlc.Timestamp{}, &replicaID, storage.MVCCGetOptions{ReadCategory: fs.ReplicationReadCategory})
+		hlc.Timestamp{}, &replicaID, storage.MVCCGetOptions{ReadCategory: storage.ReplicationReadCategory})
 	if err != nil {
 		return nil, err
 	}

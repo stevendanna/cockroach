@@ -57,7 +57,6 @@ upsert descriptor #104
   -    name: t_expr_idx
   -    partitioning: {}
   -    sharded: {}
-  -    vecConfig: {}
   -    version: 3
   +  indexes: []
      modificationTime: {}
@@ -80,7 +79,6 @@ upsert descriptor #104
   +      name: t_expr_idx
   +      partitioning: {}
   +      sharded: {}
-  +      vecConfig: {}
   +      version: 3
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -104,7 +102,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -129,7 +126,6 @@ upsert descriptor #104
   +      storeColumnNames: []
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -191,8 +187,6 @@ upsert descriptor #104
   +    nameMapping:
   +      columns:
   +        "1": i
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      families:
@@ -231,7 +225,6 @@ upsert descriptor #104
   -    name: t_expr_idx
   -    partitioning: {}
   -    sharded: {}
-  -    vecConfig: {}
   -    version: 3
   +  indexes: []
      modificationTime: {}
@@ -254,7 +247,6 @@ upsert descriptor #104
   +      name: t_expr_idx
   +      partitioning: {}
   +      sharded: {}
-  +      vecConfig: {}
   +      version: 3
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -278,7 +270,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -303,7 +294,6 @@ upsert descriptor #104
   +      storeColumnNames: []
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -453,7 +443,6 @@ upsert descriptor #104
   +      name: crdb_internal_index_2_name_placeholder
          partitioning: {}
          sharded: {}
-  ...
          version: 3
        mutationId: 1
   -    state: WRITE_ONLY
@@ -484,7 +473,6 @@ upsert descriptor #104
   -      storeColumnNames: []
   -      unique: true
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -503,11 +491,11 @@ upsert descriptor #104
   -  version: "6"
   +  version: "7"
 persist all catalog changes to storage
-update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 2 of 4 with 9 MutationType ops pending"
+update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 2 of 4 with 8 MutationType ops pending"
 set schema change job #1 to non-cancellable
 commit transaction #10
 begin transaction #11
-## PostCommitNonRevertiblePhase stage 2 of 4 with 11 MutationType ops
+## PostCommitNonRevertiblePhase stage 2 of 4 with 10 MutationType ops
 upsert descriptor #104
   ...
          oid: 20
@@ -548,7 +536,6 @@ upsert descriptor #104
   -      name: crdb_internal_index_2_name_placeholder
   -      partitioning: {}
   -      sharded: {}
-  -      vecConfig: {}
   -      version: 3
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -576,7 +563,7 @@ upsert descriptor #104
   +      storeColumnNames:
   +      - crdb_internal_column_2_name_placeholder
          unique: true
-         vecConfig: {}
+         version: 4
   ...
        state: WRITE_ONLY
      - column:
@@ -621,7 +608,7 @@ upsert descriptor #104
   -    - j
   +    storeColumnNames: []
        unique: true
-       vecConfig: {}
+       version: 4
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -669,8 +656,6 @@ upsert descriptor #104
   -    nameMapping:
   -      columns:
   -        "1": i
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      families:
@@ -722,7 +707,6 @@ upsert descriptor #104
   -      storeColumnNames:
   -      - crdb_internal_column_2_name_placeholder
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY

@@ -3,23 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CaretDown } from "@cockroachlabs/icons";
-import { Menu, Dropdown } from "antd";
-import classNames from "classnames/bind";
-import { MenuClickEventHandler } from "rc-menu/es/interface";
 import React from "react";
-
-import { SqlStatsSortOptions, SqlStatsSortType } from "src/api/statementsApi";
+import classNames from "classnames/bind";
+import styles from "./searchCriteria.module.scss";
+import { PageConfig, PageConfigItem } from "src/pageConfig";
 import { Button } from "src/button";
 import { commonStyles } from "src/common";
-import { PageConfig, PageConfigItem } from "src/pageConfig";
 import {
   TimeScale,
   timeScale1hMinOptions,
   TimeScaleDropdown,
 } from "src/timeScaleDropdown";
-
 import { applyBtn } from "../queryFilter/filterClasses";
+import { Menu, Dropdown } from "antd";
+import "antd/lib/menu/style";
+import "antd/lib/dropdown/style";
 import {
   limitOptions,
   limitMoreOptions,
@@ -29,9 +27,9 @@ import {
   stmtRequestSortMoreOptions,
   txnRequestSortMoreOptions,
 } from "../util/sqlActivityConstants";
-
-import styles from "./searchCriteria.module.scss";
-
+import { SqlStatsSortOptions, SqlStatsSortType } from "src/api/statementsApi";
+import { CaretDown } from "@cockroachlabs/icons";
+import { ClickParam } from "antd/lib/menu";
 const cx = classNames.bind(styles);
 const { SubMenu } = Menu;
 
@@ -73,13 +71,13 @@ export function SearchCriteria(props: SearchCriteriaProps): React.ReactElement {
     </span>
   );
 
-  const changeTop: MenuClickEventHandler = event => {
+  const changeTop = (event: ClickParam): void => {
     const top = Number(event.key);
     if (top !== topValue) {
       onChangeTop(top);
     }
   };
-  const changeBy: MenuClickEventHandler = event => {
+  const changeBy = (event: ClickParam): void => {
     const by = Object.values(SqlStatsSortOptions).find(
       s => s === Number(event.key),
     );

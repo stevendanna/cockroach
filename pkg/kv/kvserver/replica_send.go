@@ -11,6 +11,7 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
@@ -135,6 +136,9 @@ func (r *Replica) SendWithWriteBytes(
 	// recorded regardless of errors that are encountered.
 	startCPU := grunning.Time()
 	defer r.MeasureReqCPUNanos(startCPU)
+
+	// If the internal Raft group is quiesced, wake it and the leader.
+	r.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
 
 	isReadOnly := ba.IsReadOnly()
 	if err := r.checkBatchRequest(ba, isReadOnly); err != nil {
@@ -306,8 +310,14 @@ func (r *Replica) maybeAddRangeInfoToResponse(
 	// DistSender and never use ClientRangeInfo.
 	//
 	// From 23.2, all DistSenders ensure ExplicitlyRequested is set when otherwise
-	// empty.
-	if ba.ClientRangeInfo == (roachpb.ClientRangeInfo{}) {
+	// empty. Fall back to check for lease requests, to avoid 23.1 regressions.
+	if r.ClusterSettings().Version.IsActive(ctx, clusterversion.V23_2) {
+		if ba.ClientRangeInfo == (roachpb.ClientRangeInfo{}) {
+			return
+		}
+	} else if ba.IsSingleRequestLeaseRequest() {
+		// TODO(erikgrinaker): Remove this branch when 23.1 support is dropped.
+		_ = clusterversion.V23_1
 		return
 	}
 
@@ -428,7 +438,7 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 	for {
 		// Exit loop if context has been canceled or timed out.
 		if err := ctx.Err(); err != nil {
-			return nil, nil, kvpb.NewError(errors.Wrap(err, "aborted during Replica.Send"))
+			return nil, nil, kvpb.NewError(err)
 		}
 
 		// Determine the maximal set of key spans that the batch will operate on.
@@ -457,7 +467,6 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 			ReadConsistency: ba.ReadConsistency,
 			WaitPolicy:      ba.WaitPolicy,
 			LockTimeout:     ba.LockTimeout,
-			DeadlockTimeout: ba.DeadlockTimeout,
 			AdmissionHeader: ba.AdmissionHeader,
 			PoisonPolicy:    pp,
 			Requests:        ba.Requests,
@@ -1106,7 +1115,7 @@ func (r *Replica) collectSpans(
 	latchSpans, lockSpans = spanset.New(), lockspanset.New()
 	r.mu.RLock()
 	desc := r.descRLocked()
-	liveCount := r.shMu.state.Stats.LiveCount
+	liveCount := r.mu.state.Stats.LiveCount
 	r.mu.RUnlock()
 	// TODO(bdarnell): need to make this less global when local
 	// latches are used more heavily. For example, a split will

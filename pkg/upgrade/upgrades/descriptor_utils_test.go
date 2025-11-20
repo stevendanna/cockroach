@@ -72,7 +72,6 @@ func TestCreateSystemTable(t *testing.T) {
 			username.NodeUserName(),
 		),
 	}
-	fakeTable.Privileges.Version = catpb.OwnerVersion
 
 	table := tabledesc.NewBuilder(&fakeTable).BuildCreatedMutable().(catalog.TableDescriptor)
 

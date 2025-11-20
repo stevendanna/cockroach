@@ -326,7 +326,7 @@ func TestJoinVersionGate(t *testing.T) {
 
 	knobs := base.TestingKnobs{
 		Server: &server.TestingKnobs{
-			ClusterVersionOverride: oldVersion,
+			BinaryVersionOverride: oldVersion,
 		},
 	}
 

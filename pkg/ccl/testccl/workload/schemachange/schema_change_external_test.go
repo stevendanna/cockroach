@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/multiregionccl/multiregionccltestutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -93,13 +92,12 @@ func TestWorkload(t *testing.T) {
 				FROM system.descriptor
 				LEFT JOIN system.namespace ON namespace.id = descriptor.id
 		`))
-		tdb.Exec(t, "BACKUP DATABASE schemachange INTO 'nodelocal://1/backup'")
+		tdb.Exec(t, "BACKUP DATABASE schemachange TO 'nodelocal://1/backup'")
 		t.Logf("backup, tracing data, and system table dumps in %s", dir)
 	}()
 
-	pgURL, cleanup := pgurlutils.PGUrl(t, tc.Server(0).AdvSQLAddr(), t.Name(), url.User("testuser"))
+	pgURL, cleanup := sqlutils.PGUrl(t, tc.Server(0).AdvSQLAddr(), t.Name(), url.User("testuser"))
 	defer cleanup()
-	pgURL.Path = wl.Meta().Name
 
 	const concurrency = 2
 	require.NoError(t, wl.Flags().Parse([]string{

@@ -585,7 +585,6 @@ values
                                │    │    ├── function: random
                                │    │    └── const: 0.5
                                │    └── subquery
-                               │         ├── tail-call
                                │         └── values
                                │              └── tuple
                                │                   └── udf: nested
@@ -595,7 +594,6 @@ values
                                │                                  └── tuple
                                │                                       └── const: 1
                                └── subquery
-                                    ├── tail-call
                                     └── values
                                          └── tuple
                                               └── udf: nested_arg
@@ -644,7 +642,6 @@ values
                                │    │    ├── function: random
                                │    │    └── const: 0.5
                                │    └── subquery
-                               │         ├── tail-call
                                │         └── project
                                │              ├── barrier
                                │              │    └── values
@@ -669,7 +666,6 @@ values
                                │                                                      └── tuple
                                │                                                           └── variable: x
                                └── subquery
-                                    ├── tail-call
                                     └── project
                                          ├── barrier
                                          │    └── values
@@ -738,7 +734,6 @@ values
                                                    │    │    ├── variable: i
                                                    │    │    └── const: 10
                                                    │    └── subquery
-                                                   │         ├── tail-call
                                                    │         └── values
                                                    │              └── tuple
                                                    │                   └── case
@@ -748,7 +743,6 @@ values
                                                    │                        │    │    ├── variable: i
                                                    │                        │    │    └── const: 5
                                                    │                        │    └── subquery
-                                                   │                        │         ├── tail-call
                                                    │                        │         └── values
                                                    │                        │              └── tuple
                                                    │                        │                   └── udf: nested
@@ -758,11 +752,9 @@ values
                                                    │                        │                                  └── tuple
                                                    │                        │                                       └── const: 1
                                                    │                        └── subquery
-                                                   │                             ├── tail-call
                                                    │                             └── values
                                                    │                                  └── tuple
                                                    │                                       └── subquery
-                                                   │                                            ├── tail-call
                                                    │                                            └── project
                                                    │                                                 ├── values
                                                    │                                                 │    └── tuple
@@ -771,7 +763,6 @@ values
                                                    │                                                 │              └── const: 1
                                                    │                                                 └── projections
                                                    │                                                      └── subquery
-                                                   │                                                           ├── tail-call
                                                    │                                                           └── values
                                                    │                                                                └── tuple
                                                    │                                                                     └── udf: stmt_loop_5
@@ -780,7 +771,6 @@ values
                                                    │                                                                          │    └── variable: i
                                                    │                                                                          └── recursive-call
                                                    └── subquery
-                                                        ├── tail-call
                                                         └── values
                                                              └── tuple
                                                                   └── udf: loop_exit_1
@@ -856,7 +846,6 @@ values
                                                    │    │    ├── function: random
                                                    │    │    └── const: 0.5
                                                    │    └── subquery
-                                                   │         ├── tail-call
                                                    │         └── values
                                                    │              └── tuple
                                                    │                   └── udf: nested
@@ -866,7 +855,6 @@ values
                                                    │                                  └── tuple
                                                    │                                       └── const: 1
                                                    └── subquery
-                                                        ├── tail-call
                                                         └── values
                                                              └── tuple
                                                                   └── udf: stmt_if_7
@@ -1025,7 +1013,6 @@ values
                 └── values
                      └── tuple
                           └── subquery
-                               ├── tail-call
                                └── max1-row
                                     └── project-set
                                          ├── values

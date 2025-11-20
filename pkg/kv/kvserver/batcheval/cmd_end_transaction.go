@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -247,7 +246,7 @@ func EndTxn(
 	ms := cArgs.Stats
 	reply := resp.(*kvpb.EndTxnResponse)
 
-	if err := VerifyTransaction(h, args, roachpb.PENDING, roachpb.PREPARED, roachpb.STAGING, roachpb.ABORTED); err != nil {
+	if err := VerifyTransaction(h, args, roachpb.PENDING, roachpb.STAGING, roachpb.ABORTED); err != nil {
 		return result.Result{}, err
 	}
 	if args.Require1PC {
@@ -259,27 +258,23 @@ func EndTxn(
 	if args.Commit && args.Poison {
 		return result.Result{}, errors.AssertionFailedf("cannot poison during a committing EndTxn request")
 	}
-	if args.Prepare {
-		if !args.Commit {
-			return result.Result{}, errors.AssertionFailedf("cannot prepare a rollback")
-		}
-		if args.IsParallelCommit() {
-			return result.Result{}, errors.AssertionFailedf("cannot prepare a parallel commit")
-		}
-	}
 
 	key := keys.TransactionKey(h.Txn.Key, h.Txn.ID)
 
 	// Fetch existing transaction.
 	var existingTxn roachpb.Transaction
+	log.VEventf(
+		ctx, 2, "checking to see if transaction record already exists for txn: %s", h.Txn,
+	)
 	recordAlreadyExisted, err := storage.MVCCGetProto(
 		ctx, readWriter, key, hlc.Timestamp{}, &existingTxn, storage.MVCCGetOptions{
-			ReadCategory: fs.BatchEvalReadCategory,
+			ReadCategory: storage.BatchEvalReadCategory,
 		},
 	)
 	if err != nil {
 		return result.Result{}, err
 	} else if !recordAlreadyExisted {
+		log.VEvent(ctx, 2, "no existing txn record found")
 		// No existing transaction record was found - create one by writing it
 		// below in updateFinalizedTxn.
 		reply.Txn = h.Txn.Clone()
@@ -289,10 +284,12 @@ func EndTxn(
 		// an aborted txn record.
 		if args.Commit {
 			if err := CanCreateTxnRecord(ctx, cArgs.EvalCtx, reply.Txn); err != nil {
+				log.VEventf(ctx, 2, "cannot create transaction record: %v", err)
 				return result.Result{}, err
 			}
 		}
 	} else {
+		log.VEventf(ctx, 2, "existing transaction record found: %s", existingTxn)
 		// We're using existingTxn on the reply, although it can be stale
 		// compared to the Transaction in the request (e.g. the Sequence,
 		// and various timestamps). We must be careful to update it with the
@@ -316,8 +313,11 @@ func EndTxn(
 				"already committed")
 
 		case roachpb.ABORTED:
+			// The transaction has already been aborted by someone else.
+			log.VEventf(
+				ctx, 2, "transaction %s found to have be already aborted (by someone else)", reply.Txn,
+			)
 			if !args.Commit {
-				// The transaction has already been aborted by other.
 				// Do not return TransactionAbortedError since the client anyway
 				// wanted to abort the transaction.
 				resolvedLocks, _, externalLocks, err := resolveLocalLocks(ctx, readWriter, cArgs.EvalCtx, ms, args, reply.Txn)
@@ -353,34 +353,18 @@ func EndTxn(
 					"programming error: epoch regression: %d", h.Txn.Epoch)
 			}
 
-		case roachpb.PREPARED:
-			if h.Txn.Epoch != reply.Txn.Epoch {
-				return result.Result{}, errors.AssertionFailedf(
-					"programming error: epoch mismatch with prepared transaction: %d != %d", h.Txn.Epoch, reply.Txn.Epoch)
-			}
-			if args.IsParallelCommit() {
-				return result.Result{}, errors.AssertionFailedf(
-					"programming error: cannot parallel commit a prepared transaction")
-			}
-
 		case roachpb.STAGING:
-			switch {
-			case h.Txn.Epoch < reply.Txn.Epoch:
+			if h.Txn.Epoch < reply.Txn.Epoch {
 				return result.Result{}, errors.AssertionFailedf(
 					"programming error: epoch regression: %d", h.Txn.Epoch)
-			case h.Txn.Epoch == reply.Txn.Epoch:
-				if args.Prepare {
-					return result.Result{}, errors.AssertionFailedf(
-						"programming error: cannot prepare a staging transaction")
-				}
-			case h.Txn.Epoch > reply.Txn.Epoch:
+			}
+			if h.Txn.Epoch > reply.Txn.Epoch {
 				// If the EndTxn carries a newer epoch than a STAGING txn record, we do
 				// not consider the transaction to be performing a parallel commit and
 				// potentially already implicitly committed because we know that the
 				// transaction restarted since entering the STAGING state.
+				log.VEventf(ctx, 2, "request with newer epoch %d than STAGING txn record; parallel commit must have failed", h.Txn.Epoch)
 				reply.Txn.Status = roachpb.PENDING
-			default:
-				panic("unreachable")
 			}
 
 		default:
@@ -399,12 +383,6 @@ func EndTxn(
 		switch {
 		case !recordAlreadyExisted, existingTxn.Status == roachpb.PENDING:
 			BumpToMinTxnCommitTS(ctx, cArgs.EvalCtx, reply.Txn)
-		case existingTxn.Status == roachpb.PREPARED:
-			// Don't check timestamp cache. The transaction could not have been pushed
-			// while its record was in the PREPARED state. Furthermore, checking the
-			// timestamp cache and increasing the commit timestamp at this point would
-			// be incorrect, because the transaction must not fail to commit after
-			// being prepared.
 		case existingTxn.Status == roachpb.STAGING:
 			// Don't check timestamp cache. The transaction could not have been pushed
 			// while its record was in the STAGING state so checking is unnecessary.
@@ -422,16 +400,6 @@ func EndTxn(
 		// assert this in txnCommitter.makeTxnCommitExplicitAsync.
 		if retry, reason, extraMsg := IsEndTxnTriggeringRetryError(reply.Txn, args.Deadline); retry {
 			return result.Result{}, kvpb.NewTransactionRetryError(reason, extraMsg)
-		}
-
-		// If the transaction is being prepared to commit, mark it as such. Do not
-		// proceed to release locks or resolve intents.
-		if args.Prepare {
-			reply.Txn.Status = roachpb.PREPARED
-			if err := updatePreparedTxn(ctx, readWriter, ms, key, args, reply.Txn); err != nil {
-				return result.Result{}, err
-			}
-			return result.Result{}, nil
 		}
 
 		// If the transaction needs to be staged as part of an implicit commit
@@ -497,13 +465,9 @@ func EndTxn(
 
 	// Resolve locks on the local range synchronously so that their resolution
 	// ends up in the same Raft entry. There should always be at least one because
-	// we position the transaction record next to the first lock acquired by a
-	// transaction. This avoids the need for the intentResolver to have to return
-	// to this range to resolve locks for this transaction in the future.
-	// TODO(nvanbenschoten): clean up the handling of args and reply.Txn in these
-	// functions. Ideally, only reply.Txn would be passed through and fields from
-	// args would be extracted. This would help us re-use LockSpans from the txn
-	// record when they're not provided in args.
+	// we position the transaction record next to the first write of a transaction.
+	// This avoids the need for the intentResolver to have to return to this range
+	// to resolve locks for this transaction in the future.
 	resolvedLocks, releasedReplLocks, externalLocks, err := resolveLocalLocks(
 		ctx, readWriter, cArgs.EvalCtx, ms, args, reply.Txn)
 	if err != nil {
@@ -542,13 +506,18 @@ func EndTxn(
 	txnResult.Local.ResolvedLocks = resolvedLocks
 
 	if reply.Txn.Status == roachpb.COMMITTED {
-		// Return whether replicated {shared, exclusive} locks were released by
-		// the committing transaction. If such locks were released, we still
-		// need to make sure other transactions can't write underneath the
-		// transaction's commit timestamp to the key spans previously protected
-		// by the locks. We return the spans on the response and update the
-		// timestamp cache a few layers above to ensure this.
-		reply.ReplicatedLocksReleasedOnCommit = releasedReplLocks
+		if len(releasedReplLocks) != 0 {
+			// Return that local replicated {shared, exclusive} locks were released by
+			// the committing transaction. If such locks were released, we still need
+			// to make sure other transactions can't write underneath the
+			// transaction's commit timestamp to the key spans previously protected by
+			// the locks. We return the spans on the response and update the timestamp
+			// cache a few layers above to ensure this.
+			reply.ReplicatedLocalLocksReleasedOnCommit = releasedReplLocks
+			log.VEventf(
+				ctx, 2, "committed transaction released local replicated shared/exclusive locks",
+			)
+		}
 
 		// Run the commit triggers if successfully committed.
 		triggerResult, err := RunCommitTrigger(
@@ -759,25 +728,6 @@ func resolveLocalLocksWithPagination(
 	return resolvedLocks, releasedReplLocks, externalLocks, nil
 }
 
-// updatePreparedTxn persists the PREPARED transaction record with updated
-// status (and possibly timestamp). It persists the record with all of the
-// transaction's (local and remote) locks.
-func updatePreparedTxn(
-	ctx context.Context,
-	readWriter storage.ReadWriter,
-	ms *enginepb.MVCCStats,
-	key []byte,
-	args *kvpb.EndTxnRequest,
-	txn *roachpb.Transaction,
-) error {
-	txn.LockSpans = args.LockSpans
-	txn.InFlightWrites = nil
-	txnRecord := txn.AsRecord()
-	return storage.MVCCPutProto(
-		ctx, readWriter, key, hlc.Timestamp{}, &txnRecord,
-		storage.MVCCWriteOptions{Stats: ms, Category: fs.BatchEvalReadCategory})
-}
-
 // updateStagingTxn persists the STAGING transaction record with updated status
 // (and possibly timestamp). It persists the record with the EndTxn request's
 // declared in-flight writes along with all of the transaction's (local and
@@ -795,7 +745,7 @@ func updateStagingTxn(
 	txnRecord := txn.AsRecord()
 	return storage.MVCCPutProto(
 		ctx, readWriter, key, hlc.Timestamp{}, &txnRecord,
-		storage.MVCCWriteOptions{Stats: ms, Category: fs.BatchEvalReadCategory})
+		storage.MVCCWriteOptions{Stats: ms, Category: storage.BatchEvalReadCategory})
 }
 
 // updateFinalizedTxn persists the COMMITTED or ABORTED transaction record with
@@ -813,7 +763,7 @@ func updateFinalizedTxn(
 	recordAlreadyExisted bool,
 	externalLocks []roachpb.Span,
 ) error {
-	opts := storage.MVCCWriteOptions{Stats: ms, Category: fs.BatchEvalReadCategory}
+	opts := storage.MVCCWriteOptions{Stats: ms, Category: storage.BatchEvalReadCategory}
 	if !evalCtx.EvalKnobs().DisableTxnAutoGC && len(externalLocks) == 0 {
 		if log.V(2) {
 			log.Infof(ctx, "auto-gc'ed %s (%d locks)", txn.Short(), len(args.LockSpans))
@@ -1229,7 +1179,7 @@ func splitTriggerHelper(
 	}
 	if err := storage.MVCCPutProto(
 		ctx, batch, keys.RangeLastReplicaGCTimestampKey(split.RightDesc.RangeID), hlc.Timestamp{},
-		&replicaGCTS, storage.MVCCWriteOptions{Category: fs.BatchEvalReadCategory}); err != nil {
+		&replicaGCTS, storage.MVCCWriteOptions{Category: storage.BatchEvalReadCategory}); err != nil {
 		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to copy last replica GC timestamp")
 	}
 
@@ -1286,7 +1236,7 @@ func splitTriggerHelper(
 				"from the in-split stats; pre-split: %+v, in-split: %+v",
 				statsInput.PreSplitStats, statsInput.AbsPreSplitBothStored)
 		}
-		log.KvDistribution.Infof(ctx, "falling back to accurate stats computation because %v", reason)
+		log.Infof(ctx, "falling back to accurate stats computation because %v", reason)
 		h, err = makeSplitStatsHelper(statsInput)
 	} else if statsInput.UseEstimatesBecauseExternalBytesArePresent {
 		h, err = makeCrudelyEstimatedSplitStatsHelper(statsInput)
@@ -1340,33 +1290,15 @@ func splitTriggerHelper(
 			log.Fatalf(ctx, "LHS of split has no lease")
 		}
 
-		// Copy the lease from the left-hand side of the split over to the
-		// right-hand side so that it can immediately start serving requests.
-		// When doing so, we need to make a few modifications.
-		rightLease := leftLease
-		// Rebind the lease to the existing leaseholder store's replica from the
-		// right-hand side's descriptor.
-		var ok bool
-		rightLease.Replica, ok = split.RightDesc.GetReplicaDescriptor(leftLease.Replica.StoreID)
-		if !ok {
+		replica, found := split.RightDesc.GetReplicaDescriptor(leftLease.Replica.StoreID)
+		if !found {
 			return enginepb.MVCCStats{}, result.Result{}, errors.Errorf(
 				"pre-split lease holder %+v not found in post-split descriptor %+v",
 				leftLease.Replica, split.RightDesc,
 			)
 		}
-		// Convert leader leases into expiration-based leases. A leader lease is
-		// tied to a specific raft leadership term within a specific raft group.
-		// During a range split, we initialize a new raft group on the right-hand
-		// side, so a leader lease term from the left-hand side is unusable. Once
-		// the right-hand side elects a leader and collocates the lease and leader,
-		// it can promote the expiration-based lease back to a leader lease.
-		if rightLease.Type() == roachpb.LeaseLeader {
-			exp := rec.Clock().Now().Add(int64(rec.GetRangeLeaseDuration()), 0)
-			rightLease.Expiration = &exp
-			rightLease.Term = 0
-			rightLease.MinExpiration = hlc.Timestamp{}
-		}
-
+		rightLease := leftLease
+		rightLease.Replica = replica
 		gcThreshold, err := sl.LoadGCThreshold(ctx, batch)
 		if err != nil {
 			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to load GCThreshold")
@@ -1427,14 +1359,6 @@ func splitTriggerHelper(
 		// NB: the RHSDelta is identical to the stats for the newly created right
 		// hand side range (i.e. it goes from zero to its stats).
 		RHSDelta: *h.AbsPostSplitRight(),
-	}
-	// Set DoTimelyApplicationToAllReplicas since splits that are not applied on
-	// all replicas eventually cause snapshots for the RHS to be sent to
-	// replicas that already have the unsplit range, *and* these snapshots are
-	// rejected (which is very wasteful). See the long comment in
-	// split_delay_helper.go for more details.
-	if rec.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_1_AddRangeForceFlushKey) {
-		pd.Replicated.DoTimelyApplicationToAllReplicas = true
 	}
 
 	pd.Local.Metrics = &result.Metrics{
@@ -1526,20 +1450,20 @@ func mergeTrigger(
 	// it's only used at evaluation time and doesn't affect below-Raft state.
 	if merge.RightRangeIDLocalMVCCStats != (enginepb.MVCCStats{}) {
 		ms.Subtract(merge.RightRangeIDLocalMVCCStats)
+	} else {
+		_ = clusterversion.V23_1 // remove this branch when 23.1 support is removed
+		ridPrefix := keys.MakeRangeIDReplicatedPrefix(merge.RightDesc.RangeID)
+		sysMS, err := storage.ComputeStats(
+			ctx, batch, ridPrefix, ridPrefix.PrefixEnd(), 0 /* nowNanos */)
+		if err != nil {
+			return result.Result{}, err
+		}
+		ms.Subtract(sysMS)
 	}
 
 	var pd result.Result
 	pd.Replicated.Merge = &kvserverpb.Merge{
 		MergeTrigger: *merge,
-	}
-	// Set DoTimelyApplicationToAllReplicas so that merges are applied on all
-	// replicas. This is not technically necessary since even though
-	// Replica.AdminMerge calls waitForApplication, that call happens earlier in
-	// the merge distributed txn, when sending a kvpb.SubsumeRequest. But since
-	// we have force-flushed once during the merge txn anyway, we choose to
-	// complete the merge story and finish the merge on all replicas.
-	if rec.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_1_AddRangeForceFlushKey) {
-		pd.Replicated.DoTimelyApplicationToAllReplicas = true
 	}
 
 	{
@@ -1635,7 +1559,7 @@ func computeSplitRangeKeyStatsDelta(
 		KeyTypes:     storage.IterKeyTypeRangesOnly,
 		LowerBound:   leftPeekBound,
 		UpperBound:   rightPeekBound,
-		ReadCategory: fs.BatchEvalReadCategory,
+		ReadCategory: storage.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return ms, err

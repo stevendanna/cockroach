@@ -51,14 +51,21 @@ type Config struct {
 	Knobs *sqlstats.TestingKnobs
 }
 
-// PersistedSQLStats wraps a node-local in-memory sslocal.SQLStats. It
-// behaves similar to a sslocal.SQLStats. However, it periodically
-// writes the in-memory SQL stats into system table for persistence. It
-// also performs the flush operation if it detects memory pressure.
+// PersistedSQLStats is a sqlstats.Provider that wraps a node-local in-memory
+// sslocal.SQLStats. It behaves similar to a sslocal.SQLStats. However, it
+// periodically writes the in-memory SQL stats into system table for
+// persistence. It also performs the flush operation if it detects memory
+// pressure.
 type PersistedSQLStats struct {
 	*sslocal.SQLStats
 
 	cfg *Config
+
+	// memoryPressureSignal is used by the persistedsqlstats.ApplicationStats to signal
+	// memory pressure during stats recording. A signal is emitted through this
+	// channel either if the fingerprint limit or the memory limit has been
+	// exceeded.
+	memoryPressureSignal chan struct{}
 
 	// Used to signal the flush completed.
 	flushDoneMu struct {
@@ -82,12 +89,15 @@ type PersistedSQLStats struct {
 	lastSizeCheck time.Time
 }
 
+var _ sqlstats.Provider = &PersistedSQLStats{}
+
 // New returns a new instance of the PersistedSQLStats.
 func New(cfg *Config, memSQLStats *sslocal.SQLStats) *PersistedSQLStats {
 	p := &PersistedSQLStats{
-		SQLStats: memSQLStats,
-		cfg:      cfg,
-		drain:    make(chan struct{}),
+		SQLStats:             memSQLStats,
+		cfg:                  cfg,
+		memoryPressureSignal: make(chan struct{}),
+		drain:                make(chan struct{}),
 	}
 
 	p.jobMonitor = jobMonitor{
@@ -104,6 +114,7 @@ func New(cfg *Config, memSQLStats *sslocal.SQLStats) *PersistedSQLStats {
 	return p
 }
 
+// Start implements sqlstats.Provider interface.
 func (s *PersistedSQLStats) Start(ctx context.Context, stopper *stop.Stopper) {
 	s.startSQLStatsFlushLoop(ctx, stopper)
 	s.jobMonitor.start(ctx, stopper, s.drain, &s.tasksDoneWG)
@@ -164,6 +175,10 @@ func (s *PersistedSQLStats) startSQLStatsFlushLoop(ctx context.Context, stopper 
 			select {
 			case <-timer.C:
 				timer.Read = true
+			case <-s.memoryPressureSignal:
+				// We are experiencing memory pressure, so we flush SQL stats to disk
+				// immediately, rather than waiting the full flush interval, in an
+				// attempt to relieve some of that pressure.
 			case <-resetIntervalChanged:
 				// In this case, we would restart the loop without performing any flush
 				// and recalculate the flush interval in the for-loop's post statement.
@@ -212,6 +227,12 @@ func (s *PersistedSQLStats) startSQLStatsFlushLoop(ctx context.Context, stopper 
 	}
 }
 
+// GetLocalMemProvider returns a sqlstats.Provider that can only be used to
+// access local in-memory sql statistics.
+func (s *PersistedSQLStats) GetLocalMemProvider() sqlstats.Provider {
+	return s.SQLStats
+}
+
 // GetNextFlushAt returns the time next flush is going to happen.
 func (s *PersistedSQLStats) GetNextFlushAt() time.Time {
 	return s.atomic.nextFlushAt.Load().(time.Time)
@@ -251,4 +272,11 @@ func (s *PersistedSQLStats) jitterInterval(interval time.Duration) time.Duration
 
 	jitteredInterval := time.Duration(frac * float64(interval.Nanoseconds()))
 	return jitteredInterval
+}
+
+// GetApplicationStats implements sqlstats.Provider interface.
+func (s *PersistedSQLStats) GetApplicationStats(
+	appName string, internal bool,
+) sqlstats.ApplicationStats {
+	return s.SQLStats.GetApplicationStats(appName, internal)
 }

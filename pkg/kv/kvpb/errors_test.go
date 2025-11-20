@@ -70,7 +70,7 @@ func TestErrPriority(t *testing.T) {
 	require.Equal(t, ErrorScoreTxnAbort, ErrPriority(unhandledAbort))
 	require.Equal(t, ErrorScoreTxnRestart, ErrPriority(unhandledRetry))
 	{
-		id1 := uuid.NewV4()
+		id1 := uuid.Must(uuid.NewV4())
 		require.Equal(t, ErrorScoreTxnRestart, ErrPriority(&TransactionRetryWithProtoRefreshError{
 			PrevTxnID:       id1,
 			NextTransaction: roachpb.Transaction{TxnMeta: enginepb.TxnMeta{ID: id1}},
@@ -380,17 +380,15 @@ func TestNotLeaseholderError(t *testing.T) {
 		err *NotLeaseHolderError
 	}{
 		{
-			exp: `[NotLeaseHolderError] r1: replica not lease holder; current lease is repl=(n1,s1):1 seq=2 start=0.000000002,0 epo=1 min-exp=0.000000003,0 pro=0.000000001,0 acq=Transfer`,
+			exp: `[NotLeaseHolderError] r1: replica not lease holder; current lease is repl=(n1,s1):1 seq=2 start=0.000000001,0 epo=1`,
 			err: &NotLeaseHolderError{
 				RangeID: 1,
 				Lease: &roachpb.Lease{
-					Start:           hlc.ClockTimestamp{WallTime: 2},
-					ProposedTS:      hlc.ClockTimestamp{WallTime: 1},
+					Start:           hlc.ClockTimestamp{WallTime: 1},
 					Replica:         *rd,
 					Epoch:           1,
 					Sequence:        2,
 					AcquisitionType: roachpb.LeaseAcquisitionType_Transfer,
-					MinExpiration:   hlc.Timestamp{WallTime: 3},
 				},
 			},
 		},

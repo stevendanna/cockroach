@@ -6,11 +6,8 @@
 package cli
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
-	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
@@ -39,26 +36,26 @@ type outputFormat interface {
 // data is printed as fixed-width columns. Summary rows
 // are printed at the end.
 type textFormatter struct {
-	i      atomic.Int64
-	numErr atomic.Int64
+	i      int
+	numErr int
 }
 
 func (f *textFormatter) rampDone() {
-	f.i.Store(0)
+	f.i = 0
 }
 
 func (f *textFormatter) outputError(_ error) {
-	f.numErr.Add(1)
+	f.numErr++
 }
 
 func (f *textFormatter) outputTick(startElapsed time.Duration, t histogram.Tick) {
-	if f.i.Load()%20 == 0 {
+	if f.i%20 == 0 {
 		fmt.Println("_elapsed___errors__ops/sec(inst)___ops/sec(cum)__p50(ms)__p95(ms)__p99(ms)_pMax(ms)")
 	}
-	f.i.Add(1)
+	f.i++
 	fmt.Printf("%7.1fs %8d %14.1f %14.1f %8.1f %8.1f %8.1f %8.1f %s\n",
 		startElapsed.Seconds(),
-		f.numErr.Load(),
+		f.numErr,
 		float64(t.Hist.TotalCount())/t.Elapsed.Seconds(),
 		float64(t.Cumulative.TotalCount())/startElapsed.Seconds(),
 		time.Duration(t.Hist.ValueAtQuantile(50)).Seconds()*1000,
@@ -91,7 +88,7 @@ func (f *textFormatter) outputFinal(
 	}
 	fmt.Printf("%7.1fs %8d %14d %14.1f %8.1f %8.1f %8.1f %8.1f %8.1f  %s\n",
 		startElapsed.Seconds(),
-		f.numErr.Load(),
+		f.numErr,
 		t.Cumulative.TotalCount(),
 		float64(t.Cumulative.TotalCount())/startElapsed.Seconds(),
 		time.Duration(t.Cumulative.Mean()).Seconds()*1000,
@@ -108,13 +105,13 @@ func (f *textFormatter) outputFinal(
 // end.
 type jsonFormatter struct {
 	w      io.Writer
-	numErr atomic.Int64
+	numErr int
 }
 
 func (f *jsonFormatter) rampDone() {}
 
 func (f *jsonFormatter) outputError(_ error) {
-	f.numErr.Add(1)
+	f.numErr++
 }
 
 func (f *jsonFormatter) outputTick(startElapsed time.Duration, t histogram.Tick) {
@@ -132,7 +129,7 @@ func (f *jsonFormatter) outputTick(startElapsed time.Duration, t histogram.Tick)
 		`"type":"%s"`+
 		"}\n",
 		t.Now.UTC().Format(time.RFC3339Nano),
-		f.numErr.Load(),
+		f.numErr,
 		float64(t.Hist.TotalCount())/t.Elapsed.Seconds(),
 		float64(t.Cumulative.TotalCount())/startElapsed.Seconds(),
 		time.Duration(t.Hist.ValueAtQuantile(50)).Seconds()*1000,
@@ -146,61 +143,3 @@ func (f *jsonFormatter) outputTick(startElapsed time.Duration, t histogram.Tick)
 func (f *jsonFormatter) outputTotal(startElapsed time.Duration, t histogram.Tick) {}
 
 func (f *jsonFormatter) outputResult(startElapsed time.Duration, t histogram.Tick) {}
-
-type tickRaw struct {
-	Time time.Time
-	Errs int
-	Avgt float64
-	P50l float64
-	P95l float64
-	P99l float64
-	Maxl float64
-	Type string
-}
-
-type Tick struct {
-	Time       time.Time
-	Errs       int
-	Throughput float64
-	P50        time.Duration
-	P95        time.Duration
-	P99        time.Duration
-	PMax       time.Duration
-	Type       string
-}
-
-// fromJson parses a json string and returns a Tick struct.
-func fromJson(data string) (Tick, error) {
-	var tr tickRaw
-	if err := json.Unmarshal([]byte(data), &tr); err != nil {
-		return Tick{}, err
-	}
-	return Tick{
-		Time:       tr.Time,
-		Errs:       tr.Errs,
-		Throughput: tr.Avgt,
-		P50:        time.Duration(tr.P50l * float64(time.Millisecond)),
-		P95:        time.Duration(tr.P95l * float64(time.Millisecond)),
-		P99:        time.Duration(tr.P99l * float64(time.Millisecond)),
-		PMax:       time.Duration(tr.Maxl * float64(time.Millisecond)),
-		Type:       tr.Type,
-	}, nil
-}
-
-// ParseOutput reads the output of a workload run and returns the list of valid
-// Ticks it contains.
-// TODO(baptist): The output currently has a bunch of other garbage in it which
-// has accumulated over time. Ideally this should be removed from the original
-// output, but for now just ignore it.
-func ParseOutput(reader io.Reader) []Tick {
-	scanner := bufio.NewScanner(reader)
-	var ticks []Tick
-	for scanner.Scan() {
-		line := scanner.Text()
-		tick, err := fromJson(line)
-		if err == nil {
-			ticks = append(ticks, tick)
-		}
-	}
-	return ticks
-}

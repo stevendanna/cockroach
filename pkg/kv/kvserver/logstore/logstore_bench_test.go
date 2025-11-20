@@ -33,7 +33,7 @@ func (b *discardBatch) Commit(bool) error {
 
 type noopSyncCallback struct{}
 
-func (noopSyncCallback) OnLogSync(context.Context, MsgStorageAppendDone, storage.BatchCommitStats) {}
+func (noopSyncCallback) OnLogSync(context.Context, []raftpb.Message, storage.BatchCommitStats) {}
 
 func BenchmarkLogStore_StoreEntries(b *testing.B) {
 	defer log.Scope(b).Close(b)
@@ -82,8 +82,7 @@ func runBenchmarkLogStore_StoreEntries(b *testing.B, bytes int64) {
 		Term:  1,
 		Index: 1,
 		Type:  raftpb.EntryNormal,
-		Data: raftlog.EncodeCommandBytes(
-			raftlog.EntryEncodingStandardWithoutAC, "deadbeef", data, 0 /* pri */),
+		Data:  raftlog.EncodeCommandBytes(raftlog.EntryEncodingStandardWithoutAC, "deadbeef", data),
 	})
 	stats := &AppendStats{}
 

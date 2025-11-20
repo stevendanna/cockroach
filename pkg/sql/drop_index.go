@@ -27,7 +27,6 @@ import (
 )
 
 type dropIndexNode struct {
-	zeroInputPlanNode
 	n        *tree.DropIndex
 	idxNames []fullIndexName
 }
@@ -66,32 +65,13 @@ func (p *planner) DropIndex(ctx context.Context, n *tree.DropIndex) (planNode, e
 		}
 
 		// Disallow schema changes if this table's schema is locked.
-		if err = checkSchemaChangeIsAllowed(tableDesc, n); err != nil {
+		if err = checkTableSchemaUnlocked(tableDesc); err != nil {
 			return nil, err
 		}
 
 		idxNames = append(idxNames, fullIndexName{tn: tn, idxName: index.Index})
 	}
 	return &dropIndexNode{n: n, idxNames: idxNames}, nil
-}
-
-// failDropIndexIfSafeUpdates checks if the sql_safe_updates is present, and if so, it
-// will fail the operation.
-func failDropIndexIfSafeUpdates(params runParams) error {
-	if params.SessionData().SafeUpdates {
-		err := pgerror.WithCandidateCode(
-			errors.WithMessage(
-				errors.New(
-					"DROP INDEX"),
-				"rejected (sql_safe_updates = true)",
-			),
-			pgcode.Warning,
-		)
-
-		return err
-	}
-
-	return nil
 }
 
 // ReadingOwnWrites implements the planNodeReadingOwnWrites interface.
@@ -101,10 +81,6 @@ func (n *dropIndexNode) ReadingOwnWrites() {}
 
 func (n *dropIndexNode) startExec(params runParams) error {
 	telemetry.Inc(sqltelemetry.SchemaChangeDropCounter("index"))
-
-	if err := failDropIndexIfSafeUpdates(params); err != nil {
-		return err
-	}
 
 	if n.n.Concurrently {
 		params.p.BufferClientNotice(
@@ -367,6 +343,32 @@ func (p *planner) dropIndexByName(
 				"index %q is in use as unique constraint", idx.GetName()),
 			"use CASCADE if you really want to drop it.",
 		)
+	}
+
+	// Check if requires CCL binary for eventual zone config removal.
+	_, zone, _, err := GetZoneConfigInTxn(
+		ctx, p.txn, p.Descriptors(), tableDesc.ID, nil /* index */, "", false,
+	)
+	if err != nil {
+		return err
+	}
+
+	for _, s := range zone.Subzones {
+		if s.IndexID != uint32(idx.GetID()) {
+			_, err = GenerateSubzoneSpans(
+				p.ExecCfg().Settings,
+				p.ExecCfg().Codec,
+				tableDesc,
+				zone.Subzones,
+				false, /* newSubzones */
+			)
+			if sqlerrors.IsCCLRequiredError(err) {
+				return sqlerrors.NewCCLRequiredError(fmt.Errorf("schema change requires a CCL binary "+
+					"because table %q has at least one remaining index or partition with a zone config",
+					tableDesc.Name))
+			}
+			break
+		}
 	}
 
 	// Remove all foreign key references and backreferences from the index.

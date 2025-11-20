@@ -180,9 +180,7 @@ func (spec *WindowerSpec_Frame_Bounds) initFromAST(
 			}
 			spec.Start.IntOffset = uint64(startOffset)
 		case treewindow.RANGE:
-			if neg, err := isNegative(ctx, evalCtx, dStartOffset); err != nil {
-				return err
-			} else if neg {
+			if isNegative(evalCtx, dStartOffset) {
 				return pgerror.Newf(pgcode.InvalidWindowFrameOffset, "invalid preceding or following size in window function")
 			}
 			typ := dStartOffset.ResolvedType()
@@ -226,9 +224,7 @@ func (spec *WindowerSpec_Frame_Bounds) initFromAST(
 				}
 				spec.End.IntOffset = uint64(endOffset)
 			case treewindow.RANGE:
-				if neg, err := isNegative(ctx, evalCtx, dEndOffset); err != nil {
-					return err
-				} else if neg {
+				if isNegative(evalCtx, dEndOffset) {
 					return pgerror.Newf(pgcode.InvalidWindowFrameOffset, "invalid preceding or following size in window function")
 				}
 				typ := dEndOffset.ResolvedType()
@@ -255,17 +251,16 @@ func (spec *WindowerSpec_Frame_Bounds) initFromAST(
 }
 
 // isNegative returns whether offset is negative.
-func isNegative(ctx context.Context, evalCtx *eval.Context, offset tree.Datum) (bool, error) {
+func isNegative(evalCtx *eval.Context, offset tree.Datum) bool {
 	switch o := offset.(type) {
 	case *tree.DInt:
-		return *o < 0, nil
+		return *o < 0
 	case *tree.DDecimal:
-		return o.Negative, nil
+		return o.Negative
 	case *tree.DFloat:
-		return *o < 0, nil
+		return *o < 0
 	case *tree.DInterval:
-		cmp, err := o.Compare(ctx, evalCtx, &tree.DInterval{Duration: duration.Duration{}})
-		return cmp < 0, err
+		return o.Compare(evalCtx, &tree.DInterval{Duration: duration.Duration{}}) < 0
 	default:
 		panic("unexpected offset type")
 	}

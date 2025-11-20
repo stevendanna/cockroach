@@ -146,7 +146,6 @@ SELECT descriptor from redacted_descriptors where id = 'collate_partition'::REGC
                 "b"
             ],
             "unique": true,
-            "vecConfig": {},
             "version": 4
         },
         "privileges": {
@@ -341,7 +340,6 @@ SELECT descriptor from redacted_descriptors where id = 'subpartition'::REGCLASS;
                 "c"
             ],
             "unique": true,
-            "vecConfig": {},
             "version": 4
         },
         "privileges": {

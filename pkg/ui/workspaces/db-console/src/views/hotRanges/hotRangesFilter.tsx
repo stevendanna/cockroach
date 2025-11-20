@@ -3,6 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React, { useCallback, useEffect, useState, useMemo } from "react";
+import ReactDOM from "react-dom";
 import {
   Button,
   FilterCheckboxOption,
@@ -11,16 +13,10 @@ import {
   FilterDropdown,
   FilterSearchOption,
 } from "@cockroachlabs/cluster-ui";
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { isEmpty, isArray, isString } from "lodash";
 import classNames from "classnames/bind";
-import isArray from "lodash/isArray";
-import isEmpty from "lodash/isEmpty";
-import isString from "lodash/isString";
-import noop from "lodash/noop";
-import React, { useCallback, useEffect, useState, useMemo } from "react";
-import ReactDOM from "react-dom";
 import { useHistory } from "react-router-dom";
-
+import { cockroach } from "src/js/protos";
 import styles from "./hotRanges.module.styl";
 
 type HotRange = cockroach.server.serverpb.HotRangesResponseV2.IHotRange;
@@ -51,7 +47,7 @@ export const HotRangesFilter = (props: HotRangesFilterProps) => {
   // provided list of hot ranges.
   const databaseOptions = useMemo(
     () =>
-      Array.from(new Set(hotRanges.map(r => r.databases).flat()))
+      Array.from(new Set(hotRanges.map(r => r.database_name)))
         .filter(i => !isEmpty(i))
         .sort()
         .map(dbName => ({ label: dbName, value: dbName })),
@@ -149,18 +145,18 @@ export const HotRangesFilter = (props: HotRangesFilterProps) => {
 
       if (!isEmpty(dbNames)) {
         filtered = filtered.filter(r =>
-          dbNames.some((f: FilterCheckboxOptionItem) =>
-            r.databases?.includes(f.value),
+          dbNames.some(
+            (f: FilterCheckboxOptionItem) => f.value === r.database_name,
           ),
         );
       }
 
       if (!isEmpty(tableName)) {
-        filtered = filtered.filter(r => r.tables?.includes(tableName));
+        filtered = filtered.filter(r => r.table_name?.includes(tableName));
       }
 
       if (!isEmpty(indexName)) {
-        filtered = filtered.filter(r => r.indexes?.includes(indexName));
+        filtered = filtered.filter(r => r.index_name?.includes(indexName));
       }
 
       if (!isEmpty(localities)) {
@@ -252,24 +248,25 @@ export const HotRangesFilter = (props: HotRangesFilterProps) => {
 
   const getSearchParams = useCallback(() => {
     const params = new URLSearchParams();
-    const filters: Array<[string, FilterCheckboxOptionsType | string]> = [
+    [
       [nodeIds, filterNodeIds],
       [storeId, filterStoreId],
       [dbNames, filterDbNames],
       [table, filterTableName],
       [indexName, filterIndexName],
       [localities, filterLocalities],
-    ];
-    filters
+    ]
       .filter(f => !isEmpty(f[1]))
-      .forEach(([name, value]) => {
-        if (isArray(value)) {
-          params.set(name, value.map(f => f.value).join("|"));
-        }
-        if (isString(value)) {
-          params.set(name, value);
-        }
-      });
+      .forEach(
+        ([name, value]: [string, FilterCheckboxOptionsType | string]) => {
+          if (isArray(value)) {
+            params.set(name, value.map(f => f.value).join("|"));
+          }
+          if (isString(value)) {
+            params.set(name, value);
+          }
+        },
+      );
     return params;
   }, [
     filterNodeIds,
@@ -343,7 +340,6 @@ export const HotRangesFilter = (props: HotRangesFilterProps) => {
         <FilterSearchOption
           label="Store ID"
           onChanged={setFilterStoreId}
-          onSubmit={noop}
           value={filterStoreId}
         />
         <FilterCheckboxOption
@@ -358,13 +354,11 @@ export const HotRangesFilter = (props: HotRangesFilterProps) => {
         <FilterSearchOption
           label="Table"
           onChanged={setFilterTableName}
-          onSubmit={noop}
           value={filterTableName}
         />
         <FilterSearchOption
           label="Index"
           onChanged={setFilterIndexName}
-          onSubmit={noop}
           value={filterIndexName}
         />
         <FilterCheckboxOption

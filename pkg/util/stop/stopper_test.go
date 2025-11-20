@@ -704,27 +704,19 @@ func TestStopperRunAsyncTaskTracing(t *testing.T) {
 				event: async 2`))
 }
 
-// Test that RunAsyncTask creates root spans only if the caller has a
+// Test that RunAsyncTask creates root spans when the caller doesn't have a
 // span.
 func TestStopperRunAsyncTaskCreatesRootSpans(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-
-	testutils.RunTrueAndFalse(t, "hasSpan", func(t *testing.T, hasSpan bool) {
-		tr := tracing.NewTracer()
-		ctx := context.Background()
-		s := stop.NewStopper(stop.WithTracer(tr))
-		defer s.Stop(ctx)
-		c := make(chan *tracing.Span)
-		if hasSpan {
-			var sp *tracing.Span
-			ctx, sp = tr.StartSpanCtx(ctx, "root", tracing.WithForceRealSpan())
-			defer sp.Finish()
-		}
-		require.NoError(t, s.RunAsyncTask(ctx, "test",
-			func(ctx context.Context) {
-				c <- tracing.SpanFromContext(ctx)
-			},
-		))
-		require.Equal(t, hasSpan, <-c != nil)
-	})
+	tr := tracing.NewTracer()
+	ctx := context.Background()
+	s := stop.NewStopper(stop.WithTracer(tr))
+	defer s.Stop(ctx)
+	c := make(chan *tracing.Span)
+	require.NoError(t, s.RunAsyncTask(ctx, "test",
+		func(ctx context.Context) {
+			c <- tracing.SpanFromContext(ctx)
+		},
+	))
+	require.NotNil(t, <-c)
 }

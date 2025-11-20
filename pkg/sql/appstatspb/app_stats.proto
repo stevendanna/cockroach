@@ -103,10 +103,6 @@ message StatementStatistics {
   // Nodes is the ordered list of nodes ids on which the statement was executed.
   repeated int64 nodes = 24;
 
-  // KVNodeIDs is the ordered list of KV node ids which were used to evaluate KV
-  // read requests.
-  repeated int32 kv_node_ids = 34 [(gogoproto.customname) = "KVNodeIDs"];
-
   // Regions is the ordered list of regions on which the statement was executed.
   repeated string regions = 29;
 
@@ -130,10 +126,6 @@ message StatementStatistics {
 
   // failure_count is the count of failed executions for a given statement fingerprint.
   optional int64 failure_count = 33 [(gogoproto.nullable) = false];
-
-  // UsedFollowerRead indicates whether at least some reads were served by the
-  // follower replicas.
-  optional bool used_follower_read = 35 [(gogoproto.nullable) = false];
 
   // Note: be sure to update `sql/app_stats.go` when adding/removing fields here!
 
@@ -368,23 +360,13 @@ message LatencyInfo {
   // Max is the maximum time in seconds spent executing the fingerprint.
   optional double max = 2 [(gogoproto.nullable) = false];
 
-  // Note: the percentiles below were previously populated via a method
-  // that led to much user confusion because the intervals over which
-  // the percentiles were computed was not well-defined and did not
-  // align with the aggregated timestamps used for the rest of the SQL
-  // Activity. The fields below are currently not populated but remain
-  // here so that we can re-introduce their use in the near-future.
-
-  // P50 is the 50 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P50 is the 50 Percentile in seconds for the fingerprint.
   optional double p50 = 3 [(gogoproto.nullable) = false];
 
-  // P90 is the 90 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P90 is the 90 Percentile in seconds for the fingerprint.
   optional double p90 = 4 [(gogoproto.nullable) = false];
 
-  // P99 is the 99 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P99 is the 99 Percentile in seconds for the fingerprint.
   optional double p99 = 5 [(gogoproto.nullable) = false];
 }
 

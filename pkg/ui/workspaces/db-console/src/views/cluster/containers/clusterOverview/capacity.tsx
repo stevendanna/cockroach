@@ -3,8 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
 import d3 from "d3";
+
+import { util } from "@cockroachlabs/cluster-ui";
 
 const LOW_DISK_SPACE_RATIO = 0.15;
 

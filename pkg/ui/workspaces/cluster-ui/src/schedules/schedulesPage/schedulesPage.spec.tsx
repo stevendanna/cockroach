@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { render } from "@testing-library/react";
-import * as H from "history";
-import React from "react";
-import { MemoryRouter } from "react-router-dom";
-
-import { Schedule } from "src/api/schedulesApi";
-
 import { SchedulesPage, SchedulesPageProps } from "./schedulesPage";
 import { allSchedulesFixture } from "./schedulesPage.fixture";
+import { render } from "@testing-library/react";
+import React from "react";
+import { MemoryRouter } from "react-router-dom";
+import * as H from "history";
+import { Schedule } from "src/api/schedulesApi";
 
 const getMockSchedulesPageProps = (
   schedules: Array<Schedule>,

@@ -38,8 +38,6 @@ var supportedAlterTableStatements = map[reflect.Type]supportedAlterTableCommand{
 	reflect.TypeOf((*tree.AlterTableDropConstraint)(nil)):     {fn: alterTableDropConstraint, on: true, checks: nil},
 	reflect.TypeOf((*tree.AlterTableValidateConstraint)(nil)): {fn: alterTableValidateConstraint, on: true, checks: nil},
 	reflect.TypeOf((*tree.AlterTableSetDefault)(nil)):         {fn: alterTableSetDefault, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableAlterColumnType)(nil)):    {fn: alterTableAlterColumnType, on: true, checks: nil},
-	reflect.TypeOf((*tree.AlterTableSetRLSMode)(nil)):         {fn: alterTableSetRLSMode, on: true, checks: isV252Active},
 }
 
 func init() {
@@ -51,12 +49,11 @@ func init() {
 			panic(errors.AssertionFailedf("%v entry for statement is "+
 				"not a function", statementType))
 		}
-		if callBackType.NumIn() != 5 ||
+		if callBackType.NumIn() != 4 ||
 			!callBackType.In(0).Implements(reflect.TypeOf((*BuildCtx)(nil)).Elem()) ||
 			callBackType.In(1) != reflect.TypeOf((*tree.TableName)(nil)) ||
 			callBackType.In(2) != reflect.TypeOf((*scpb.Table)(nil)) ||
-			!callBackType.In(3).Implements(reflect.TypeOf((*tree.Statement)(nil)).Elem()) ||
-			callBackType.In(4) != statementType {
+			callBackType.In(3) != statementType {
 			panic(errors.AssertionFailedf("%v entry for alter table statement "+
 				"does not have a valid signature; got %v", statementType, callBackType))
 		}
@@ -123,7 +120,7 @@ func AlterTable(b BuildCtx, n *tree.AlterTable) {
 		panic(pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
 			"table %q is being dropped, try again later", n.Table.Object()))
 	}
-	panicIfSchemaChangeIsDisallowed(elts, n)
+	panicIfSchemaIsLocked(elts)
 	tn.ObjectNamePrefix = b.NamePrefix(tbl)
 	b.SetUnresolvedNameAnnotation(n.Table, &tn)
 	b.IncrementSchemaChangeAlterCounter("table")
@@ -136,7 +133,6 @@ func AlterTable(b BuildCtx, n *tree.AlterTable) {
 			reflect.ValueOf(b),
 			reflect.ValueOf(&tn),
 			reflect.ValueOf(tbl),
-			reflect.ValueOf(n),
 			reflect.ValueOf(cmd),
 		})
 		b.IncrementSubWorkID()

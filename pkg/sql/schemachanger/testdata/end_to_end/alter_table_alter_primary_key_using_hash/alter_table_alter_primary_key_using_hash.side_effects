@@ -20,7 +20,7 @@ write *eventpb.AlterTable to event log:
     tag: ALTER TABLE
     user: root
   tableName: defaultdb.public.t
-## StatementPhase stage 1 of 1 with 12 MutationType ops
+## StatementPhase stage 1 of 1 with 11 MutationType ops
 upsert descriptor #104
   ...
      id: 104
@@ -71,7 +71,6 @@ upsert descriptor #104
   +      storeColumnNames:
   +      - i
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -107,7 +106,6 @@ upsert descriptor #104
   +      - i
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -131,7 +129,7 @@ upsert descriptor #104
 ## PreCommitPhase stage 1 of 2 with 1 MutationType op
 undo all catalog changes within txn #1
 persist all catalog changes to storage
-## PreCommitPhase stage 2 of 2 with 16 MutationType ops
+## PreCommitPhase stage 2 of 2 with 15 MutationType ops
 upsert descriptor #104
   ...
      createAsOfTime:
@@ -146,8 +144,6 @@ upsert descriptor #104
   +        "1": i
   +        "2": j
   +        "3": crdb_internal_j_shard_3
-  +        "4294967292": crdb_internal_origin_timestamp
-  +        "4294967293": crdb_internal_origin_id
   +        "4294967294": tableoid
   +        "4294967295": crdb_internal_mvcc_timestamp
   +      constraints:
@@ -218,7 +214,6 @@ upsert descriptor #104
   +      storeColumnNames:
   +      - i
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -254,7 +249,6 @@ upsert descriptor #104
   +      - i
   +      unique: true
   +      useDeletePreservingEncoding: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: DELETE_ONLY
@@ -456,7 +450,6 @@ upsert descriptor #104
          - i
          unique: true
   +      useDeletePreservingEncoding: true
-         vecConfig: {}
          version: 4
        mutationId: 1
   -    state: WRITE_ONLY
@@ -487,7 +480,6 @@ upsert descriptor #104
   +      storeColumnNames:
   +      - j
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: WRITE_ONLY
@@ -525,7 +517,6 @@ upsert descriptor #104
   +      sharded: {}
   +      storeColumnNames: []
   +      unique: true
-  +      vecConfig: {}
   +      version: 4
   +    mutationId: 1
   +    state: BACKFILLING
@@ -614,7 +605,7 @@ upsert descriptor #104
   -    - j
   +    - i
        unique: true
-       vecConfig: {}
+       version: 4
   ...
        time: {}
      unexposedParentSchemaId: 101
@@ -750,7 +741,6 @@ upsert descriptor #104
   +    sharded: {}
   +    storeColumnNames: []
   +    unique: true
-  +    vecConfig: {}
   +    version: 4
      modificationTime: {}
      mutations:
@@ -780,7 +770,6 @@ upsert descriptor #104
   -      sharded: {}
   -      storeColumnNames: []
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: WRITE_ONLY
@@ -873,7 +862,6 @@ upsert descriptor #104
   -      - i
   -      unique: true
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY
@@ -918,7 +906,6 @@ upsert descriptor #104
   -      storeColumnNames: []
   -      unique: true
   -      useDeletePreservingEncoding: true
-  -      vecConfig: {}
   -      version: 4
   +      name: crdb_internal_constraint_2_name_placeholder
   +      uniqueWithoutIndexConstraint: {}
@@ -963,8 +950,6 @@ upsert descriptor #104
   -        "1": i
   -        "2": j
   -        "3": crdb_internal_j_shard_3
-  -        "4294967292": crdb_internal_origin_timestamp
-  -        "4294967293": crdb_internal_origin_id
   -        "4294967294": tableoid
   -        "4294967295": crdb_internal_mvcc_timestamp
   -      constraints:
@@ -1012,7 +997,6 @@ upsert descriptor #104
   -      storeColumnNames:
   -      - j
   -      unique: true
-  -      vecConfig: {}
   -      version: 4
   -    mutationId: 1
   -    state: DELETE_ONLY

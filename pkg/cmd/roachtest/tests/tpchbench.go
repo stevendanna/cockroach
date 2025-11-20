@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -79,20 +78,15 @@ func runTPCHBench(ctx context.Context, t test.Test, c cluster.Cluster, b tpchBen
 		// run b.numRunsPerQuery number of times.
 		maxOps := b.numRunsPerQuery * numQueries
 
-		labels := map[string]string{
-			"max_ops":     fmt.Sprintf("%d", maxOps),
-			"num_queries": fmt.Sprintf("%d", numQueries),
-		}
-
 		// Run with only one worker to get best-case single-query performance.
 		cmd := fmt.Sprintf(
 			"./workload run querybench --db=tpch --concurrency=1 --query-file=%s "+
-				"--num-runs=%d --max-ops=%d {pgurl%s} %s --histograms-max-latency=%s",
+				"--num-runs=%d --max-ops=%d {pgurl%s} "+
+				"--histograms="+t.PerfArtifactsDir()+"/stats.json --histograms-max-latency=%s",
 			filename,
 			b.numRunsPerQuery,
 			maxOps,
 			c.CRDBNodes(),
-			roachtestutil.GetWorkloadHistogramArgs(t, c, labels),
 			b.maxLatency.String(),
 		)
 		if err := c.RunE(ctx, option.WithNodes(c.WorkloadNode()), cmd); err != nil {
@@ -169,32 +163,6 @@ func registerTPCHBenchSpec(r registry.Registry, b tpchBenchSpec) {
 		CompatibleClouds:           registry.Clouds(spec.GCE, spec.Local),
 		Suites:                     registry.Suites(registry.Nightly),
 		RequiresDeprecatedWorkload: true, // uses querybench
-		PostProcessPerfMetrics: func(test string, histograms *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
-
-			// To calculate the total mean of the run, we store the sum of means and count of the means
-			// We can't get the sum of the values since roachtestutil.HistogramSummaryMetric doesn't have
-			// sum of the values.
-			// This is an approximation
-			totalMeanSum := 0.0
-			totalMeanCount := 0.0
-			for _, summary := range histograms.Summaries {
-				for _, summaryMetric := range summary.Values {
-					totalMeanSum += float64(summaryMetric.Mean)
-				}
-				totalMeanCount++
-			}
-
-			aggregatedMetrics := roachtestutil.AggregatedPerfMetrics{
-				{
-					Name:           test + "_mean_latency",
-					Value:          roachtestutil.MetricPoint(totalMeanSum / totalMeanCount),
-					Unit:           "ms",
-					IsHigherBetter: false,
-				},
-			}
-
-			return aggregatedMetrics, nil
-		},
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCHBench(ctx, t, c, b)
 		},

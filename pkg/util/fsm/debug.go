@@ -105,9 +105,7 @@ func genReport(w io.Writer, t Transitions) {
 	di := makeDebugInfo(t)
 	var present, missing bytes.Buffer
 	for _, sName := range di.sortedStateNames {
-		//nolint:deferloop TODO(#137605)
 		defer present.Reset()
-		//nolint:deferloop TODO(#137605)
 		defer missing.Reset()
 
 		for _, eName := range di.sortedEventNames {

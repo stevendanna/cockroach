@@ -3,12 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CoordinatedUniversalTime, util } from "@cockroachlabs/cluster-ui";
-import moment from "moment-timezone";
 import { createSelector } from "reselect";
-
-import { cockroach } from "src/js/protos";
 import { AdminUIState } from "src/redux/state";
+import { cockroach } from "src/js/protos";
+import moment from "moment-timezone";
+import { CoordinatedUniversalTime, util } from "@cockroachlabs/cluster-ui";
 import { indexUnusedDuration } from "src/util/constants";
 
 export const selectClusterSettings = createSelector(

@@ -106,6 +106,8 @@ func TestTruncateLog(t *testing.T) {
 	gotTruncatedState := readTruncStates(t, eng, rangeID)
 	assert.Equal(t, truncState, gotTruncatedState)
 
-	assert.NotNil(t, res.Replicated.RaftTruncatedState)
-	assert.Equal(t, expTruncState, *res.Replicated.RaftTruncatedState)
+	assert.NotNil(t, res.Replicated.State)
+	assert.NotNil(t, res.Replicated.State.TruncatedState)
+	assert.Equal(t, expTruncState, *res.Replicated.State.TruncatedState)
+
 }

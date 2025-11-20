@@ -8,8 +8,10 @@ package statements
 import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/plpgsqltree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util/jsonpath"
 )
+
+type AST interface {
+}
 
 // Statement is the result of parsing a single statement. It contains the AST
 // node along with other information.
@@ -61,8 +63,6 @@ type Statements []Statement[tree.Statement]
 
 type PLpgStatement Statement[*plpgsqltree.Block]
 
-type JsonpathStatement Statement[*jsonpath.Jsonpath]
-
 // String returns the AST formatted as a string.
 func (stmts Statements) String() string {
 	return stmts.StringWithFlags(tree.FmtSimple)
@@ -91,17 +91,6 @@ func (stmt PLpgStatement) StringWithFlags(flags tree.FmtFlags) string {
 	return ctx.CloseAndGetString()
 }
 
-func (stmt JsonpathStatement) String() string {
-	return stmt.StringWithFlags(tree.FmtSimple)
-}
-
-// StringWithFlags returns the AST formatted as a string (with the given flags).
-func (stmt JsonpathStatement) StringWithFlags(flags tree.FmtFlags) string {
-	ctx := tree.NewFmtCtx(flags)
-	stmt.AST.Format(ctx)
-	return ctx.CloseAndGetString()
-}
-
 type ParsedStmts interface {
 	String() string
 	StringWithFlags(flags tree.FmtFlags) string
@@ -109,4 +98,3 @@ type ParsedStmts interface {
 
 var _ ParsedStmts = Statements{}
 var _ ParsedStmts = PLpgStatement{}
-var _ ParsedStmts = JsonpathStatement{}

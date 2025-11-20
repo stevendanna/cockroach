@@ -44,7 +44,7 @@ func metricsToText(metricMaps map[string]*model.MetricMap) string {
 				for i, key := range summaryKeys {
 					centers[i] = entry.Summaries[key].Center
 				}
-				comparison := metric.ComputeComparison(entryKey, "baseline", "experiment")
+				comparison := metric.ComputeComparison(entryKey, "old", "new")
 				fmt.Fprintf(buf, "BenchmarkEntry %s %s %v %s\n",
 					entryKey, comparison.FormattedDelta, centers, comparison.Distribution.String(),
 				)
@@ -66,8 +66,8 @@ func TestCompareBenchmarks(t *testing.T) {
 		require.NoError(t, err)
 		c := &compare{
 			compareConfig: compareConfig{
-				experimentDir: newDir,
-				baselineDir:   oldDir,
+				newDir: newDir,
+				oldDir: oldDir,
 			},
 			packages: packages,
 		}

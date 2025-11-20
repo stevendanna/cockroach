@@ -52,8 +52,7 @@ priority: normal
 quality of service: regular
 ·
 • scan
-  sql nodes: <hidden>
-  kv nodes: <hidden>
+  nodes: <hidden>
   regions: <hidden>
   actual row count: 2,001
   KV time: 0µs
@@ -67,7 +66,7 @@ quality of service: regular
   table: a@a_pkey
   spans: FULL SCAN
 ·
-Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyMUsFqGzEQvfcrxJxaUIg2lB50KnVSMKmbYJtcigmyNHGEtdJWM4ttzH5Wf6BfVrSyoWkb6ByWnTdv573h7RHoewANi5svN5OlMOLz_G4mDEiIyeFX0yKB_gYNrCR0OVkkSrlAx5EwdXvQSoKPXc8FXkmwKSPoI7DngKBhadYB52gc5ksFEhyy8WFcaz6ax26LB5AwSaFvI-lRe9GZ8noBEm4fRBEiLWJT24wbn8qYkbhC7FvUQv38QbW3KTJG9in-NcppR8KhTQ6dFldSqdPa9YGRREbjtGg-iFv_qeKb-f1EWBMCvaB3xucz_b1U6gokzB4mE0GMnbCpjyze4p4vfeR3Wqjx9EpA3L5GaM1etNimfBAmhGQNF5dKFC9rw_YZSaSeu561KPzxmjNQ3a0GCRU55UFsNgi6-S3A6TVoNcj_z3CO1KVI-CK-15TUH0oXzbCSgG6D9ceh1GeL9znZkVvbu3HRCDgkrtOmNtN4HhFnNG21v5LwFNLu0TvQoE518Y_HuaB8YDZUDls8p924dnnoiq0nEwglzMwWr5Extz56Ym9Bc-5xGN78CgAA___XMf2r
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJyMUsFqGzEQvfcrxJxakIk2lB50Kt2kYFI3wTa5lCWMpYkjrJW20iy2MftZ_YF-WdlVDE3bQOew7Lz3NPNGoxPk7x40rK6_XNdrgeLz8nYhECSEaOkrtpRBf4MKGgldioZyjmmETpNgbg-glQQXup5HuJFgYiLQJ2DHnkDDGjeeloSW0oUCCZYYnZ_K4kd86HZ0BAl19H0bsp56rzocf2cg4eZesGtJC_XzRy65iYEpsIvhLyrFfRaWTLRktbiUSlWF2ByZskiEVovqg7hxnwq-Xd7VwqD3-YW8Q5fO8vdSqUuQsLiva5GZOmFiH1i8pQNfuMDvtFDTYEVAtHtN0OJBtNTGdBTofTTIo0slRi8bZPNEWcSeu561GPXTNGeguGsGCQV5vu3MuCXQ1W_rmV-BVoP8_w0tKXcxZHqxnNc6qT86zaqhkUB2S-VZ5NgnQ3cpmklb0tup0ARYylzYqiTzcKYyJ8K22G8kPPq4f3AWNKjnmP3jcw4YD-A2j4OtnuJ-Krs-dqOtR_SZJCxwR1fElFoXXGZnQHPqaRje_AoAAP__MxfzJg==
 
 query T
 EXPLAIN ANALYZE (DISTSQL) SELECT c.a FROM c JOIN d ON d.b = c.b
@@ -86,8 +85,7 @@ priority: normal
 quality of service: regular
 ·
 • lookup join (streamer)
-│ sql nodes: <hidden>
-│ kv nodes: <hidden>
+│ nodes: <hidden>
 │ regions: <hidden>
 │ actual row count: 2
 │ KV time: 0µs
@@ -101,8 +99,7 @@ quality of service: regular
 │ equality: (b) = (b)
 │
 └── • scan
-      sql nodes: <hidden>
-      kv nodes: <hidden>
+      nodes: <hidden>
       regions: <hidden>
       actual row count: 2
       KV time: 0µs
@@ -116,7 +113,7 @@ quality of service: regular
       table: c@sec
       spans: FULL SCAN
 ·
-Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJy0VGFLG00Q_v7-imE-vYVV745SykIhNFqIVSNR_FKCbHbHuM3d7nV3DhMkP6t_oL-s7K0RNSot1PsQeJ558szcPMPdYvxRo8Szg6OD4TnoXQVfJuNj0HA4Hp2AgfEJmN0ZfAK9O0OBzhs6UQ1FlN-wxKnANnhNMfqQqNteMDJLlIVA69qOEz0VqH0glLfIlmtCiedqVtOElKGwV6BAQ6xs3dvqQSSNAoe-7hoXJSgBqfdZqxLaQYFfLyA1ihJcmWGgufWpzBQ5U2wbklD8-hkz1t4xObbebZWCv4lgSHtDRkKVydmKKUIgZSSUH-BzZueT0yFoVdfxXtgqGzbC9yjw-GI4hMjUgvadY_iflrxnHb-TUPQvmwVEi5cEjVpCQ40PK1B17bXiNFfRzzBTrK8pgu-47VhC0vfzb4gKp2uBGd1tP7KaE8ryQVyjfZTFWvx5YofeurvAyseBmYG5bBe0QoFH3i-6Fr5768A7CYPqYZApxXEacZAc-mb96vMmM46s6noroDdMu9xO--NzYZfbYVf_JOwukoHIgVRDAQXSknS3Pfgb3UT15CbKv7mJCcXWu0iP7uGlTsWTTjvleiqQzJzypyP6Lmg6DV732gzHvVFPGIqcq2UGI7cp5e3dn_RDp_JVp-o1p6nAq9rfXFqDEou7Z-eZn82D6Q9qHtOKzq79TW97vmrTC16pOpLAY7WgfWIKjXU2stUoOXS0Xv_3OwAA___2YsKZ
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJy0k9FqGzsQhu_PUwxzdQpKsruUUgQFUycFp0kcnJCbYoIsTRzVWmkrabGN8WP1BfpkRSs7OHES2tLqYmFm_v1nNN_uCsM3gxyvTs5O-tcgDwV8Gg3PQcLpcHABCoYXoA4n8AHk4QQZWqfoQtQUkH_BEscMG-8kheB8Sq06wUAtkBcMtW3amNJjhtJ5Qr7CqKMh5HgtJoZGJBT5owIZKopCm85W9gJJZNh3pq1t4CAYpN5XjUjRATL8fANR18Sh-PE95Fg6G8lG7exeybt5AEXSKVIcqpycLCMF8CQUh_IdfMzZ6eiyD1IYEx6EjdB-K3yLDM9v-n0IkRqQrrUR_qdFPNI2vuFQdFfJAqLZS4JaLKCm2vklCGOcFDHNVXQzTESU9xTAtbFpI4ek7-bfJiocrxnmaLPbEMWUkJc7MAbHyIs1-3Uep07bDY7yMQ7VU7fNjJbI8My5WdvAV6ctOMuhV-1iSoyGacRecuiadavPm8xxiMKYPUB_zLLcZ_n-OZTlPsrqr6BsAykI0ZOoySNDWpBs9wf_R8SrJ8TL3yE-otA4G-gR7Zc6FU86HZTrMUNSU8q_fXCtl3Tpney0ORx2Rl1CUYi5WuZgYLelvL2HD3bXqXzVqXrNaczwzrj5rVbIsdicg2ce24PpBTENaUVX927e2V4vm3TBO2ECMTwXMzqmSL7WVoeoJfLoW1qv__sZAAD__9uqrY8=
 
 # Regression test for using the Streamer API when we have a cast to an Oid type
 # for which DistSQL is prohibited (#122274). (Note that, unlike above, we don't
@@ -140,15 +137,14 @@ quality of service: regular
 • render
 │
 └── • lookup join
-    │ sql nodes: <hidden>
+    │ nodes: <hidden>
     │ regions: <hidden>
     │ actual row count: 2
     │ table: d@d_pkey
     │ equality: (b) = (b)
     │
     └── • scan
-          sql nodes: <hidden>
-          kv nodes: <hidden>
+          nodes: <hidden>
           regions: <hidden>
           actual row count: 2
           KV time: 0µs
@@ -162,7 +158,7 @@ quality of service: regular
           table: c@sec
           spans: FULL SCAN
 ·
-Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJykU8FqGzEQvfcrhjm1oCS7pvQgKDh13OI0toMdcikmyNLEUb0rbaVZYhP8Wf2BflnZlR3spAkt1WHhvXk7M3pv9wHjjwIlTvsX_d4V6GMl5aT_ZXQ67E8vT3t9-DwZD0HD-XgwAgPjEZjjOXwEfTxHgc4bGqmSIspvmONMYBW8phh9aKiHVjAwK5SZQOuqmht6JlD7QCgfkC0XhBKv1LygCSlD4SRDgYZY2aJtq7uRNArs-aIuXZSgBDSzp5Vq0BEK_HoNzaAoweUJBlpY35SZIieKbUkSsl8_Y8LaOybH1rtnpeDvIxjS3pCR0EnkfM0UIZAyEvIP8Cmxi8llD7QqivgorJQNO-F7FDi87vUgMlWgfe0Y3tKKT6zjdxKy9rJJQLR8SVCqFZRU-rAGVRReK272ytod5or1HUXwNVc1S2j07f47ooOzjcCEtu5HVgtCme_FNThDmW3E3yd27q3bBpYfBma65qZa0hoFXni_rCv47q0D7yR0O_tBNilOyBkKErr54XeH2-ltFsnahCOrojhMjFak6-dB_ocznSfO5P_izIRi5V2kA1dempQ9mXSUb2YCySwo_UDR10HTZfC61SY4bhu1hKHIqZonMHC7UuRAqnwMdr9T_mqnzmudZgJvC39_Yw1KzLbn6A-P3cHmBbWIjUXTO3_ftr1aV80Fb1URSeBQLemMmEJpnY1sNUoONW02b34HAAD__xZ9eDE=
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJykU91q2zAYvd9TfHxXG6itHcYuBIN0bjbSNT84oTcjFEX6mmqRJU-SSULIY-0F9mTDdlKSdi0b04XhHB2fTzrH3mL4YZDjpHfTy6YgzwXnee_L8HLQm4wvsx58zkcDkHA96g9BwWgI6nwOH0Gez5GhdYqGoqCA_BumOGNYeicpBOdratsI-mqNPGGobVnFmp4xlM4T8i1GHQ0hx6mYG8pJKPIXCTJUFIU2ja3sBpLIMHOmKmzgIBjUsyelqNEZMvx6C1EXxCH59TO0WDobyUbt7LMt71YBFEmnSHHotOR8EymAJ6E4pB_gU8su8nEGUhgTHoWl0P4gfI8MB7dZBiFSCdJVNsJbWscLbeM7DklzlVZAtHxJUIg1FFQ4vwFhjJMi1udKmjPMRZQPFMBVsawih1rfnP9AdHC2Y9iifbYhigUhT4_K6F8hT3bs7_u4dtru60hP61BddVcuaYMMb5xbViV8d9qCsxy6neOa6o5ysoo8h256-lXhfnrTRRtti0MUxpw2RmuS1fMi_yOZzpNk0n9JJqdQOhvoJJWXJiVPJp2luxlDUgtqf4_gKi9p7J1stC0cNUYNoSjEdjdtQd8etkL0JIrHYo-d0ledOq85zRjeG7e60wo5Jvt19ofHYWH9gliEOqLJg1s1ttNNWV_wXphADAdiSVcUyRfa6hC1RB59Rbvdm98BAAD__1zHbaw=
 
 query T
 EXPLAIN (OPT, VERBOSE) SELECT c.a FROM c INNER MERGE JOIN d ON c.a = d.b
@@ -174,13 +170,13 @@ project
  ├── distribution: test
  ├── prune: (1)
  └── inner-join (merge)
-      ├── columns: c.a:1 d.b:10
+      ├── columns: c.a:1 d.b:8
       ├── flags: force merge join
       ├── left ordering: +1
-      ├── right ordering: +10
-      ├── stats: [rows=10, distinct(1)=1, null(1)=0, distinct(10)=1, null(10)=0]
+      ├── right ordering: +8
+      ├── stats: [rows=10, distinct(1)=1, null(1)=0, distinct(8)=1, null(8)=0]
       ├── cost: 1129.869
-      ├── fd: (1)==(10), (10)==(1)
+      ├── fd: (1)==(8), (8)==(1)
       ├── distribution: test
       ├── scan c
       │    ├── columns: c.a:1
@@ -190,16 +186,16 @@ project
       │    ├── distribution: test
       │    ├── prune: (1)
       │    ├── interesting orderings: (+1)
-      │    └── unfiltered-cols: (1-8)
+      │    └── unfiltered-cols: (1-6)
       ├── scan d
-      │    ├── columns: d.b:10
-      │    ├── stats: [rows=1000, distinct(10)=100, null(10)=0]
+      │    ├── columns: d.b:8
+      │    ├── stats: [rows=1000, distinct(8)=100, null(8)=0]
       │    ├── cost: 1088.62
-      │    ├── ordering: +10
+      │    ├── ordering: +8
       │    ├── distribution: test
-      │    ├── prune: (10)
-      │    ├── interesting orderings: (+10)
-      │    └── unfiltered-cols: (9-14)
+      │    ├── prune: (8)
+      │    ├── interesting orderings: (+8)
+      │    └── unfiltered-cols: (7-10)
       └── filters (true)
 
 query T
@@ -219,7 +215,7 @@ priority: normal
 quality of service: regular
 ·
 • merge join
-│ sql nodes: <hidden>
+│ nodes: <hidden>
 │ regions: <hidden>
 │ actual row count: 2
 │ estimated max memory allocated: 0 B
@@ -227,8 +223,7 @@ quality of service: regular
 │ equality: (a) = (b)
 │
 ├── • scan
-│     sql nodes: <hidden>
-│     kv nodes: <hidden>
+│     nodes: <hidden>
 │     regions: <hidden>
 │     actual row count: 2
 │     KV time: 0µs
@@ -243,8 +238,7 @@ quality of service: regular
 │     spans: FULL SCAN
 │
 └── • scan
-      sql nodes: <hidden>
-      kv nodes: <hidden>
+      nodes: <hidden>
       regions: <hidden>
       actual row count: 2
       KV time: 0µs
@@ -258,7 +252,7 @@ quality of service: regular
       table: d@d_pkey
       spans: FULL SCAN
 ·
-Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJzsk99O4zoQxu_PU4zmCnQMJOHoXFhCqk7pWZXdtqggblYVcu0hWHXsYDuiFepj7Qvsk62cAEvLnxUrLjcXVWbmy-fJ92vuMNwY5Hg2-DLon4PcF_D_dDICCcPxeDCF0WD6aQAnk-EYFEzGreAI1P4cGVqnaCwqCsi_Yo4zhrV3kkJwPrXuWsFQLZFnDLWtm5jaM4bSeUJ-h1FHQ8jxXMwNTUko8gcZMlQUhTatrezJy3pBK2TYd6apbOAgkOFZLdLtHjL8fAHpoMDB5l3pqdQujSOF2LWirohD9v1b6GrpbCQbtbPPRt7dBlAknSLFoeia81WkAJ6E4pD_C_913XJ62gcpjAmPwlpo_yD8BxmOLvp9CJFqkK6xEXZoGQ-0jbscsvZlOwHR4jVBJZZQUeX8CoQxToqY9sraHeYiymsK4JpYN5FD0rf7PzQKnK0ZdtV9-iGKkpDnT3ANj5Fna_Z7xPJNYqqnnhGb_yH2AcSKLWL5q8R-gmqs84o8qQ1Is_TkryQvYB-RL-nEaUv-oNjEbugq7vTyv3ePvC6vu1tkOEmv1EuUaUmyeY7vrazSLNwYiFTVoHRYQBNESR8Q5eFWlMV7_vxTCrWzgbYjffGkbOukvTwFS6qkDlRwjZd06p1stV05aY3ahqIQu2nRFUPbjvJ0gidRPX67T53ydzgVT53ybafiTafDDadsc6cZwyvjbi-1Qo7Z_bX3ws_DhekBUYYU9tm1u21tz1d1iupKmEAMR2JBxxTJV9rqELVEHn1D6_VfPwIAAP__d_EqNQ==
+Diagram: https://cockroachdb.github.io/distsqlplan/decode.html#eJzsU81OIzkQvu9TlOoEWgPdzWoPlpCiDdlRmEmCAuIyipBjF40Vt93YbpEI5bHmBebJRu4GhoQ_MZrj-NByVX3-qvx97jsMNwY5ng2-DPrnIPcF_D-djEDCcDweTGE0mH4awMlkOAYFk3ELOAK1P0eG1ikai4oC8q-Y44xh7Z2kEJxPqbsWMFRL5BlDbesmpvSMoXSekN9h1NEQcjwXc0NTEor8QYYMFUWhTUsre_KyXtAKGfadaSobOAhkeFaLtN1Dhp8vIOqKOGTfv4Uuls5GslE7-6zk3W0ARdIpUhyKLjlfRQrgSSgO-b_wX5ctp6d9kMKY8AishfYPwH-Q4eii34cQqQbpGhthh5bxQNu4yyFrr9IBiBavASqxhIoq51cgjHFSxDRX1s4wF1FeUwDXxLqJHBK-nf8hUeBszbCL7rUNUZSEPH9ixvAYebZmv-ZHvumH6qlnfsz_-PGuH8WWH_mrfvy0obHOK_KkNiyYpZPvQV4wdUS-pBOnLfmDYtNUQ1dxp5f_vXvkdXndbZHhJF2plx4ALUk2z-17S6tUCzcGIlU1KB0W0ARR0m-Q8nBLyuIjT3tKoXY20LakL3bKtjrt5UlYUiV1RgXXeEmn3skW24WTlqhNKAqxqxZdMLRtKU8dPInq8c98ypR_gKl4ypRvMxVvMh1uMGWbM80YXhl3e6kVcszu194Ln4eF6YAoQxL77NrdtrTnqzpJdSVMIIYjsaBjiuQrbXWIWiKPvqH1-q8fAQAA__9OjRUr
 
 statement ok
 RESET vectorize; RESET distsql
@@ -502,8 +496,9 @@ EXPLAIN (VEC)
 └ Node 1
   └ *colexec.caseOp
     ├ *colexec.bufferOp
-    │ └ *colfetcher.ColIndexJoin
-    │   └ *colfetcher.ColBatchScan
+    │ └ *sql.planNodeToRowSource
+    │   └ *colfetcher.ColIndexJoin
+    │     └ *colfetcher.ColBatchScan
     ├ *colexec.bufferOp
     └ *colexec.bufferOp
 

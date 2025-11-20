@@ -9,8 +9,8 @@ import (
 	"context"
 	gosql "database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
-	"github.com/cockroachdb/cockroach/pkg/workload/histogram/exporter"
 	"github.com/cockroachdb/cockroach/pkg/workload/workloadsql"
 	"github.com/cockroachdb/errors"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -71,27 +70,12 @@ var prometheusPort = sharedFlags.Int(
 	"Port to expose prometheus metrics if the workload has a prometheus gatherer set.",
 )
 
-// individualOperationReceiverAddr is an address to send latency
-// measurements to. By default it will not send anything.
-var individualOperationReceiverAddr = sharedFlags.String(
-	"operation-receiver",
-	"",
-	"Optional ip address:port to send latency operation metrics.",
-)
-
 var histograms = runFlags.String(
 	"histograms", "",
 	"File to write per-op incremental and cumulative histogram data.")
-
-var histogramExportFormat = runFlags.String(
-	"histogram-export-format", "json",
-	"Export format of the histogram data into the `histograms` file. Options: [ json, openmetrics ]")
 var histogramsMaxLatency = runFlags.Duration(
 	"histograms-max-latency", 100*time.Second,
 	"Expected maximum latency of running a query")
-
-var openmetricsLabels = runFlags.String("openmetrics-labels", "",
-	"Comma separated list of key value pairs used as labels, used by openmetrics exporter. Eg 'cloud=aws, workload=tpcc'")
 
 var securityFlags = pflag.NewFlagSet(`security`, pflag.ContinueOnError)
 var secure = securityFlags.Bool("secure", false,
@@ -140,7 +124,6 @@ func init() {
 			Use:   `run`,
 			Short: `run a workload's operations against a cluster`,
 		})
-
 		for _, meta := range workload.Registered() {
 			gen := meta.New()
 			if _, ok := gen.(workload.Opser); !ok {
@@ -193,7 +176,7 @@ func CmdHelper(
 			if err := cfg.Validate(nil /* no default log directory */); err != nil {
 				return err
 			}
-			if _, err := log.ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */); err != nil {
+			if _, err := log.ApplyConfig(cfg); err != nil {
 				return err
 			}
 		}
@@ -206,9 +189,11 @@ func CmdHelper(
 			}
 		}
 
-		var connFlags *workload.ConnFlags
-		if cf, ok := gen.(workload.ConnFlagser); ok {
-			connFlags = cf.ConnFlags()
+		// HACK: Steal the dbOverride out of flags. This should go away
+		// once more of run.go moves inside workload.
+		var dbOverride string
+		if dbFlag := cmd.Flag(`db`); dbFlag != nil {
+			dbOverride = dbFlag.Value.String()
 		}
 
 		urls := args
@@ -229,11 +214,8 @@ func CmdHelper(
 
 			urls = []string{crdbDefaultURL}
 		}
-		dbName, err := workload.SanitizeUrls(gen, connFlags, urls)
+		dbName, err := workload.SanitizeUrls(gen, dbOverride, urls)
 		if err != nil {
-			return err
-		}
-		if err := workload.SetUrlConnVars(gen, connFlags, urls); err != nil {
 			return err
 		}
 		return fn(gen, urls, dbName)
@@ -380,7 +362,7 @@ func startPProfEndPoint(ctx context.Context) {
 }
 
 func runRun(gen workload.Generator, urls []string, dbName string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), exitSignals...)
+	ctx := context.Background()
 
 	var formatter outputFormat
 	switch *displayFormat {
@@ -412,8 +394,6 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 		}
 	}
 
-	// Adding --duration to the generator flags for checking long duration workload in tpcc
-	gen.(workload.Flagser).Flags().AddFlag(runFlags.Lookup("duration"))
 	var limiter *rate.Limiter
 	if *maxRate > 0 {
 		// Create a limiter using maxRate specified on the command line and
@@ -426,39 +406,9 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 	if !ok {
 		return errors.Errorf(`no operations defined for %s`, gen.Meta().Name)
 	}
-
-	var publisher histogram.Publisher
-	if *individualOperationReceiverAddr != "" {
-		publisher = histogram.CreateUdpPublisher(*individualOperationReceiverAddr)
-	}
-
-	metricsExporter, file, err := maybeInitAndCreateExporter(gen)
-	if err != nil {
-		return errors.Wrap(err, "error creating metrics exporter")
-	}
-	defer func() {
-		if metricsExporter != nil {
-			if err = metricsExporter.Close(func() error {
-				if file == nil {
-					log.Infof(ctx, "no file to close")
-					return nil
-				}
-
-				if err := file.Close(); err != nil {
-					return err
-				}
-				return nil
-			}); err != nil {
-				log.Warningf(ctx, "failed to close metrics exporter: %v", err)
-			}
-		}
-	}()
-
-	reg := histogram.NewRegistryWithPublisherAndExporter(
+	reg := histogram.NewRegistry(
 		*histogramsMaxLatency,
 		gen.Meta().Name,
-		publisher,
-		metricsExporter,
 	)
 	reg.Registerer().MustRegister(collectors.NewGoCollector())
 	// Expose the prometheus gatherer.
@@ -516,27 +466,11 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 
 	start := timeutil.Now()
 	errCh := make(chan error)
-
-	displayTicker := time.NewTicker(*displayEvery)
-	defer displayTicker.Stop()
-
-	// Create a context indicate channel to signal when the ramp period finishes.
+	var rampDone chan struct{}
 	if *ramp > 0 {
-		rampCtx, _ := context.WithTimeout(ctx, *ramp) //nolint:lostcancel
-
-		// Reset the ticker and stats after the ramp period is complete
-		go func() {
-			<-rampCtx.Done()
-			// Once the load generator is fully ramped up, reset the histogram and the
-			// start time to throw away the stats for the ramp up period.
-			displayTicker.Reset(*displayEvery)
-			start = timeutil.Now()
-			formatter.rampDone()
-			reg.Tick(func(t histogram.Tick) {
-				t.Cumulative.Reset()
-				t.Hist.Reset()
-			})
-		}()
+		// Create a channel to signal when the ramp period finishes. Will
+		// be reset to nil when consumed by the process loop below.
+		rampDone = make(chan struct{})
 	}
 
 	// If ops.Close is specified, defer it to ensure that it is run before
@@ -553,40 +487,73 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 	defer cancelWorkers()
 	var wg sync.WaitGroup
 	wg.Add(len(ops.WorkerFns))
-
-	// Spawn workers
 	go func() {
-		// If a ramp period was specified, start all the workers gradually
+		// If a ramp period was specified, start all of the workers gradually
 		// with a new context.
-		var rampWG sync.WaitGroup
+		var rampCtx context.Context
+		if rampDone != nil {
+			var cancel func()
+			rampCtx, cancel = context.WithTimeout(workersCtx, *ramp)
+			defer cancel()
+		}
 
 		for i, workFn := range ops.WorkerFns {
-			i, workFn := i, workFn // https://golang.org/doc/faq#closures_and_goroutines
-			rampWG.Add(1)
-
-			go func() {
+			go func(i int, workFn func(context.Context) error) {
 				// If a ramp period was specified, start all of the workers
 				// gradually.
-				if *ramp > 0 {
+				if rampCtx != nil {
 					rampPerWorker := *ramp / time.Duration(len(ops.WorkerFns))
 					time.Sleep(time.Duration(i) * rampPerWorker)
 				}
-				rampWG.Done()
 				workerRun(workersCtx, errCh, &wg, limiter, workFn)
-			}()
+			}(i, workFn)
 		}
 
-		rampWG.Wait()
+		if rampCtx != nil {
+			// Wait for the ramp period to finish, then notify the process loop
+			// below to reset timers and histograms.
+			<-rampCtx.Done()
+			close(rampDone)
+		}
 	}()
 
-	everySecond := log.Every(*displayEvery)
+	ticker := time.NewTicker(*displayEvery)
+	defer ticker.Stop()
+	done := make(chan os.Signal, 3)
+	signal.Notify(done, exitSignals...)
 
-	// durationCtx implements the --duration timeout
-	durationCtx, _ := context.WithCancel(ctx) // nolint:lostcancel
+	go func() {
+		wg.Wait()
+		done <- os.Interrupt
+	}()
+
 	if *duration > 0 {
-		durationCtx, _ = context.WithTimeout(ctx, *duration+*ramp) // nolint:lostcancel
+		go func() {
+			time.Sleep(*duration + *ramp)
+			done <- os.Interrupt
+		}()
 	}
 
+	var jsonEnc *json.Encoder
+	if *histograms != "" {
+		_ = os.MkdirAll(filepath.Dir(*histograms), 0755)
+		jsonF, err := os.Create(*histograms)
+		if err != nil {
+			return err
+		}
+		jsonEnc = json.NewEncoder(jsonF)
+		defer func() {
+			if err := jsonF.Sync(); err != nil {
+				log.Warningf(ctx, "histogram: %v", err)
+			}
+
+			if err := jsonF.Close(); err != nil {
+				log.Warningf(ctx, "histogram: %v", err)
+			}
+		}()
+	}
+
+	everySecond := log.Every(*displayEvery)
 	for {
 		select {
 		case err := <-errCh:
@@ -601,26 +568,40 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 			log.Errorf(ctx, "workload run error: %+v", err)
 			return err
 
-		case <-displayTicker.C:
+		case <-ticker.C:
 			startElapsed := timeutil.Since(start)
 			reg.Tick(func(t histogram.Tick) {
 				formatter.outputTick(startElapsed, t)
-				if t.Exporter != nil {
-					if err := t.Exporter.SnapshotAndWrite(t.Hist, t.Now, t.Elapsed, &t.Name); err != nil {
+				if jsonEnc != nil && rampDone == nil {
+					if err := jsonEnc.Encode(t.Snapshot()); err != nil {
 						log.Warningf(ctx, "histogram: %v", err)
 					}
 				}
 			})
 
-		case <-durationCtx.Done():
+		// Once the load generator is fully ramped up, we reset the histogram
+		// and the start time to throw away the stats for the ramp up period.
+		case <-rampDone:
+			rampDone = nil
+			start = timeutil.Now()
+			formatter.rampDone()
+			reg.Tick(func(t histogram.Tick) {
+				t.Cumulative.Reset()
+				t.Hist.Reset()
+			})
+
+		case <-done:
 			cancelWorkers()
 
 			startElapsed := timeutil.Since(start)
 			resultTick := histogram.Tick{Name: ops.ResultHist}
 			reg.Tick(func(t histogram.Tick) {
 				formatter.outputTotal(startElapsed, t)
-				if t.Exporter != nil {
-					if err := t.Exporter.SnapshotAndWrite(t.Hist, t.Now, t.Elapsed, &t.Name); err != nil {
+				if jsonEnc != nil {
+					// Note that we're outputting the delta from the last tick. The
+					// cumulative histogram can be computed by merging all of the
+					// per-tick histograms.
+					if err := jsonEnc.Encode(t.Snapshot()); err != nil {
 						log.Warningf(ctx, "histogram: %v", err)
 					}
 				}
@@ -632,7 +613,6 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 						resultTick.Cumulative.Merge(t.Cumulative)
 					}
 				}
-
 			})
 			formatter.outputResult(startElapsed, resultTick)
 
@@ -655,56 +635,4 @@ func maybeLogRandomSeed(ctx context.Context, gen workload.Generator) {
 	if randomSeed := gen.Meta().RandomSeed; randomSeed != nil {
 		log.Infof(ctx, "%s", randomSeed.LogMessage())
 	}
-}
-
-func maybeInitAndCreateExporter(gen workload.Generator) (exporter.Exporter, *os.File, error) {
-	if *histograms == "" {
-		return nil, nil, nil
-	}
-
-	var metricsExporter exporter.Exporter
-	var file *os.File
-
-	switch *histogramExportFormat {
-	case "json":
-		metricsExporter = &exporter.HdrJsonExporter{}
-	case "openmetrics":
-		labelValues := strings.Split(*openmetricsLabels, ",")
-		labels := make(map[string]string)
-		for _, label := range labelValues {
-			parts := strings.SplitN(label, "=", 2)
-			if len(parts) != 2 {
-				return nil, nil, errors.Errorf("invalid histogram label %q", label)
-			}
-			labels[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-		}
-		// Append workload generator name as a tag
-		labels["workload"] = gen.Meta().Name
-		openMetricsExporter := exporter.OpenMetricsExporter{}
-		openMetricsExporter.SetLabels(&labels)
-		metricsExporter = &openMetricsExporter
-
-	default:
-		return nil, nil, errors.Errorf("unknown histogram format: %s", *histogramExportFormat)
-	}
-
-	err := metricsExporter.Validate(*histograms)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	err = os.MkdirAll(filepath.Dir(*histograms), 0755)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	file, err = os.Create(*histograms)
-	if err != nil {
-		return nil, nil, err
-	}
-	writer := io.Writer(file)
-
-	metricsExporter.Init(&writer)
-
-	return metricsExporter, file, nil
 }

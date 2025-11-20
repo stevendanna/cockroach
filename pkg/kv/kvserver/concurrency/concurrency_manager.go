@@ -8,9 +8,9 @@ package concurrency
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
@@ -22,10 +22,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -112,15 +110,6 @@ var BatchPushedLockResolution = settings.RegisterBoolSetting(
 		"conflicting locks whose holder is known to be pending and have been pushed above the reader's "+
 		"timestamp",
 	true,
-)
-
-// UnreplicatedLockReliability controls whether the replica will attempt
-// to keep unreplicated locks during node operations such as split.
-var UnreplicatedLockReliability = settings.RegisterBoolSetting(
-	settings.SystemOnly,
-	"kv.lock_table.unreplicated_lock_reliability.enabled",
-	"whether the replica should attempt to keep unreplicated locks during various node operations",
-	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability_upgrade.enabled", true),
 )
 
 // managerImpl implements the Manager interface.
@@ -313,7 +302,7 @@ func (m *managerImpl) sequenceReqWithGuard(
 				panic(redact.Safe(fmt.Sprintf("must not be holding latches\n"+
 					"this is tracked in github.com/cockroachdb/cockroach/issues/77663; please comment if seen\n"+
 					"eval_kind=%d, holding_latches=%t, branch=%d, first_iteration=%t, stack=\n%s",
-					g.EvalKind, g.HoldingLatches(), branch, firstIteration, debugutil.Stack())))
+					g.EvalKind, g.HoldingLatches(), branch, firstIteration, string(debug.Stack()))))
 			}
 			log.Event(ctx, "optimistic failed, so waiting for latches")
 			g.lg, err = m.lm.WaitUntilAcquired(ctx, g.lg)
@@ -585,38 +574,6 @@ func (m *managerImpl) OnRangeDescUpdated(desc *roachpb.RangeDescriptor) {
 	m.twq.OnRangeDescUpdated(desc)
 }
 
-var allKeysSpan = roachpb.Span{Key: keys.MinKey, EndKey: keys.MaxKey}
-
-// OnRangeLeaseTransferEval implements the RangeStateListener interface.
-func (m *managerImpl) OnRangeLeaseTransferEval() []*roachpb.LockAcquisition {
-	if !UnreplicatedLockReliability.Get(&m.st.SV) {
-		return nil
-	}
-
-	// TODO(ssd): Expose a function that allows us to pre-allocate this a bit better.
-	acquistions := make([]*roachpb.LockAcquisition, 0)
-	m.lt.ExportUnreplicatedLocks(allKeysSpan, func(acq *roachpb.LockAcquisition) {
-		acquistions = append(acquistions, acq)
-	})
-	return acquistions
-}
-
-// OnRangeSubumeEval implements the RangeStateListener interface. It is called
-// during evalutation of Subsume. The returned LockAcquisition structs represent
-// held locks that we may want to flush to disk as replicated.
-func (m *managerImpl) OnRangeSubsumeEval() []*roachpb.LockAcquisition {
-	if !UnreplicatedLockReliability.Get(&m.st.SV) {
-		return nil
-	}
-
-	// TODO(ssd): Expose a function that allows us to pre-allocate this a bit better.
-	acquistions := make([]*roachpb.LockAcquisition, 0)
-	m.lt.ExportUnreplicatedLocks(allKeysSpan, func(acq *roachpb.LockAcquisition) {
-		acquistions = append(acquistions, acq)
-	})
-	return acquistions
-}
-
 // OnRangeLeaseUpdated implements the RangeStateListener interface.
 func (m *managerImpl) OnRangeLeaseUpdated(seq roachpb.LeaseSequence, isLeaseholder bool) {
 	if isLeaseholder {
@@ -631,22 +588,14 @@ func (m *managerImpl) OnRangeLeaseUpdated(seq roachpb.LeaseSequence, isLeasehold
 	}
 }
 
-// OnRangeSplit implements the RangeStateListener interface. It is called on the
-// LHS replica of a split and should be passed the new RHS start key (LHS
-// EndKey).
-func (m *managerImpl) OnRangeSplit(rhsStartKey roachpb.Key) []roachpb.LockAcquisition {
-	if UnreplicatedLockReliability.Get(&m.st.SV) {
-		lockToMove := m.lt.ClearGE(rhsStartKey)
-		m.twq.ClearGE(rhsStartKey)
-		return lockToMove
-	} else {
-		// TODO(ssd): We could call ClearGE here but ignore the
-		// response. But for now we leave the old behaviour unchanged.
-		const disable = false
-		m.lt.Clear(disable)
-		m.twq.Clear(disable)
-		return nil
-	}
+// OnRangeSplit implements the RangeStateListener interface.
+func (m *managerImpl) OnRangeSplit() {
+	// TODO(nvanbenschoten): it only essential that we clear the half of the
+	// lockTable which contains locks in the key range that is being split off
+	// from the current range. For now though, we clear it all.
+	const disable = false
+	m.lt.Clear(disable)
+	m.twq.Clear(disable)
 }
 
 // OnRangeMerge implements the RangeStateListener interface.

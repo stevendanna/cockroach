@@ -79,8 +79,8 @@ func TestEval(t *testing.T) {
 	t.Run("no-opt", func(t *testing.T) {
 		walkExpr(t, func(e tree.Expr) (tree.TypedExpr, error) {
 			// expr.TypeCheck to avoid constant folding.
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
-			typedExpr, err := e.TypeCheck(ctx, &semaCtx, types.AnyElement)
+			semaCtx := tree.MakeSemaContext()
+			typedExpr, err := e.TypeCheck(ctx, &semaCtx, types.Any)
 			if err != nil {
 				return nil, err
 			}
@@ -93,7 +93,7 @@ func optBuildScalar(evalCtx *eval.Context, e tree.Expr) (tree.TypedExpr, error) 
 	var o xform.Optimizer
 	ctx := context.Background()
 	o.Init(ctx, evalCtx, nil /* catalog */)
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	b := optbuilder.NewScalar(ctx, &semaCtx, evalCtx, o.Factory())
 	scalar, err := b.Build(e)
 	if err != nil {
@@ -197,7 +197,7 @@ func TestTimeConversion(t *testing.T) {
 			t.Errorf("%s: %v", exprStr, err)
 			continue
 		}
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
+		semaCtx := tree.MakeSemaContext()
 		typedExpr, err := expr.TypeCheck(context.Background(), &semaCtx, types.Timestamp)
 		if err != nil {
 			t.Errorf("%s: %v", exprStr, err)
@@ -358,8 +358,8 @@ func TestEvalError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", d.expr, err)
 		}
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
-		typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+		semaCtx := tree.MakeSemaContext()
+		typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 		if err == nil {
 			evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
 			defer evalCtx.Stop(ctx)

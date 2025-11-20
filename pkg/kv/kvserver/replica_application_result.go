@@ -13,7 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
+	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -58,10 +58,6 @@ func clearTrivialReplicatedEvalResultFields(r *kvserverpb.ReplicatedEvalResult) 
 	r.Delta = enginepb.MVCCStatsDelta{}
 	// Rangefeeds have been disconnected prior to application.
 	r.MVCCHistoryMutation = nil
-	// See detailed comment in ReplicatedEvalResult.IsTrivial on why
-	// DoTimelyApplicationToAllReplicas is trivial. It has been consumed in
-	// apply.Batch.Stage.
-	r.DoTimelyApplicationToAllReplicas = false
 }
 
 // prepareLocalResult is performed after the command has been committed to the
@@ -110,7 +106,7 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 		case kvserverbase.ProposalRejectionPermanent:
 		case kvserverbase.ProposalRejectionIllegalLeaseIndex:
 			// Reset the error as it's now going to be determined by the outcome of
-			// reproposing (or not); note that tryReproposeWithNewLeaseIndexRaftMuLocked will
+			// reproposing (or not); note that tryReproposeWithNewLeaseIndex will
 			// return `nil` if the entry is not eligible for reproposals.
 			//
 			// If pErr gets "reset" here as a result, we will mark the proposal as
@@ -136,7 +132,7 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 			// Similarly, if the proposal associated with this rejected raft entry is
 			// superseded by a different (larger) MaxLeaseIndex than the one we decoded
 			// from the entry itself, the command must have already passed through
-			// tryReproposeWithNewLeaseIndexRaftMuLocked previously (this can happen if there are
+			// tryReproposeWithNewLeaseIndex previously (this can happen if there are
 			// multiple copies of the command in the logs; see
 			// TestReplicaRefreshMultiple). We must not create multiple copies with
 			// multiple lease indexes, so don't repropose it again. This ensures that at
@@ -144,7 +140,7 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 			// succeeding in the Raft log for a given command.
 			//
 			// Taking a looking glass to the last paragraph, we see that the situation
-			// is much more subtle. As tryReproposeWithNewLeaseIndexRaftMuLocked gets to the stage
+			// is much more subtle. As tryReproposeWithNewLeaseIndex gets to the stage
 			// where it calls `(*Replica).propose` (i.e. it passed the closed
 			// timestamp checks), it *resets* `cmd.proposal.MaxLeaseIndex` to zero.
 			// This means that the proposal immediately supersedes any other copy
@@ -162,7 +158,7 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 			// LAI will be assigned to `cmd.proposal.MaxLeaseIndex` AND the command
 			// will have re-entered the proposals map. So even if we remove the
 			// "zeroing" of the MaxLeaseIndex prior to proposing, we still have to
-			// contend with the fact that once `tryReproposeWithNewLeaseIndexRaftMuLocked` may
+			// contend with the fact that once `tryReproposeWithNewLeaseIndex` may
 			// or may not be in the map. (At least it is assigned a new LAI if and
 			// only if it is back in the map!).
 			//
@@ -175,7 +171,7 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 				}
 			}
 			if pErr == nil { // since we might have injected an error
-				pErr = kvpb.NewError(r.tryReproposeWithNewLeaseIndexRaftMuLocked(ctx, cmd))
+				pErr = kvpb.NewError(r.tryReproposeWithNewLeaseIndex(ctx, cmd))
 				if pErr == nil {
 					// Avoid falling through below. We managed to repropose, but this
 					// proposal is still erroring out. We don't want to assign to
@@ -186,7 +182,7 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 			}
 
 			if pErr != nil {
-				// An error from tryReproposeWithNewLeaseIndexRaftMuLocked implies that the current
+				// An error from tryReproposeWithNewLeaseIndex implies that the current
 				// entry is not superseded (i.e. we don't have a reproposal at a higher
 				// MaxLeaseIndex in the log).
 				//
@@ -273,15 +269,6 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 		}
 	}
 
-	// Repopulate SubsumeResponse if requested.
-	if pErr == nil && cmd.proposal.Local.DetachRepopulateSubsumeResponse() {
-		if resp := cmd.response.Reply.Responses[0].GetSubsume(); resp != nil {
-			resp.LeaseAppliedIndex = cmd.LeaseIndex
-		} else {
-			log.Fatalf(ctx, "RepopulateSubsumeResponse for %T", cmd.response.Reply.Responses[0].GetInner())
-		}
-	}
-
 	if pErr == nil {
 		cmd.localResult = cmd.proposal.Local
 	} else if cmd.localResult != nil {
@@ -341,6 +328,7 @@ func (r *Replica) makeReproposal(origP *ProposalData) (reproposal *ProposalData,
 		// span "follows from" the proposal's span, if the proposal sticks around
 		// for (some reincarnation of) the command to eventually apply, its trace
 		// will reflect the reproposal as well.
+		ctx:             origP.ctx,
 		idKey:           raftlog.MakeCmdIDKey(),
 		proposedAtTicks: 0, // set in registerProposalLocked
 		createdAtTicks:  0, // set in registerProposalLocked
@@ -376,8 +364,6 @@ func (r *Replica) makeReproposal(origP *ProposalData) (reproposal *ProposalData,
 
 		seedProposal: seedP,
 	}
-	origCtx := origP.Context()
-	newProposal.ctx.Store(&origCtx)
 
 	return newProposal, func() {
 		// If the original proposal had an explicit span, it's an async consensus
@@ -408,17 +394,12 @@ func (r *Replica) makeReproposal(origP *ProposalData) (reproposal *ProposalData,
 		//
 		// TODO(radu): Should this context be created via tracer.ForkSpan?
 		// We'd need to make sure the span is finished eventually.
-		ctx := r.AnnotateCtx(context.TODO())
-		origP.ctx.Store(&ctx)
+		origP.ctx = r.AnnotateCtx(context.TODO())
 		seedP.lastReproposal = newProposal
 	}
 }
 
-func (r *Replica) tryReproposeWithNewLeaseIndexRaftMuLocked(
-	ctx context.Context, origCmd *replicatedCmd,
-) error {
-	r.raftMu.AssertHeld() // we're in the applications stack
-
+func (r *Replica) tryReproposeWithNewLeaseIndex(ctx context.Context, origCmd *replicatedCmd) error {
 	newProposal, onSuccess := r.makeReproposal(origCmd.proposal)
 
 	// We need to track the request again in order to protect its timestamp until
@@ -433,10 +414,12 @@ func (r *Replica) tryReproposeWithNewLeaseIndexRaftMuLocked(
 		// The tracker wants us to forward the request timestamp, but we can't
 		// do that without re-evaluating, so give up. The error returned here
 		// will go to back to DistSender, so send something it can digest.
+		r.mu.RLock()
+		defer r.mu.RUnlock()
 		return kvpb.NewNotLeaseHolderError(
-			*r.shMu.state.Lease,
+			*r.mu.state.Lease,
 			r.store.StoreID(),
-			r.shMu.state.Desc,
+			r.mu.state.Desc,
 			"reproposal failed due to closed timestamp",
 		)
 	}
@@ -492,8 +475,8 @@ func (r *Replica) handleLeaseResult(
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.leasePostApplyLocked(ctx,
-		r.shMu.state.Lease, /* prevLease */
-		lease,              /* newLease */
+		r.mu.state.Lease, /* prevLease */
+		lease,            /* newLease */
 		priorReadSum,
 		assertNoLeaseJump)
 }
@@ -505,8 +488,8 @@ func (r *Replica) handleTruncatedStateResult(
 ) (raftLogDelta int64, expectedFirstIndexWasAccurate bool) {
 	r.mu.Lock()
 	expectedFirstIndexWasAccurate =
-		r.shMu.raftTruncState.Index+1 == expectedFirstIndexPreTruncation
-	r.shMu.raftTruncState = *t
+		r.mu.state.TruncatedState.Index+1 == expectedFirstIndexPreTruncation
+	r.mu.state.TruncatedState = t
 	r.mu.Unlock()
 
 	// Clear any entries in the Raft log entry cache for this range up
@@ -543,13 +526,13 @@ func (r *Replica) handleGCThresholdResult(ctx context.Context, thresh *hlc.Times
 		return
 	}
 	r.mu.Lock()
-	r.shMu.state.GCThreshold = thresh
+	r.mu.state.GCThreshold = thresh
 	r.mu.Unlock()
 }
 
 func (r *Replica) handleGCHintResult(ctx context.Context, hint *roachpb.GCHint) {
 	r.mu.Lock()
-	r.shMu.state.GCHint = hint
+	r.mu.state.GCHint = hint
 	r.mu.Unlock()
 }
 
@@ -558,7 +541,7 @@ func (r *Replica) handleVersionResult(ctx context.Context, version *roachpb.Vers
 		log.Fatal(ctx, "not expecting empty replica version downstream of raft")
 	}
 	r.mu.Lock()
-	r.shMu.state.Version = version
+	r.mu.state.Version = version
 	r.mu.Unlock()
 }
 
@@ -597,7 +580,7 @@ func (r *Replica) handleChangeReplicasResult(
 
 	// This is currently executed before the conf change is applied to the Raft
 	// node, so we still see ourselves as the leader.
-	if r.raftBasicStatusRLocked().RaftState == raftpb.StateLeader {
+	if r.raftBasicStatusRLocked().RaftState == raft.StateLeader {
 		r.store.metrics.RangeRaftLeaderRemovals.Inc(1)
 	}
 

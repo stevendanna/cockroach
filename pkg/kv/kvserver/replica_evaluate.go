@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -101,7 +100,7 @@ func optimizePuts(
 		// We want to include maxKey in our scan. Since UpperBound is exclusive, we
 		// need to set it to the key after maxKey.
 		UpperBound:   maxKey.Next(),
-		ReadCategory: fs.BatchEvalReadCategory,
+		ReadCategory: storage.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return nil, err
@@ -238,9 +237,6 @@ func evaluateBatch(
 		defer func() {
 			if ss.NumGets != 0 || ss.NumScans != 0 || ss.NumReverseScans != 0 {
 				// Only record non-empty ScanStats.
-				ss.NodeID = rec.NodeID()
-				locality := rec.GetNodeLocality()
-				ss.Region, _ = locality.Find("region")
 				sp.RecordStructured(ss)
 			}
 		}()

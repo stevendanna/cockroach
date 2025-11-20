@@ -148,8 +148,16 @@ func runCopyFromCRDB(ctx context.Context, t test.Test, c cluster.Cluster, sf int
 	// Enable the verbose logging on relevant files to have better understanding
 	// in case the test fails.
 	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs, "--vmodule=copy_from=2,insert=2")
-	// roachtest frequently runs on overloaded instances and can timeout as a result
-	clusterSettings := install.MakeClusterSettings(install.ClusterSettingsOption{"kv.closed_timestamp.target_duration": "60s"})
+	// The roachtest frequently runs on overloaded instances and can timeout as
+	// a result. We've seen cases where the atomic COPY takes about 2 minutes to
+	// complete, so we set the closed TS and SQL liveness TTL to 5 minutes (to
+	// give enough safety gap, otherwise the closed TS system and lease system
+	// expireation might continuously push the COPY txn not allowing it ever to
+	// complete).
+	clusterSettings := install.MakeClusterSettings(install.ClusterSettingsOption{
+		"kv.closed_timestamp.target_duration": "300s",
+		"server.sqlliveness.ttl":              "300s",
+	})
 	c.Start(ctx, t.L(), startOpts, clusterSettings, c.All())
 	initTest(ctx, t, c, sf)
 	db, err := c.ConnE(ctx, t.L(), 1)
@@ -157,6 +165,11 @@ func runCopyFromCRDB(ctx context.Context, t test.Test, c cluster.Cluster, sf int
 	stmts := []string{
 		"CREATE USER importer WITH PASSWORD '123'",
 		fmt.Sprintf("ALTER ROLE importer SET copy_from_atomic_enabled = %t", atomic),
+	}
+	if atomic {
+		// Disable auto stats collection so that it doesn't contend with the
+		// long-running atomic COPY txn.
+		stmts = append(stmts, "SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false")
 	}
 	for _, stmt := range stmts {
 		_, err = db.ExecContext(ctx, stmt)

@@ -163,12 +163,9 @@ func TestConnHealth(t *testing.T) {
 	// Closing the remote connection should fail ConnHealth.
 	require.NoError(t, ln.popConn().Close())
 	hbDecommission.Store(true)
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.NotNil(c, nd.ConnHealth(staticNodeID, rpc.DefaultClass),
-			"expected nd.ConnHealth(%v,rpc.DefaultClass) == nil", staticNodeID)
-	}, 5*time.Second, 20*time.Millisecond,
-		"expected closing the remote connection to n%v to fail ConnHealth, "+
-			"but remained healthy for last 5 seconds", staticNodeID)
+	require.Eventually(t, func() bool {
+		return nd.ConnHealth(staticNodeID, rpc.DefaultClass) != nil
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestConnHealthTryDial(t *testing.T) {
@@ -415,18 +412,18 @@ func (*internalServer) Batch(context.Context, *kvpb.BatchRequest) (*kvpb.BatchRe
 	return nil, nil
 }
 
-func (*internalServer) BatchStream(stream kvpb.Internal_BatchStreamServer) error {
-	panic("unimplemented")
-}
-
 func (*internalServer) RangeLookup(
 	context.Context, *kvpb.RangeLookupRequest,
 ) (*kvpb.RangeLookupResponse, error) {
 	panic("unimplemented")
 }
 
-func (s *internalServer) MuxRangeFeed(server kvpb.Internal_MuxRangeFeedServer) error {
+func (*internalServer) RangeFeed(*kvpb.RangeFeedRequest, kvpb.Internal_RangeFeedServer) error {
 	panic("unimplemented")
+}
+
+func (s *internalServer) MuxRangeFeed(server kvpb.Internal_MuxRangeFeedServer) error {
+	panic("implement me")
 }
 
 func (*internalServer) GossipSubscription(
