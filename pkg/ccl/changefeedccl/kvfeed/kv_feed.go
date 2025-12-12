@@ -749,7 +749,7 @@ func copyFromSourceToDestUntilTableEvent(
 		// Otherwise (if `e.ts` >= `boundary.ts`), we will act as follows:
 		//  - KV event: do nothing (we shouldn't emit this event)
 		//  - Resolved event: advance this span to `boundary.ts` in the frontier
-		checkCopyBoundary = func(e kvevent.Event) (skipEvent, stopCopying bool, err error) {
+		checkCopyBoundary = func(e *kvevent.Event) (skipEvent, stopCopying bool, err error) {
 			if boundary == nil {
 				return false, false, nil
 			}
@@ -781,7 +781,7 @@ func copyFromSourceToDestUntilTableEvent(
 					// subsequent checkpoints for this span until entire frontier reaches
 					// boundary timestamp.
 					if boundaryResolvedTimestamp.Compare(spanFrontier(resolved.Span)) > 0 {
-						e.Raw().Checkpoint.ResolvedTS = boundaryResolvedTimestamp
+						e.ResolvedBackward(boundaryResolvedTimestamp)
 						skipEvent = false
 					}
 				}
@@ -797,7 +797,7 @@ func copyFromSourceToDestUntilTableEvent(
 				// for completeness.
 				return false, false, nil
 			default:
-				return false, false, &errUnknownEvent{e}
+				return false, false, &errUnknownEvent{*e}
 			}
 		}
 
@@ -829,7 +829,7 @@ func copyFromSourceToDestUntilTableEvent(
 			if err := checkForTableEvent(e.Timestamp()); err != nil {
 				return err
 			}
-			skipEntry, stopCopying, err := checkCopyBoundary(e)
+			skipEntry, stopCopying, err := checkCopyBoundary(&e)
 			if err != nil {
 				return err
 			}
