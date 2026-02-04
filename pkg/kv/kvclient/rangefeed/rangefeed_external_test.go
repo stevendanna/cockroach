@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"runtime/pprof"
 	"slices"
 	"sort"
@@ -40,12 +41,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
+	"github.com/elastic/gosigar"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1891,10 +1894,31 @@ func TestRangeFeedMetadataAutoSplit(t *testing.T) {
 // call cannot starve other users. Note that starvation is still
 // possible if there are more than 2 consumers of a given range.
 func TestRangefeedCatchupStarvation(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		tick := time.NewTicker(1 * time.Second)
+		for {
+			select {
+			case <-tick.C:
+				pid := os.Getpid()
+				mem := gosigar.ProcMem{}
+				if err := mem.Get(pid); err != nil {
+					t.Logf("could not get memory information: %v", err)
+				} else {
+					t.Logf("RSS: %s", humanizeutil.IBytes(int64(mem.Resident)))
+				}
+			case <-ctx.Done():
+				return
+
+			}
+		}
+	}()
 
 	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+		defer leaktest.AfterTest(t)()
+		defer log.Scope(t).Close(t)
+
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
