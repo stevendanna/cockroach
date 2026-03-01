@@ -109,6 +109,7 @@
 /pkg/sql/sessiondata/        @cockroachdb/sql-foundations
 /pkg/sql/tests/rsg_test.go   @cockroachdb/sql-foundations
 /pkg/sql/ttl                 @cockroachdb/sql-foundations
+/pkg/sql/partitioning/       @cockroachdb/sql-foundations
 /pkg/sql/spanutils/          @cockroachdb/sql-foundations
 /pkg/sql/inspect/            @cockroachdb/sql-foundations
 
@@ -422,7 +423,6 @@
 /pkg/ccl/multitenant/tenantcostclient/ @cockroachdb/sql-queries-prs
 /pkg/ccl/multitenant/tenantcostserver/ @cockroachdb/sql-queries-prs
 /pkg/ccl/oidcccl/            @cockroachdb/product-security
-/pkg/ccl/partitionccl/       @cockroachdb/sql-foundations
 /pkg/ccl/pgcryptoccl/        @cockroachdb/sql-foundations
 /pkg/ccl/plpgsqlccl/         @cockroachdb/sql-queries-prs
 /pkg/ccl/securityccl/        @cockroachdb/security-engineering @cockroachdb/product-security
