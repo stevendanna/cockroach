@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/uncertainty"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
@@ -215,4 +216,7 @@ type CommandArgs struct {
 	Uncertainty           uncertainty.Interval
 	DontInterleaveIntents bool
 	OmitInRangefeeds      bool
+	// ResolvableTxns, when set, enables inline intent resolution during MVCC
+	// scanning. Passed through to MVCCGetOptions/MVCCScanOptions.
+	ResolvableTxns storage.ResolvableTxnLookup
 }

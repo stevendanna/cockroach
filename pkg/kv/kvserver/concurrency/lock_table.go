@@ -420,6 +420,9 @@ type lockTableGuardImpl struct {
 	// virtuallyResolveIntents represents the state of VirtuallyDeferrerIntents at
 	// the outset of this request.
 	virtuallyResolveIntents bool
+	// scanningVIR indicates whether inline virtual intent resolution during MVCC
+	// scanning is enabled for this guard.
+	scanningVIR bool
 	// pushUsingCachedClockObservations represents the state of the
 	// PushUsingCachedClockObservation cluster setting at the this request.
 	pushUsingCachedClockObs bool
@@ -785,6 +788,14 @@ func (g *lockTableGuardImpl) IntentsToResolveVirtually() []roachpb.LockUpdate {
 // VirtuallyResolvesIntents implements the lockTableGuard interface.
 func (g *lockTableGuardImpl) VirtuallyResolvesIntents() bool {
 	return g.virtuallyResolveIntents
+}
+
+// ResolvableTxnsForScanning implements the lockTableGuard interface.
+func (g *lockTableGuardImpl) ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate {
+	if !g.scanningVIR {
+		return nil
+	}
+	return g.toResolve.resolvableTxns
 }
 
 func (g *lockTableGuardImpl) NewStateChan() chan struct{} {
@@ -4603,7 +4614,8 @@ func (t *lockTableImpl) newGuardForReq(req Request) *lockTableGuardImpl {
 	g.index = -1
 	g.pushUsingCachedClockObs = PushUsingCachedClockObservation.Get(&g.lt.settings.SV)
 	g.virtuallyResolveIntents = VirtualIntentResolution.Get(&g.lt.settings.SV) && req.canVirtuallyResolve()
-	g.toResolve.virEnabled = g.virtuallyResolveIntents
+	g.scanningVIR = ScanningVirtualIntentResolution.Get(&g.lt.settings.SV) && req.canVirtuallyResolve()
+	g.toResolve.virEnabled = g.virtuallyResolveIntents || g.scanningVIR
 	return g
 }
 

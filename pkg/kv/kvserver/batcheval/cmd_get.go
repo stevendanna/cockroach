@@ -64,6 +64,7 @@ func Get(
 		Uncertainty:           cArgs.Uncertainty,
 		MemoryAccount:         cArgs.EvalCtx.GetResponseMemoryAccount(),
 		LockTable:             lockTableForSkipLocked,
+		ResolvableTxns:        cArgs.ResolvableTxns,
 		DontInterleaveIntents: cArgs.DontInterleaveIntents,
 		MaxKeys:               cArgs.Header.MaxSpanRequestKeys,
 		TargetBytes:           cArgs.Header.TargetBytes,

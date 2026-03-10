@@ -526,6 +526,10 @@ func evaluateCommand(
 		if st != nil {
 			now = st.Now
 		}
+		var resolvableTxns storage.ResolvableTxnLookup
+		if g != nil {
+			resolvableTxns = storage.NewResolvableTxnLookup(g.ResolvableTxnsForScanning())
+		}
 		cArgs := batcheval.CommandArgs{
 			EvalCtx:               rec,
 			Header:                h,
@@ -537,6 +541,7 @@ func evaluateCommand(
 			Uncertainty:           ui,
 			DontInterleaveIntents: evalPath == readOnlyWithoutInterleavedIntents,
 			OmitInRangefeeds:      omitInRangefeeds,
+			ResolvableTxns:        resolvableTxns,
 		}
 
 		if cmd.EvalRW != nil {

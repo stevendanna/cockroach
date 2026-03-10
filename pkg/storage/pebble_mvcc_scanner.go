@@ -392,8 +392,12 @@ type pebbleMVCCScanner struct {
 	// lockTable is used to determine whether keys are locked in the in-memory
 	// lock table when scanning with the skipLocked option.
 	lockTable LockTableView
-	reverse   bool
-	peeked    bool
+	// resolvableTxns, when set, provides a lookup of transactions whose intents
+	// can be resolved inline during scanning. A nil value means scanning VIR
+	// is disabled and getOne() falls through to normal intent handling.
+	resolvableTxns ResolvableTxnLookup
+	reverse        bool
+	peeked         bool
 	// Iteration bounds. Does not contain MVCC timestamp.
 	start, end roachpb.Key
 	// Timestamp with which MVCCScan/MVCCGet was called.
@@ -813,6 +817,216 @@ func (p *pebbleMVCCScanner) uncertaintyError(
 	return false
 }
 
+// resolveVirtualIntent attempts to virtually resolve a non-own intent using
+// the scanner's resolved transaction lookup. Returns (handled, ok, added):
+//   - handled=true means this method determined the intent's disposition and the
+//     caller should use the ok/added values.
+//   - handled=false means the intent was not in the resolved set and the caller
+//     should fall through to normal intent handling.
+//
+// This method is a no-op when p.resolvableTxns is nil (scanning VIR disabled).
+func (p *pebbleMVCCScanner) resolveVirtualIntent(
+	ctx context.Context, metaTS hlc.Timestamp, prevTS hlc.Timestamp,
+) (handled, ok, added bool) {
+	if p.resolvableTxns == nil {
+		return false, false, false // scanning VIR disabled; fall through
+	}
+
+	// failOnMoreRecent is only set by locking requests, which cannot use
+	// scanning VIR. Fall through to normal intent handling.
+	if p.failOnMoreRecent {
+		return false, false, false
+	}
+
+	found, lu := p.resolvableTxns.LookupResolvableTxn(p.meta.Txn.ID)
+	if !found {
+		return false, false, false // unknown txn; fall through to normal handling
+	}
+
+	intentEpoch := p.meta.Txn.Epoch
+	updateEpoch := lu.Txn.Epoch
+
+	// If the intent is from a newer epoch than the update, the update is stale.
+	if intentEpoch > updateEpoch {
+		return false, false, false
+	}
+
+	switch lu.Status {
+	case roachpb.ABORTED:
+		// Intent from an aborted txn: skip past it.
+		ok, added = p.seekVersion(ctx, prevTS, false)
+		return true, ok, added
+
+	case roachpb.PENDING:
+		// The lock table already determined no conflict for this
+		// PENDING txn.  For txns with uncertainty intervals, the lock
+		// table verified that the ClockWhilePending observation proves
+		// concurrency. Assert that invariant holds: forwarding the
+		// provisional value's local timestamp by ClockWhilePending must
+		// make the value not uncertain.
+		if buildutil.CrdbTestBuild && p.checkUncertainty {
+			p.assertPendingNotUncertain(metaTS, lu)
+		}
+		// Skip past the intent to committed values below.
+		ok, added = p.seekVersion(ctx, prevTS, false)
+		return true, ok, added
+
+	case roachpb.COMMITTED:
+		// Intent from an older epoch than the committed epoch: this write was
+		// from a previous attempt and is not part of the committed transaction.
+		if intentEpoch < updateEpoch {
+			ok, added = p.seekVersion(ctx, prevTS, false)
+			return true, ok, added
+		}
+
+		// Check if the intent's sequence number was rolled back.
+		if enginepb.TxnSeqIsIgnored(p.meta.Txn.Sequence, lu.IgnoredSeqNums) {
+			ok, added = p.seekVersion(ctx, prevTS, false)
+			return true, ok, added
+		}
+
+		// Use the transaction's write timestamp at commit time. This may be
+		// higher than metaTS if the transaction's timestamp was pushed.
+		commitTS := lu.Txn.WriteTimestamp
+		ok, added = p.processCommittedIntent(ctx, metaTS, prevTS, commitTS)
+		return true, ok, added
+
+	default:
+		// Unknown status; fall through to normal handling.
+		return false, false, false
+	}
+}
+
+// processCommittedIntent handles a committed intent whose transaction status is
+// known via resolvable txn lookup. It seeks to the provisional value at metaTS,
+// and either:
+//
+//   - returns an uncertainty error if commitTS falls in the uncertainty interval
+//   - seeks past the intent to values below if commitTS > readTS
+//   - surfaces the provisional value at commitTS if commitTS <= readTS
+//
+// Note that commitTS may differ from metaTS when the transaction's timestamp
+// was pushed. Physical intent resolution would rewrite the key from metaTS to
+// commitTS; we achieve the same effect by encoding the result key at commitTS.
+func (p *pebbleMVCCScanner) processCommittedIntent(
+	ctx context.Context, metaTS hlc.Timestamp, prevTS hlc.Timestamp, commitTS hlc.Timestamp,
+) (ok, added bool) {
+	if p.ts.Less(commitTS) {
+		// The committed value is above our read timestamp.
+		if p.checkUncertainty {
+			// We need to check whether commitTS falls in the uncertainty
+			// interval. We can't reuse seekVersion for this because seekVersion
+			// checks uncertainty against the physical key timestamp (metaTS),
+			// not the logical commit timestamp.
+			if ok := p.checkCommittedIntentUncertainty(metaTS, commitTS); !ok {
+				return false, false // uncertainty error already set on p.err
+			}
+		}
+		// Above read timestamp, not uncertain: seek past the intent to find
+		// any committed values from previous transactions below.
+		return p.seekVersion(ctx, prevTS, false)
+	}
+
+	// commitTS <= p.ts: the committed value is visible. Seek to the
+	// provisional value at metaTS and surface it with commitTS.
+	seekKey := MVCCKey{Key: p.curUnsafeKey.Key, Timestamp: metaTS}
+	if !p.iterSeek(seekKey) {
+		p.setAdvanceKeyAtEnd()
+		return true /* ok */, false
+	}
+	if !p.curUnsafeKey.Timestamp.Equal(metaTS) {
+		// The provisional value is not where we expect it. This shouldn't
+		// happen for a committed intent, but advance to be safe.
+		p.setAdvanceKeyAtNewKey(p.curUnsafeKey.Key)
+		return true /* ok */, false
+	}
+
+	if !p.decodeCurrentValue(p.decodeMVCCHeaders) {
+		return false, false
+	}
+
+	// Re-encode the key at commitTS so the result reflects the logical commit
+	// timestamp rather than the physical intent timestamp. This mirrors what
+	// physical intent resolution does when it rewrites the key.
+	var rawKey []byte
+	if !p.curUnsafeKey.Timestamp.Equal(commitTS) {
+		p.curUnsafeKey.Timestamp = commitTS
+		p.keyBuf = EncodeMVCCKeyToBuf(p.keyBuf[:0], p.curUnsafeKey)
+		rawKey = p.keyBuf
+	} else {
+		rawKey = p.curRawKey
+	}
+	return p.add(ctx, p.curUnsafeKey.Key, rawKey, p.curUnsafeValue.Value.RawBytes, p.curRawValueFetched)
+}
+
+// checkCommittedIntentUncertainty seeks to the provisional value at metaTS,
+// decodes its local timestamp, and checks whether commitTS falls in the
+// uncertainty interval. Returns false if an uncertainty error was raised
+// (error stored on p.err). Returns true if no uncertainty error (caller
+// should continue).
+func (p *pebbleMVCCScanner) checkCommittedIntentUncertainty(
+	metaTS hlc.Timestamp, commitTS hlc.Timestamp,
+) (ok bool) {
+	seekKey := MVCCKey{Key: p.curUnsafeKey.Key, Timestamp: metaTS}
+	if !p.iterSeek(seekKey) {
+		// Iterator exhausted; no uncertainty error possible.
+		return true
+	}
+	if !p.curUnsafeKey.Timestamp.Equal(metaTS) {
+		// Provisional value not found at expected timestamp; no error.
+		return true
+	}
+
+	v, valid := p.getFromLazyValue()
+	if !valid {
+		return false
+	}
+	if extended, valid := p.tryDecodeCurrentValueSimple(v); !valid {
+		return false
+	} else if extended {
+		if !p.decodeCurrentValueExtended(v) {
+			return false
+		}
+	}
+
+	localTS := p.curUnsafeValue.GetLocalTimestamp(p.curUnsafeKey.Timestamp)
+	if p.uncertainty.IsUncertain(commitTS, localTS) {
+		return p.uncertaintyError(commitTS, localTS)
+	}
+	return true
+}
+
+// assertPendingNotUncertain verifies that a PENDING intent from
+// resolvableTxns, when resolved using ClockWhilePending, would not fall
+// within the reader's uncertainty interval. The lock table guarantees this
+// via pendingPushedTransactionCanBeResolved, which checks
+// hasObservationAtOrBefore(ClockWhilePending). We replicate the effective
+// localTS computation that ResolveIntent would perform (forwarding the
+// value's local timestamp by ClockWhilePending) and assert that the
+// result is not uncertain.
+func (p *pebbleMVCCScanner) assertPendingNotUncertain(metaTS hlc.Timestamp, lu roachpb.LockUpdate) {
+	// Compute the effective local timestamp as ResolveIntent would:
+	// max(value's localTS, ClockWhilePending.Timestamp).
+	// The value's localTS defaults to metaTS when not explicitly set,
+	// which is the common case for intents.
+	effectiveLocalTS := hlc.ClockTimestamp(metaTS)
+	effectiveLocalTS.Forward(lu.ClockWhilePending.Timestamp)
+
+	// The committed timestamp for a PENDING txn is its current write
+	// timestamp (which may have been pushed).
+	commitTS := lu.Txn.WriteTimestamp
+
+	if p.uncertainty.IsUncertain(commitTS, effectiveLocalTS) {
+		panic(errors.AssertionFailedf(
+			"scanning VIR: PENDING txn %s in resolvableTxns would be uncertain "+
+				"after applying ClockWhilePending: commitTS=%s effectiveLocalTS=%s "+
+				"localLimit=%s globalLimit=%s",
+			lu.Txn.ID, commitTS, effectiveLocalTS,
+			p.uncertainty.LocalLimit, p.uncertainty.GlobalLimit,
+		))
+	}
+}
+
 // Get one tuple into the result set. This method will make at most one
 // 'results.put' call regardless of whether 'put' returns an error or not.
 // - ok indicates whether the iteration should continue.
@@ -965,6 +1179,12 @@ func (p *pebbleMVCCScanner) getOne(ctx context.Context) (ok, added bool) {
 
 	ownIntent := p.txn != nil && p.meta.Txn.ID.Equal(p.txn.ID)
 	if !ownIntent {
+		// Scanning VIR: resolve the intent inline if its transaction's status
+		// is known. No-op when p.resolvableTxns == nil (scanning VIR disabled).
+		if handled, ok, added := p.resolveVirtualIntent(ctx, metaTS, prevTS); handled {
+			return ok, added
+		}
+
 		conflictingIntent := metaTS.LessEq(p.ts) || p.failOnMoreRecent
 		if !conflictingIntent {
 			// 8. The key contains an intent, but we're reading below the intent.

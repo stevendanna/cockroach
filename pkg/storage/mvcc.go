@@ -1222,6 +1222,33 @@ type LockTableView interface {
 	Close()
 }
 
+// ResolvableTxnLookup provides a view of transactions whose intents can be
+// virtually resolved inline during MVCC scanning. When the scanner encounters
+// an intent from a transaction in this lookup, it handles the intent based on
+// the transaction's status (COMMITTED, ABORTED, PENDING) without requiring a
+// separate ResolveIntent evaluation.
+type ResolvableTxnLookup interface {
+	LookupResolvableTxn(txnID uuid.UUID) (bool, roachpb.LockUpdate)
+}
+
+// resolvableTxnMap is a map-backed implementation of ResolvableTxnLookup.
+type resolvableTxnMap map[uuid.UUID]roachpb.LockUpdate
+
+// LookupResolvableTxn implements ResolvableTxnLookup.
+func (m resolvableTxnMap) LookupResolvableTxn(txnID uuid.UUID) (bool, roachpb.LockUpdate) {
+	lu, ok := m[txnID]
+	return ok, lu
+}
+
+// NewResolvableTxnLookup constructs a ResolvableTxnLookup from a map of lock
+// updates. Returns nil if the map is empty.
+func NewResolvableTxnLookup(m map[uuid.UUID]roachpb.LockUpdate) ResolvableTxnLookup {
+	if len(m) == 0 {
+		return nil
+	}
+	return resolvableTxnMap(m)
+}
+
 // MVCCGetOptions bundles options for the MVCCGet family of functions.
 type MVCCGetOptions struct {
 	// See the documentation for MVCCGet for information on these parameters.
@@ -1237,6 +1264,10 @@ type MVCCGetOptions struct {
 	// LockTable is used to determine whether keys are locked in the in-memory
 	// lock table when scanning with the SkipLocked option.
 	LockTable LockTableView
+	// ResolvableTxns, when set, enables inline intent resolution during MVCC
+	// scanning. Intents from transactions in this lookup are resolved based on
+	// the transaction's status without a separate ResolveIntent evaluation.
+	ResolvableTxns ResolvableTxnLookup
 	// DontInterleaveIntents, when set, makes it such that intent metadata is not
 	// interleaved with the results of the scan. Setting this option means that
 	// the underlying pebble iterator will only scan over the MVCC keyspace and
@@ -1553,6 +1584,7 @@ func mvccGet(
 		memAccount:        memAccount,
 		unlimitedMemAcc:   mvccScanner.unlimitedMemAcc,
 		lockTable:         opts.LockTable,
+		resolvableTxns:    opts.ResolvableTxns,
 		start:             key,
 		ts:                timestamp,
 		maxKeys:           1,
@@ -4662,6 +4694,7 @@ func mvccScanInit(
 		memAccount:       memAccount,
 		unlimitedMemAcc:  mvccScanner.unlimitedMemAcc,
 		lockTable:        opts.LockTable,
+		resolvableTxns:   opts.ResolvableTxns,
 		reverse:          opts.Reverse,
 		start:            key,
 		end:              endKey,
@@ -4923,6 +4956,10 @@ type MVCCScanOptions struct {
 	// LockTable is used to determine whether keys are locked in the in-memory
 	// lock table when scanning with the SkipLocked option.
 	LockTable LockTableView
+	// ResolvableTxns, when set, enables inline intent resolution during MVCC
+	// scanning. Intents from transactions in this lookup are resolved based on
+	// the transaction's status without a separate ResolveIntent evaluation.
+	ResolvableTxns ResolvableTxnLookup
 	// DontInterleaveIntents, when set, makes it such that intent metadata is not
 	// interleaved with the results of the scan. Setting this option means that
 	// the underlying pebble iterator will only scan over the MVCC keyspace and

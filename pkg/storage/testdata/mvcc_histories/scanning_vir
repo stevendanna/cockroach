@@ -1,0 +1,286 @@
+# Tests for scanning VIR (inline virtual intent resolution in the MVCC scanner).
+#
+# When resolvableTxns is set on get/scan, intents from transactions in the
+# resolvable set are handled inline by the scanner based on their status.
+
+# ============================================================
+# Setup: base values and intents for various test keys.
+# ============================================================
+
+# Key "a": committed value at ts=5, intent from txn A at ts=10.
+run ok
+put k=a v=committed ts=5,0
+with t=A
+  txn_begin ts=10,0
+  put k=a v=intent_value
+----
+put: lock acquisition = {span=a id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
+>> at end:
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+meta: "a"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=17 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "a"/10.000000000,0 -> /BYTES/intent_value
+data: "a"/5.000000000,0 -> /BYTES/committed
+
+# Key "b": committed value at ts=5, intent from txn B at ts=10.
+run ok
+put k=b v=committed_b ts=5,0
+with t=B
+  txn_begin ts=10,0
+  put k=b v=aborted_value
+----
+put: lock acquisition = {span=b id=00000002 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
+>> at end:
+txn: "B" meta={id=00000002 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+meta: "a"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=17 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "a"/10.000000000,0 -> /BYTES/intent_value
+data: "a"/5.000000000,0 -> /BYTES/committed
+meta: "b"/0,0 -> txn={id=00000002 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=18 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "b"/10.000000000,0 -> /BYTES/aborted_value
+data: "b"/5.000000000,0 -> /BYTES/committed_b
+
+# Key "c": committed value at ts=5, intent from txn C at ts=10.
+run ok
+put k=c v=committed_c ts=5,0
+with t=C
+  txn_begin ts=10,0
+  put k=c v=pending_value
+----
+put: lock acquisition = {span=c id=00000003 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
+>> at end:
+txn: "C" meta={id=00000003 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+meta: "a"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=17 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "a"/10.000000000,0 -> /BYTES/intent_value
+data: "a"/5.000000000,0 -> /BYTES/committed
+meta: "b"/0,0 -> txn={id=00000002 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=18 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "b"/10.000000000,0 -> /BYTES/aborted_value
+data: "b"/5.000000000,0 -> /BYTES/committed_b
+meta: "c"/0,0 -> txn={id=00000003 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=18 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "c"/10.000000000,0 -> /BYTES/pending_value
+data: "c"/5.000000000,0 -> /BYTES/committed_c
+
+
+# ============================================================
+# 1. COMMITTED intent visible, no push: commitTS == metaTS <= readTS
+#    Reading at ts=15 should see the committed intent value at ts=10.
+# ============================================================
+
+run ok
+resolvable_txn t=A status=COMMITTED
+get k=a ts=15,0 resolvableTxns
+----
+get: "a" -> /BYTES/intent_value @10.000000000,0
+>> at end:
+txn: "C" meta={id=00000003 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+
+run ok
+scan k=a end=b ts=15,0 resolvableTxns
+----
+scan: "a" -> /BYTES/intent_value @10.000000000,0
+
+
+# ============================================================
+# 2. COMMITTED intent above readTS, no push: seek past to values below.
+#    Reading at ts=7 (below intent at 10) should see value at ts=5.
+# ============================================================
+
+run ok
+get k=a ts=7,0 resolvableTxns
+----
+get: "a" -> /BYTES/committed @5.000000000,0
+
+run ok
+scan k=a end=b ts=7,0 resolvableTxns
+----
+scan: "a" -> /BYTES/committed @5.000000000,0
+
+
+# ============================================================
+# 3. COMMITTED with pushed commit timestamp: correct timestamp in result.
+#    Intent written at ts=10, txn committed at ts=20.
+#    Read at ts=15: commitTS=20 > readTS=15, seek past to value at ts=5.
+#    Read at ts=25: commitTS=20 <= readTS=25, surface at commitTS=20 (not metaTS=10).
+# ============================================================
+
+run ok
+txn_advance t=A ts=20,0
+resolvable_txn t=A status=COMMITTED
+get k=a ts=15,0 resolvableTxns
+----
+get: "a" -> /BYTES/committed @5.000000000,0
+>> at end:
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=20.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+
+# This is the key test: the value must be returned at commitTS=20, not metaTS=10.
+run ok
+get k=a ts=25,0 resolvableTxns
+----
+get: "a" -> /BYTES/intent_value @20.000000000,0
+
+run ok
+scan k=a end=b ts=25,0 resolvableTxns
+----
+scan: "a" -> /BYTES/intent_value @20.000000000,0
+
+
+# ============================================================
+# 4. COMMITTED in uncertainty interval.
+#    Intent at ts=10, committed at ts=20, reading at ts=7 with
+#    globalUncertaintyLimit=25. commitTS=20 is uncertain.
+# ============================================================
+
+run error
+get k=a ts=7,0 globalUncertaintyLimit=25,0 resolvableTxns
+----
+get: "a" -> <no data>
+error: (*kvpb.ReadWithinUncertaintyIntervalError:) ReadWithinUncertaintyIntervalError: read at time 7.000000000,0 encountered previous write with future timestamp 20.000000000,0 (local=10.000000000,0) within uncertainty interval `t <= (local=0,0, global=0,0)`; observed timestamps: []
+
+
+# ============================================================
+# 5. COMMITTED above readTS but NOT in uncertainty interval.
+#    Intent at ts=10, committed at ts=20, reading at ts=7 with
+#    globalUncertaintyLimit=15. commitTS=20 > globalLimit=15, so not uncertain.
+#    Should seek past to value at ts=5.
+# ============================================================
+
+run ok
+get k=a ts=7,0 globalUncertaintyLimit=15,0 resolvableTxns
+----
+get: "a" -> /BYTES/committed @5.000000000,0
+
+
+# ============================================================
+# 6. ABORTED intent: seek past, read committed value below.
+# ============================================================
+
+run ok
+resolvable_txn t=B status=ABORTED
+get k=b ts=15,0 resolvableTxns
+----
+get: "b" -> /BYTES/committed_b @5.000000000,0
+>> at end:
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=20.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+
+run ok
+scan k=b end=c ts=15,0 resolvableTxns
+----
+scan: "b" -> /BYTES/committed_b @5.000000000,0
+
+
+# ============================================================
+# 7. PENDING intent: seek past.
+# ============================================================
+
+run ok
+resolvable_txn t=C status=PENDING
+get k=c ts=15,0 resolvableTxns
+----
+get: "c" -> /BYTES/committed_c @5.000000000,0
+>> at end:
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=20.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+
+
+# ============================================================
+# 8. Unknown transaction: falls through to normal conflict path.
+# ============================================================
+
+run ok
+with t=F
+  txn_begin ts=10,0
+  put k=f v=unknown_value
+----
+put: lock acquisition = {span=f id=00000004 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
+>> at end:
+txn: "F" meta={id=00000004 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+meta: "a"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=17 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "a"/10.000000000,0 -> /BYTES/intent_value
+data: "a"/5.000000000,0 -> /BYTES/committed
+meta: "b"/0,0 -> txn={id=00000002 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=18 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "b"/10.000000000,0 -> /BYTES/aborted_value
+data: "b"/5.000000000,0 -> /BYTES/committed_b
+meta: "c"/0,0 -> txn={id=00000003 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=18 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "c"/10.000000000,0 -> /BYTES/pending_value
+data: "c"/5.000000000,0 -> /BYTES/committed_c
+meta: "f"/0,0 -> txn={id=00000004 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} ts=10.000000000,0 del=false klen=12 vlen=18 mergeTs=<nil> txnDidNotUpdateMeta=true
+data: "f"/10.000000000,0 -> /BYTES/unknown_value
+
+# Note: no resolvable_txn for F, so it falls through to normal conflict handling.
+run error
+get k=f ts=15,0 resolvableTxns
+----
+get: "f" -> <no data>
+error: (*kvpb.LockConflictError:) conflicting locks on "f"
+
+
+# ============================================================
+# 9. failOnMoreRecent: scanning VIR falls through to normal handling
+#    because locking requests can't use VIR.
+# ============================================================
+
+# Reset A's commit timestamp back to ts=10 for this test.
+run ok
+txn_advance t=A ts=10,0
+resolvable_txn t=A status=COMMITTED
+----
+>> at end:
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=10.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+
+# failOnMoreRecent with a COMMITTED resolved txn: scanning VIR falls through
+# and the normal intent handling path sees a conflicting intent, producing
+# a LockConflictError (the normal path doesn't know about the resolution).
+run error
+get k=a ts=5,0 failOnMoreRecent resolvableTxns
+----
+get: "a" -> <no data>
+error: (*kvpb.LockConflictError:) conflicting locks on "a"
+
+
+# ============================================================
+# 10. Reverse scan with resolved intents.
+# ============================================================
+
+run ok
+scan k=a end=d ts=15,0 reverse resolvableTxns
+----
+scan: "c" -> /BYTES/committed_c @5.000000000,0
+scan: "b" -> /BYTES/committed_b @5.000000000,0
+scan: "a" -> /BYTES/intent_value @10.000000000,0
+
+
+# ============================================================
+# 11. Scan across keys mixing resolved and unresolved intents.
+#     Keys a (COMMITTED), b (ABORTED), c (PENDING) are resolved.
+#     Key f is unresolved and should cause a LockConflictError.
+# ============================================================
+
+run error
+scan k=a end=g ts=15,0 resolvableTxns
+----
+scan: "a"-"g" -> <no data>
+error: (*kvpb.LockConflictError:) conflicting locks on "f"
+
+
+# ============================================================
+# 12. Pushed committed intent: scan returns correct commitTS.
+#     Push txn A to ts=20 and verify scan returns value at ts=20.
+# ============================================================
+
+run ok
+txn_advance t=A ts=20,0
+resolvable_txn t=A status=COMMITTED
+scan k=a end=b ts=25,0 resolvableTxns
+----
+scan: "a" -> /BYTES/intent_value @20.000000000,0
+>> at end:
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=20.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=10.000000000,0 gul=0,0
+
+# Read at ts=12: commitTS=20 > readTS, seek past to value at ts=5.
+# This exercises the "above readTS" path for pushed commits.
+run ok
+get k=a ts=12,0 resolvableTxns
+----
+get: "a" -> /BYTES/committed @5.000000000,0
+
+run ok
+scan k=a end=b ts=12,0 resolvableTxns
+----
+scan: "a" -> /BYTES/committed @5.000000000,0

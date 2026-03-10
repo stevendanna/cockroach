@@ -69,9 +69,16 @@ func (r *Replica) executeReadOnlyBatch(
 	defer rec.Release()
 
 	var rw storage.ReadWriter
-	intentsToResolveVirtually := g.IntentsToResolveVirtually()
-	// If there are intents to be resolved virtually, use a storage batch in which
-	// the intent resolution will be evaluated before the read-only batch request.
+	resolvableTxnsForScanning := g.ResolvableTxnsForScanning()
+	var intentsToResolveVirtually []roachpb.LockUpdate
+	if len(resolvableTxnsForScanning) == 0 {
+		// Scanning VIR is not active; fall back to the batch-prepending VIR path.
+		intentsToResolveVirtually = g.IntentsToResolveVirtually()
+	}
+	// If there are intents to be resolved virtually via the batch-prepending
+	// path, use a storage batch in which the intent resolution will be evaluated
+	// before the read-only batch request. When scanning VIR is active, intents
+	// are handled inline in the MVCC scanner instead, so no batch is needed.
 	if len(intentsToResolveVirtually) > 0 {
 		rw, _ = r.newBatchedEngine(g)
 	} else {

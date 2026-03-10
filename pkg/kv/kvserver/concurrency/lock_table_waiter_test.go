@@ -29,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -108,6 +109,9 @@ func (g *mockLockTableGuard) IsKeyLockedByConflictingTxn(
 	context.Context, roachpb.Key, lock.Strength,
 ) (bool, *enginepb.TxnMeta, error) {
 	panic("unimplemented")
+}
+func (g *mockLockTableGuard) ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate {
+	return nil
 }
 func (g *mockLockTableGuard) notify() { g.signal <- struct{}{} }
 

@@ -175,6 +175,16 @@ var VirtualIntentResolution = settings.RegisterBoolSetting(
 	// false),
 )
 
+// ScanningVirtualIntentResolution controls whether intents are resolved inline
+// during MVCC scanning, using the lock table guard's resolved transaction
+// knowledge, instead of prepending ResolveIntent requests to a batch.
+var ScanningVirtualIntentResolution = settings.RegisterBoolSetting(
+	settings.SystemOnly,
+	"kv.concurrency.scanning_virtual_intent_resolution.enabled",
+	"resolve intents inline during MVCC scanning instead of prepending ResolveIntent requests",
+	false,
+)
+
 // PushUsingCachedClockObservation controls whether we allow intents from
 // PENDING transactions to be resolved by requests with uncertainty intervals by
 // using a cached clock observation from the original pusher.
@@ -1005,6 +1015,14 @@ func (g *guardImpl) IsKeyLockedByConflictingTxn(
 func (g *guardImpl) IntentsToResolveVirtually() []roachpb.LockUpdate {
 	if g.ltg != nil {
 		return g.ltg.IntentsToResolveVirtually()
+	}
+	return nil
+}
+
+// ResolvableTxnsForScanning implements the Guard interface.
+func (g *guardImpl) ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate {
+	if g.ltg != nil {
+		return g.ltg.ResolvableTxnsForScanning()
 	}
 	return nil
 }

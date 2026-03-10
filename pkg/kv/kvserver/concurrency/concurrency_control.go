@@ -523,6 +523,11 @@ type Guard interface {
 	// lock table guard.
 	IntentsToResolveVirtually() []roachpb.LockUpdate
 
+	// ResolvableTxnsForScanning returns the map of resolvable transactions that can
+	// be used for inline intent resolution during MVCC scanning. Returns nil if
+	// scanning VIR is disabled.
+	ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate
+
 	// PrepareForLockConflictRetry is called on the lock conflict error path,
 	// before the guard is re-sequenced. It condenses point resolve entries into
 	// range entries that persist across re-sequencing.
@@ -903,6 +908,11 @@ type lockTableGuard interface {
 	// VirtuallyResolvesIntents returns true if the guard will resolve intents
 	// virtually during evaluation rather than physically before re-scanning.
 	VirtuallyResolvesIntents() bool
+
+	// ResolvableTxnsForScanning returns the map of resolvable transactions for
+	// inline intent resolution during MVCC scanning. Returns nil if scanning
+	// VIR is disabled.
+	ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate
 
 	// AddReplicatedToResolveAndSignal adds a lock update for a replicated lock
 	// to the guard's resolve list and signals the guard to rescan.

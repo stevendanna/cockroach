@@ -81,6 +81,8 @@ var (
 //		txn_status             t=<name> status=<txnstatus>
 //		txn_ignore_seqs        t=<name> seqs=[<int>-<int>[,<int>-<int>...]]
 //
+//		resolvable_txn         t=<name> status=<txnstatus>
+//
 //		resolve_intent         t=<name> k=<key> [status=<txnstatus>] [clockWhilePending=<int>[,<int>]] [targetBytes=<int>]
 //		resolve_intent_range   t=<name> k=<key> end=<key> [status=<txnstatus>] [maxKeys=<int>] [targetBytes=<int>]
 //		check_intent           k=<key> [none]
@@ -116,11 +118,12 @@ var (
 //	     put_blind_inline     k=<key> v=<string> [prev=<string>]
 //
 //	     get                  [t=<name>] [ts=<int>[,<int>]] [resolve [status=<txnstatus>]] k=<key> [inconsistent] [skipLocked]
-//	                          [tombstones] [failOnMoreRecent] [localUncertaintyLimit=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]]
+//	                          [resolvableTxns] [tombstones] [failOnMoreRecent]
+//	                          [localUncertaintyLimit=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]]
 //	                          [maxKeys=<int>] [targetBytes=<int>] [allowEmpty]
 //
 //	     scan                 [t=<name>] [ts=<int>[,<int>]] [resolve [status=<txnstatus>]] k=<key> [end=<key>]
-//	                          [inconsistent] [skipLocked] [tombstones] [reverse] [failOnMoreRecent]
+//	                          [inconsistent] [skipLocked] [resolvableTxns] [tombstones] [reverse] [failOnMoreRecent]
 //	                          [localUncertaintyLimit=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]] [max=<max>]
 //	                          [targetbytes=<target>] [wholeRows[=<int>]] [allowEmpty]
 //
@@ -766,6 +769,8 @@ var commands = map[string]cmd{
 	"txn_step":        {typTxnUpdate, cmdTxnStep},
 	"txn_update":      {typTxnUpdate, cmdTxnUpdate},
 
+	"resolvable_txn": {typTxnUpdate, cmdResolvableTxn},
+
 	"resolve_intent":         {typDataUpdate | typLocksUpdate, cmdResolveIntent},
 	"resolve_intent_range":   {typDataUpdate | typLocksUpdate, cmdResolveIntentRange},
 	"check_intent":           {typReadOnly, cmdCheckIntent},
@@ -895,6 +900,19 @@ func cmdTxnSetStatus(e *evalCtx) error {
 	status := e.getTxnStatus()
 	txn.Status = status
 	e.results.txn = txn
+	return nil
+}
+
+func cmdResolvableTxn(e *evalCtx) error {
+	txn := e.getTxn(mandatory)
+	status := e.getTxnStatus()
+	lu := roachpb.LockUpdate{
+		Span:           roachpb.Span{},
+		Txn:            txn.TxnMeta,
+		Status:         status,
+		IgnoredSeqNums: txn.IgnoredSeqNums,
+	}
+	e.resolvableTxns[txn.ID] = lu
 	return nil
 }
 
@@ -1443,6 +1461,9 @@ func cmdGet(e *evalCtx) error {
 		opts.SkipLocked = true
 		opts.LockTable = e.newLockTableView(txn, ts, e.getStrength())
 	}
+	if e.hasArg("resolvableTxns") {
+		opts.ResolvableTxns = storage.NewResolvableTxnLookup(e.resolvableTxns)
+	}
 	if e.hasArg("tombstones") {
 		opts.Tombstones = true
 	}
@@ -1758,6 +1779,9 @@ func cmdScan(e *evalCtx) error {
 	if e.hasArg("skipLocked") {
 		opts.SkipLocked = true
 		opts.LockTable = e.newLockTableView(txn, ts, e.getStrength())
+	}
+	if e.hasArg("resolvableTxns") {
+		opts.ResolvableTxns = storage.NewResolvableTxnLookup(e.resolvableTxns)
 	}
 	if e.hasArg("tombstones") {
 		opts.Tombstones = true
@@ -2379,21 +2403,22 @@ type evalCtx struct {
 		txn           *roachpb.Transaction
 		traceClearKey bool
 	}
-	ctx           context.Context
-	st            *cluster.Settings
-	engine        storage.Engine
-	flags         evalFlags
-	iter          storage.SimpleMVCCIterator
-	iterRangeKeys storage.MVCCRangeKeyStack
-	t             *testing.T
-	td            *datadriven.TestData
-	txns          map[string]*roachpb.Transaction
-	txnCounter    uint32
-	unreplLocks   map[string]unreplicatedLockInfo
-	ms            *enginepb.MVCCStats
-	sstWriter     *storage.SSTWriter
-	sstFile       *storage.MemObject
-	ssts          [][]byte
+	ctx            context.Context
+	st             *cluster.Settings
+	engine         storage.Engine
+	flags          evalFlags
+	iter           storage.SimpleMVCCIterator
+	iterRangeKeys  storage.MVCCRangeKeyStack
+	t              *testing.T
+	td             *datadriven.TestData
+	txns           map[string]*roachpb.Transaction
+	txnCounter     uint32
+	unreplLocks    map[string]unreplicatedLockInfo
+	resolvableTxns map[uuid.UUID]roachpb.LockUpdate
+	ms             *enginepb.MVCCStats
+	sstWriter      *storage.SSTWriter
+	sstFile        *storage.MemObject
+	ssts           [][]byte
 
 	logOps bool
 	opLog  []enginepb.MVCCLogicalOp
@@ -2401,11 +2426,12 @@ type evalCtx struct {
 
 func newEvalCtx(ctx context.Context, engine storage.Engine) *evalCtx {
 	return &evalCtx{
-		ctx:         ctx,
-		st:          cluster.MakeTestingClusterSettings(),
-		engine:      engine,
-		txns:        make(map[string]*roachpb.Transaction),
-		unreplLocks: make(map[string]unreplicatedLockInfo),
+		ctx:            ctx,
+		st:             cluster.MakeTestingClusterSettings(),
+		engine:         engine,
+		txns:           make(map[string]*roachpb.Transaction),
+		unreplLocks:    make(map[string]unreplicatedLockInfo),
+		resolvableTxns: make(map[uuid.UUID]roachpb.LockUpdate),
 	}
 }
 

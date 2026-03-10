@@ -61,6 +61,7 @@ func Scan(
 		Reverse:                 false,
 		MemoryAccount:           cArgs.EvalCtx.GetResponseMemoryAccount(),
 		LockTable:               lockTableForSkipLocked,
+		ResolvableTxns:          cArgs.ResolvableTxns,
 		DontInterleaveIntents:   cArgs.DontInterleaveIntents,
 		ReadCategory:            readCategory,
 		ReturnRawMVCCValues:     args.ReturnRawMVCCValues,
