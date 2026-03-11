@@ -528,6 +528,10 @@ type Guard interface {
 	// scanning VIR is disabled.
 	ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate
 
+	// VIREnabled returns true if virtual intent resolution is active for this
+	// guard in any form (batch-prepending VIR or scanning VIR).
+	VIREnabled() bool
+
 	// PrepareForLockConflictRetry is called on the lock conflict error path,
 	// before the guard is re-sequenced. It condenses point resolve entries into
 	// range entries that persist across re-sequencing.
@@ -913,6 +917,10 @@ type lockTableGuard interface {
 	// inline intent resolution during MVCC scanning. Returns nil if scanning
 	// VIR is disabled.
 	ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate
+
+	// VIREnabled returns true if virtual intent resolution is active for this
+	// guard in any form (batch-prepending VIR or scanning VIR).
+	VIREnabled() bool
 
 	// AddReplicatedToResolveAndSignal adds a lock update for a replicated lock
 	// to the guard's resolve list and signals the guard to rescan.

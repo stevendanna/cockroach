@@ -790,6 +790,11 @@ func (g *lockTableGuardImpl) VirtuallyResolvesIntents() bool {
 	return g.virtuallyResolveIntents
 }
 
+// VIREnabled implements the lockTableGuard interface.
+func (g *lockTableGuardImpl) VIREnabled() bool {
+	return g.toResolve.virEnabled
+}
+
 // ResolvableTxnsForScanning implements the lockTableGuard interface.
 func (g *lockTableGuardImpl) ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate {
 	if !g.scanningVIR {

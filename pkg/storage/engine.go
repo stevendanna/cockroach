@@ -1963,6 +1963,12 @@ func assertMVCCIteratorInvariants(iter MVCCIterator) error {
 // read correct provisional values for at least one of the keys being scanned.
 // Typically, this applies to all transactions that read their own writes.
 //
+// When preferDistinctTxns is true, the scan collects at most one intent per
+// conflicting transaction. This maximizes the number of distinct transactions
+// discovered within the maxLockConflicts budget, which is useful when virtual
+// intent resolution (VIR) is active: learning each transaction's status allows
+// the scanner to resolve their intents inline during evaluation.
+//
 // [1] The supplied txnID may be empty (uuid.Nil) if the request on behalf of
 // which the scan is being performed is non-transactional.
 func ScanConflictingIntentsForDroppingLatchesEarly(
@@ -1974,6 +1980,7 @@ func ScanConflictingIntentsForDroppingLatchesEarly(
 	intents *[]roachpb.Intent,
 	maxLockConflicts int64,
 	targetLockConflictBytes int64,
+	preferDistinctTxns bool,
 ) (needIntentHistory bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -2017,6 +2024,10 @@ func ScanConflictingIntentsForDroppingLatchesEarly(
 	var meta enginepb.MVCCMetadata
 	var ok bool
 	intentSize := int64(0)
+	var seenTxns map[uuid.UUID]struct{}
+	if preferDistinctTxns {
+		seenTxns = make(map[uuid.UUID]struct{})
+	}
 	for ok, err = iter.SeekEngineKeyGE(EngineKey{Key: ltStart}); ok; ok, err = iter.NextEngineKey() {
 		if maxLockConflicts != 0 && int64(len(*intents)) >= maxLockConflicts {
 			// Return early if we're done accumulating intents; make no claims about
@@ -2071,6 +2082,12 @@ func ScanConflictingIntentsForDroppingLatchesEarly(
 		}
 		if intentConflicts := meta.Timestamp.ToTimestamp().LessEq(ts); !intentConflicts {
 			continue
+		}
+		if seenTxns != nil {
+			if _, seen := seenTxns[meta.Txn.ID]; seen {
+				continue
+			}
+			seenTxns[meta.Txn.ID] = struct{}{}
 		}
 		key, err := iter.EngineKey()
 		if err != nil {

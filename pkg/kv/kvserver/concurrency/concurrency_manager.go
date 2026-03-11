@@ -1043,6 +1043,14 @@ func (g *guardImpl) ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate
 	return nil
 }
 
+// VIREnabled implements the Guard interface.
+func (g *guardImpl) VIREnabled() bool {
+	if g.ltg != nil {
+		return g.ltg.VIREnabled()
+	}
+	return false
+}
+
 func (g *guardImpl) moveLatchGuard() latchGuard {
 	lg := g.lg
 	g.lg = nil

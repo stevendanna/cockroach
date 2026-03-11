@@ -113,7 +113,8 @@ func (g *mockLockTableGuard) IsKeyLockedByConflictingTxn(
 func (g *mockLockTableGuard) ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate {
 	return nil
 }
-func (g *mockLockTableGuard) notify() { g.signal <- struct{}{} }
+func (g *mockLockTableGuard) VIREnabled() bool { return false }
+func (g *mockLockTableGuard) notify()          { g.signal <- struct{}{} }
 
 // mockLockTable overrides TransactionIsFinalized, which is the only LockTable
 // method that should be called in this test.

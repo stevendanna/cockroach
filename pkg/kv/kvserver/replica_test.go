@@ -129,6 +129,7 @@ func (mg mockGuard) PrepareForLockConflictRetry(context.Context) {}
 func (mg mockGuard) ResolvableTxnsForScanning() map[uuid.UUID]roachpb.LockUpdate {
 	return nil
 }
+func (mg mockGuard) VIREnabled() bool { return false }
 
 var _ concurrency.Guard = (*mockGuard)(nil)
 
