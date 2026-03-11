@@ -8285,6 +8285,7 @@ func mvccExportToWriter(
 		ReadCategory:            fs.BackupReadCategory,
 		MaxLockConflicts:        opts.MaxLockConflicts,
 		TargetLockConflictBytes: opts.TargetLockConflictBytes,
+		ResolvableTxns:          opts.ResolvableTxns,
 	})
 	if err != nil {
 		return kvpb.BulkOpSummary{}, ExportRequestResumeInfo{}, err
@@ -8715,6 +8716,11 @@ type MVCCExportOptions struct {
 	// failure. Non-iterator stats i.e., {NumGets,NumReverseScans} are left
 	// unchanged, and NumScans is incremented by 1.
 	ScanStats *kvpb.ScanStats
+
+	// ResolvableTxns, when set, enables inline intent resolution (scanning
+	// VIR) during export. Intents from transactions in this lookup are
+	// handled based on status without requiring physical resolution.
+	ResolvableTxns ResolvableTxnLookup
 }
 
 type MVCCExportFingerprintOptions struct {

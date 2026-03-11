@@ -198,6 +198,7 @@ func evalExport(
 			StopMidKey:              args.SplitMidKey,
 			ScanStats:               cArgs.ScanStats,
 			IncludeMVCCValueHeader:  args.IncludeMVCCValueHeader,
+			ResolvableTxns:          cArgs.ResolvableTxns,
 		}
 		var summary kvpb.BulkOpSummary
 		var resumeInfo storage.ExportRequestResumeInfo
