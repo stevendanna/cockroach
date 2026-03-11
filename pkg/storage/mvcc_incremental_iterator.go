@@ -24,6 +24,11 @@ import (
 var mvccIncrementalIteratorMetamorphicTBI = metamorphic.ConstantWithTestBool(
 	"mvcc-incremental-iter-tbi", true)
 
+// errIterAdvance is a sentinel error returned by updateMeta() to signal that
+// advance() should continue its loop (the intent was handled by VIR and the
+// iterator was repositioned).
+var errIterAdvance = errors.New("iterate advance")
+
 // MVCCIncrementalIterator iterates over the diff of the key range
 // [startKey,endKey) and time range (startTime,endTime]. If a key was added or
 // modified between startTime and endTime, the iterator will position at the
@@ -143,6 +148,19 @@ type MVCCIncrementalIterator struct {
 	// collection could stop early if targetLockConflictBytes is reached. This
 	// setting is only relevant under MVCCIncrementalIterIntentPolicyAggregate.
 	collectedIntentBytes uint64
+
+	// resolvableTxns, when set, enables inline intent resolution (scanning
+	// VIR). When the iterator encounters an intent from a transaction in this
+	// lookup, it handles the intent based on the transaction's status without
+	// requiring a separate ResolveIntent evaluation. A nil value means scanning
+	// VIR is disabled and intents are handled by the normal intent policy.
+	resolvableTxns ResolvableTxnLookup
+
+	// When a committed intent is surfaced with a re-encoded timestamp, these
+	// fields hold the buffered key. committedIntentKey.Timestamp is non-zero
+	// when active.
+	committedIntentKey    MVCCKey
+	committedIntentKeyBuf []byte
 }
 
 var _ SimpleMVCCIterator = &MVCCIncrementalIterator{}
@@ -219,6 +237,12 @@ type MVCCIncrementalIterOptions struct {
 	//
 	// The zero value indicates no limit.
 	TargetLockConflictBytes uint64
+
+	// ResolvableTxns, when set, enables inline intent resolution (scanning
+	// VIR). Intents from transactions in this lookup are handled based on
+	// status (COMMITTED, ABORTED, PENDING) without requiring physical
+	// resolution. A nil value disables scanning VIR.
+	ResolvableTxns ResolvableTxnLookup
 }
 
 // NewMVCCIncrementalIterator creates an MVCCIncrementalIterator with the
@@ -307,11 +331,13 @@ func NewMVCCIncrementalIterator(
 		intentPolicy:            opts.IntentPolicy,
 		maxLockConflicts:        opts.MaxLockConflicts,
 		targetLockConflictBytes: opts.TargetLockConflictBytes,
+		resolvableTxns:          opts.ResolvableTxns,
 	}, nil
 }
 
 // SeekGE implements SimpleMVCCIterator.
 func (i *MVCCIncrementalIterator) SeekGE(startKey MVCCKey) {
+	i.committedIntentKey.Timestamp = hlc.Timestamp{}
 	if i.timeBoundIter != nil {
 		// Check which is the first key seen by the TBI.
 		i.timeBoundIter.SeekGE(startKey)
@@ -344,6 +370,7 @@ func (i *MVCCIncrementalIterator) Close() {
 
 // Next implements SimpleMVCCIterator.
 func (i *MVCCIncrementalIterator) Next() {
+	i.committedIntentKey.Timestamp = hlc.Timestamp{}
 	i.iter.Next()
 	i.advance(false /* seeked */)
 }
@@ -358,6 +385,7 @@ func (i *MVCCIncrementalIterator) updateValid() bool {
 
 // NextKey implements SimpleMVCCIterator.
 func (i *MVCCIncrementalIterator) NextKey() {
+	i.committedIntentKey.Timestamp = hlc.Timestamp{}
 	i.iter.NextKey()
 	i.advance(false /* seeked */)
 }
@@ -504,6 +532,22 @@ func (i *MVCCIncrementalIterator) updateMeta() error {
 	}
 
 	metaTimestamp := i.meta.Timestamp.ToTimestamp()
+
+	// Scanning VIR: try to resolve the intent inline using the resolvable
+	// txn lookup before falling through to normal intent policy handling.
+	if i.resolvableTxns != nil {
+		resolved, skip := i.tryResolveIntent(metaTimestamp)
+		if resolved {
+			if skip {
+				return errIterAdvance
+			}
+			// Committed intent surfaced as value at commitTS.
+			// meta.Timestamp is updated to commitTS for time-bounds filtering.
+			return nil
+		}
+		// Unknown txn — fall through to normal intent policy handling.
+	}
+
 	if i.startTime.Less(metaTimestamp) && metaTimestamp.LessEq(i.endTime) {
 		switch i.intentPolicy {
 		case MVCCIncrementalIterIntentPolicyError:
@@ -546,6 +590,102 @@ func (i *MVCCIncrementalIterator) updateMeta() error {
 		}
 	}
 	return nil
+}
+
+// tryResolveIntent attempts to resolve an intent inline using the resolvable
+// txn lookup. It returns (resolved, skip) where resolved=true means the intent
+// was handled by VIR, and skip=true means the iterator was advanced past the
+// intent and advance() should continue its loop.
+func (i *MVCCIncrementalIterator) tryResolveIntent(
+	metaTimestamp hlc.Timestamp,
+) (resolved, skip bool) {
+	found, lu := i.resolvableTxns.LookupResolvableTxn(i.meta.Txn.ID)
+	if !found {
+		return false, false
+	}
+
+	intentEpoch := i.meta.Txn.Epoch
+	updateEpoch := lu.Txn.Epoch
+
+	// If the intent is from a newer epoch than the update, the update is stale.
+	if intentEpoch > updateEpoch {
+		return false, false
+	}
+
+	switch lu.Status {
+	case roachpb.ABORTED:
+		// Skip past the intent metadata and provisional value to committed
+		// versions below. Those versions are from other transactions and may
+		// be within the time range.
+		i.skipPastProvisionalValue()
+		return true, true
+
+	case roachpb.PENDING:
+		// Skip past the intent metadata and provisional value to committed
+		// versions below.
+		i.skipPastProvisionalValue()
+		return true, true
+
+	case roachpb.COMMITTED:
+		// Intent from an older epoch than the committed epoch: this write was
+		// from a previous attempt and is not part of the committed transaction.
+		if intentEpoch < updateEpoch {
+			i.skipPastProvisionalValue()
+			return true, true
+		}
+		// Check if the intent's sequence number was rolled back.
+		if enginepb.TxnSeqIsIgnored(i.meta.Txn.Sequence, lu.IgnoredSeqNums) {
+			i.skipPastProvisionalValue()
+			return true, true
+		}
+		commitTS := lu.Txn.WriteTimestamp
+		return true, i.processCommittedIntent(commitTS)
+
+	default:
+		return false, false
+	}
+}
+
+// skipPastProvisionalValue advances the underlying iterator past the intent
+// metadata key and its provisional value, positioning on the first committed
+// version below (or exhausting the key). This is used for ABORTED, PENDING,
+// and COMMITTED intents with rolled-back writes, where the provisional value
+// should be ignored but older committed versions should still be visible.
+func (i *MVCCIncrementalIterator) skipPastProvisionalValue() {
+	// Skip the intent metadata, landing on the provisional value.
+	i.iter.Next()
+	if ok, err := i.iter.Valid(); !ok || err != nil {
+		i.valid = ok
+		i.err = err
+		return
+	}
+	// Skip the provisional value, landing on committed versions below.
+	i.iter.Next()
+}
+
+// processCommittedIntent handles a committed intent by positioning the
+// underlying iterator on the provisional value, buffering the key at commitTS,
+// and updating meta.Timestamp so the time-bounds check in advance() uses
+// commitTS. Returns skip=true if the intent should be skipped (iterator
+// invalidated), skip=false if the provisional value was surfaced.
+func (i *MVCCIncrementalIterator) processCommittedIntent(commitTS hlc.Timestamp) (skip bool) {
+	// Position on the provisional value.
+	i.iter.Next()
+	if ok, err := i.iter.Valid(); !ok || err != nil {
+		i.valid = false
+		i.err = err
+		return true
+	}
+
+	// Buffer the key with commitTS and update meta.Timestamp so the
+	// time-bounds check in advance() uses commitTS, not metaTS.
+	unsafeKey := i.iter.UnsafeKey()
+	i.committedIntentKey = MVCCKey{Key: unsafeKey.Key, Timestamp: commitTS}
+	i.committedIntentKeyBuf = EncodeMVCCKeyToBuf(
+		i.committedIntentKeyBuf[:0], i.committedIntentKey)
+	i.meta.Timestamp = commitTS.ToLegacyTimestamp()
+	i.meta.Txn = nil // no longer an intent from advance()'s perspective
+	return false
 }
 
 // updateRangeKeys updates the iterator with the current range keys, filtered by
@@ -628,8 +768,14 @@ func (i *MVCCIncrementalIterator) advance(seeked bool) {
 			i.hasPoint = true
 		}
 
+		// Clear any buffered committed intent key from a previous iteration.
+		i.committedIntentKey.Timestamp = hlc.Timestamp{}
+
 		// Process point keys.
 		if err := i.updateMeta(); err != nil {
+			if errors.Is(err, errIterAdvance) {
+				continue
+			}
 			return
 		}
 
@@ -692,6 +838,9 @@ func (i *MVCCIncrementalIterator) Valid() (bool, error) {
 
 // UnsafeKey implements SimpleMVCCIterator.
 func (i *MVCCIncrementalIterator) UnsafeKey() MVCCKey {
+	if i.committedIntentKey.Timestamp.IsSet() {
+		return i.committedIntentKey
+	}
 	return i.iter.UnsafeKey()
 }
 
@@ -825,6 +974,7 @@ func (i *MVCCIncrementalIterator) updateIgnoreTime() {
 //
 // * RangeBounds() and RangeKeys() will return empty results.
 func (i *MVCCIncrementalIterator) NextIgnoringTime() {
+	i.committedIntentKey.Timestamp = hlc.Timestamp{}
 	i.iter.Next()
 	i.updateIgnoreTime()
 }
@@ -836,6 +986,7 @@ func (i *MVCCIncrementalIterator) NextIgnoringTime() {
 //
 // NB: See NextIgnoringTime comment for important details about range keys.
 func (i *MVCCIncrementalIterator) NextKeyIgnoringTime() {
+	i.committedIntentKey.Timestamp = hlc.Timestamp{}
 	i.iter.NextKey()
 	i.updateIgnoreTime()
 }
@@ -911,8 +1062,12 @@ func (i *MVCCIncrementalIterator) assertInvariants() error {
 	if hasPoint, _ := i.iter.HasPointAndRange(); hasPoint {
 		metaTS := i.meta.Timestamp.ToTimestamp()
 		if iterKey.Timestamp.IsSet() && metaTS != iterKey.Timestamp {
-			return errors.AssertionFailedf("i.meta.Timestamp %s differs from i.iter.UnsafeKey %s",
-				metaTS, iterKey)
+			// When a committed intent is buffered, i.meta.Timestamp is commitTS
+			// but i.iter.UnsafeKey().Timestamp is the provisional value's timestamp.
+			if !i.committedIntentKey.Timestamp.IsSet() {
+				return errors.AssertionFailedf("i.meta.Timestamp %s differs from i.iter.UnsafeKey %s",
+					metaTS, iterKey)
+			}
 		}
 		if metaTS.IsEmpty() && i.meta.Txn == nil {
 			return errors.AssertionFailedf("empty i.meta for point key %s", iterKey)

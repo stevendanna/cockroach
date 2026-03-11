@@ -909,6 +909,376 @@ func TestMVCCIncrementalIteratorIntentPolicy(t *testing.T) {
 	})
 }
 
+func TestMVCCIncrementalIteratorScanningVIR(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	DisableMetamorphicSimpleValueEncoding(t)
+	ctx := context.Background()
+
+	var (
+		keyMax   = roachpb.KeyMax
+		testKey1 = roachpb.Key("/db1")
+		testKey2 = roachpb.Key("/db2")
+		testKey3 = roachpb.Key("/db3")
+
+		testValue1 = roachpb.MakeValueFromString("val1")
+		testValue2 = roachpb.MakeValueFromString("val2")
+		testValue3 = roachpb.MakeValueFromString("val3")
+
+		tsMin = hlc.Timestamp{WallTime: 0, Logical: 1}
+		ts1   = hlc.Timestamp{WallTime: 1, Logical: 0}
+		ts5   = hlc.Timestamp{WallTime: 5, Logical: 0}
+		ts8   = hlc.Timestamp{WallTime: 8, Logical: 0}
+		ts10  = hlc.Timestamp{WallTime: 10, Logical: 0}
+		ts15  = hlc.Timestamp{WallTime: 15, Logical: 0}
+	)
+
+	// makeTxnWithIntent writes an intent for the given key at intentTS and
+	// returns the transaction and a LockUpdate representing the resolved state.
+	makeTxnWithIntent := func(
+		t *testing.T, e Engine, key roachpb.Key, value roachpb.Value,
+		intentTS hlc.Timestamp, epoch enginepb.TxnEpoch,
+	) roachpb.Transaction {
+		t.Helper()
+		txnID := uuid.MakeV4()
+		txn := roachpb.Transaction{
+			TxnMeta: enginepb.TxnMeta{
+				Key:            key,
+				ID:             txnID,
+				Epoch:          epoch,
+				WriteTimestamp: intentTS,
+				Sequence:       1,
+			},
+			ReadTimestamp: intentTS,
+		}
+		_, err := MVCCPut(ctx, e, key, intentTS, value, MVCCWriteOptions{Txn: &txn})
+		require.NoError(t, err)
+		return txn
+	}
+
+	makeLockUpdate := func(
+		txn roachpb.Transaction, status roachpb.TransactionStatus,
+		commitTS hlc.Timestamp,
+	) roachpb.LockUpdate {
+		txnCopy := txn.TxnMeta
+		txnCopy.WriteTimestamp = commitTS
+		return roachpb.LockUpdate{
+			Txn:    txnCopy,
+			Status: status,
+		}
+	}
+
+	// collectKeys iterates through the iterator and collects all key-values.
+	collectKeys := func(t *testing.T, iter *MVCCIncrementalIterator) []MVCCKeyValue {
+		t.Helper()
+		var result []MVCCKeyValue
+		for iter.SeekGE(MakeMVCCMetadataKey(testKey1)); ; iter.Next() {
+			ok, err := iter.Valid()
+			require.NoError(t, err)
+			if !ok {
+				break
+			}
+			hasPoint, _ := iter.HasPointAndRange()
+			if !hasPoint {
+				continue
+			}
+			key := iter.UnsafeKey().Clone()
+			val, err := iter.UnsafeValue()
+			require.NoError(t, err)
+			valCopy := make([]byte, len(val))
+			copy(valCopy, val)
+			result = append(result, MVCCKeyValue{Key: key, Value: valCopy})
+		}
+		return result
+	}
+
+	t.Run("committed in time range, no push", func(t *testing.T) {
+		// Intent at ts=5, committed at ts=5. Iterator (0, 10]. Should surface
+		// value at ts=5.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		lu := makeLockUpdate(txn, roachpb.COMMITTED, ts5)
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		keys := collectKeys(t, iter)
+		require.Len(t, keys, 1)
+		assert.True(t, keys[0].Key.Key.Equal(testKey1))
+		assert.Equal(t, ts5, keys[0].Key.Timestamp)
+		require.NoError(t, iter.TryGetIntentError())
+	})
+
+	t.Run("committed pushed, in range", func(t *testing.T) {
+		// Intent at ts=5, commitTS=8. Iterator (0, 10]. Should surface value at
+		// ts=8 (not ts=5).
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		lu := makeLockUpdate(txn, roachpb.COMMITTED, ts8)
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		keys := collectKeys(t, iter)
+		require.Len(t, keys, 1)
+		assert.True(t, keys[0].Key.Key.Equal(testKey1))
+		assert.Equal(t, ts8, keys[0].Key.Timestamp)
+		require.NoError(t, iter.TryGetIntentError())
+	})
+
+	t.Run("committed pushed, out of range", func(t *testing.T) {
+		// Intent at ts=5, commitTS=15. Iterator (0, 10]. Should skip.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		lu := makeLockUpdate(txn, roachpb.COMMITTED, ts15)
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		keys := collectKeys(t, iter)
+		require.Len(t, keys, 0)
+		require.NoError(t, iter.TryGetIntentError())
+	})
+
+	t.Run("committed below startTime", func(t *testing.T) {
+		// Intent at ts=5, commitTS=5. Iterator (5, 10]. commitTS=5 not in (5, 10].
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		lu := makeLockUpdate(txn, roachpb.COMMITTED, ts5)
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      ts5,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		keys := collectKeys(t, iter)
+		require.Len(t, keys, 0)
+		require.NoError(t, iter.TryGetIntentError())
+	})
+
+	t.Run("aborted", func(t *testing.T) {
+		// Intent at ts=5, txn ABORTED. Should skip.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		// Write a committed value at ts=1. The aborted intent's provisional
+		// value is skipped, but this committed version should still be visible.
+		_, err := MVCCPut(ctx, e, testKey1, ts1, testValue2, MVCCWriteOptions{})
+		require.NoError(t, err)
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		lu := makeLockUpdate(txn, roachpb.ABORTED, ts5)
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		// ABORTED skips the provisional value but committed versions below
+		// are still visible.
+		keys := collectKeys(t, iter)
+		require.Len(t, keys, 1)
+		assert.True(t, keys[0].Key.Key.Equal(testKey1))
+		assert.Equal(t, ts1, keys[0].Key.Timestamp)
+		require.NoError(t, iter.TryGetIntentError())
+	})
+
+	t.Run("pending", func(t *testing.T) {
+		// Intent at ts=5, txn PENDING. Should skip.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		lu := makeLockUpdate(txn, roachpb.PENDING, ts5)
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		keys := collectKeys(t, iter)
+		require.Len(t, keys, 0)
+		require.NoError(t, iter.TryGetIntentError())
+	})
+
+	t.Run("unknown txn falls through", func(t *testing.T) {
+		// Intent not in resolvable set. Should fall through to Aggregate
+		// handling and produce LockConflictError.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		// Empty resolvable set — txn not known.
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+		_ = txn
+
+		_ = collectKeys(t, iter)
+		intentErr := iter.TryGetIntentError()
+		require.Error(t, intentErr)
+		var lcErr *kvpb.LockConflictError
+		require.ErrorAs(t, intentErr, &lcErr)
+	})
+
+	t.Run("mixed keys", func(t *testing.T) {
+		// key1: committed intent (resolved), key2: unresolved intent,
+		// key3: plain value. Should surface key1 and key3, error on key2.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn1 := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		txn2 := makeTxnWithIntent(t, e, testKey2, testValue2, ts5, 1)
+		_, err := MVCCPut(ctx, e, testKey3, ts5, testValue3, MVCCWriteOptions{})
+		require.NoError(t, err)
+
+		lu1 := makeLockUpdate(txn1, roachpb.COMMITTED, ts8)
+		// Only txn1 is resolvable; txn2 is not.
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn1.ID: lu1}
+		_ = txn2
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		keys := collectKeys(t, iter)
+		// key1 at commitTS=8, key2's intent is aggregated but its provisional
+		// value at ts5 is surfaced (Aggregate policy behavior), key3 at ts5.
+		require.Len(t, keys, 3)
+		assert.True(t, keys[0].Key.Key.Equal(testKey1))
+		assert.Equal(t, ts8, keys[0].Key.Timestamp)
+		assert.True(t, keys[1].Key.Key.Equal(testKey2))
+		assert.Equal(t, ts5, keys[1].Key.Timestamp)
+		assert.True(t, keys[2].Key.Key.Equal(testKey3))
+		assert.Equal(t, ts5, keys[2].Key.Timestamp)
+
+		intentErr := iter.TryGetIntentError()
+		require.Error(t, intentErr)
+		var lcErr *kvpb.LockConflictError
+		require.ErrorAs(t, intentErr, &lcErr)
+		require.Len(t, lcErr.Locks, 1)
+		assert.True(t, lcErr.Locks[0].Key.Equal(testKey2))
+	})
+
+	t.Run("stale epoch falls through", func(t *testing.T) {
+		// Intent epoch > update epoch. Should fall through to normal handling.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 2 /* epoch */)
+		// Update is from epoch 1 (stale).
+		lu := makeLockUpdate(txn, roachpb.COMMITTED, ts5)
+		lu.Txn.Epoch = 1
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		_ = collectKeys(t, iter)
+		intentErr := iter.TryGetIntentError()
+		require.Error(t, intentErr)
+	})
+
+	t.Run("ignored seq nums", func(t *testing.T) {
+		// Committed txn with rolled-back sequence. Should skip.
+		e := NewDefaultInMemForTesting()
+		defer e.Close()
+
+		txn := makeTxnWithIntent(t, e, testKey1, testValue1, ts5, 1)
+		lu := makeLockUpdate(txn, roachpb.COMMITTED, ts5)
+		// Mark the intent's sequence as ignored.
+		lu.IgnoredSeqNums = []enginepb.IgnoredSeqNumRange{
+			{Start: txn.TxnMeta.Sequence, End: txn.TxnMeta.Sequence},
+		}
+		resolvable := map[uuid.UUID]roachpb.LockUpdate{txn.ID: lu}
+
+		iter, err := NewMVCCIncrementalIterator(ctx, e, MVCCIncrementalIterOptions{
+			EndKey:         keyMax,
+			StartTime:      tsMin,
+			EndTime:        ts10,
+			IntentPolicy:   MVCCIncrementalIterIntentPolicyAggregate,
+			ResolvableTxns: NewResolvableTxnLookup(resolvable),
+		})
+		require.NoError(t, err)
+		defer iter.Close()
+
+		keys := collectKeys(t, iter)
+		require.Len(t, keys, 0)
+		require.NoError(t, iter.TryGetIntentError())
+	})
+}
+
 func expectKeyValue(t *testing.T, iter SimpleMVCCIterator, kv MVCCKeyValue) {
 	valid, err := iter.Valid()
 	assert.True(t, valid, "expected valid iterator")
