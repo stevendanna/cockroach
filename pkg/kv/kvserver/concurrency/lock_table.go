@@ -4614,7 +4614,8 @@ func (t *lockTableImpl) newGuardForReq(req Request) *lockTableGuardImpl {
 	g.index = -1
 	g.pushUsingCachedClockObs = PushUsingCachedClockObservation.Get(&g.lt.settings.SV)
 	g.virtuallyResolveIntents = VirtualIntentResolution.Get(&g.lt.settings.SV) && req.canVirtuallyResolve()
-	g.scanningVIR = ScanningVirtualIntentResolution.Get(&g.lt.settings.SV) && req.canVirtuallyResolve()
+	g.scanningVIR = ScanningVirtualIntentResolution.Get(&g.lt.settings.SV) &&
+		req.canVirtuallyResolve() && req.canUseScanningVIR()
 	g.toResolve.virEnabled = g.virtuallyResolveIntents || g.scanningVIR
 	return g
 }

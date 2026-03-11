@@ -89,3 +89,72 @@ func TestCanVirtuallyResolve(t *testing.T) {
 		})
 	}
 }
+
+func TestCanUseScanningVIR(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	makeRequest := func(reqs ...kvpb.Request) Request {
+		var reqUnions []kvpb.RequestUnion
+		for _, req := range reqs {
+			var ru kvpb.RequestUnion
+			ru.MustSetInner(req)
+			reqUnions = append(reqUnions, ru)
+		}
+		return Request{Requests: reqUnions}
+	}
+
+	testCases := []struct {
+		name string
+		req  Request
+		exp  bool
+	}{{
+		name: "empty batch",
+		req:  Request{},
+		exp:  true,
+	}, {
+		name: "single get",
+		req:  makeRequest(&kvpb.GetRequest{}),
+		exp:  true,
+	}, {
+		name: "single scan",
+		req:  makeRequest(&kvpb.ScanRequest{}),
+		exp:  true,
+	}, {
+		name: "single reverse scan",
+		req:  makeRequest(&kvpb.ReverseScanRequest{}),
+		exp:  true,
+	}, {
+		name: "single export",
+		req:  makeRequest(&kvpb.ExportRequest{}),
+		exp:  true,
+	}, {
+		name: "mixed get and scan",
+		req: makeRequest(
+			&kvpb.GetRequest{},
+			&kvpb.ScanRequest{},
+			&kvpb.ReverseScanRequest{},
+		),
+		exp: true,
+	}, {
+		name: "query intent (read-only but not scanner-based)",
+		req:  makeRequest(&kvpb.QueryIntentRequest{}),
+		exp:  false,
+	}, {
+		name: "refresh range (read-only but not scanner-based)",
+		req:  makeRequest(&kvpb.RefreshRangeRequest{}),
+		exp:  false,
+	}, {
+		name: "mixed get and query intent",
+		req: makeRequest(
+			&kvpb.GetRequest{},
+			&kvpb.QueryIntentRequest{},
+		),
+		exp: false,
+	}}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.exp, tc.req.canUseScanningVIR())
+		})
+	}
+}

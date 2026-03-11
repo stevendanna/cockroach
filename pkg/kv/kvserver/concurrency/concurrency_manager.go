@@ -869,6 +869,22 @@ func (r *Request) canVirtuallyResolve() bool {
 	return true
 }
 
+// canUseScanningVIR returns true if all requests in the batch use the pebble
+// MVCC scanner or the MVCCIncrementalIterator, which are the two code paths
+// that support inline intent resolution via ResolvableTxnLookup.
+func (r *Request) canUseScanningVIR() bool {
+	for _, ru := range r.Requests {
+		switch ru.GetInner().Method() {
+		case kvpb.Get, kvpb.Scan, kvpb.ReverseScan, kvpb.Export:
+			// These commands use the pebble MVCC scanner or the MVCC
+			// incremental iterator, both of which support scanning VIR.
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Used to avoid allocations.
 var guardPool = sync.Pool{
 	New: func() interface{} { return new(guardImpl) },
