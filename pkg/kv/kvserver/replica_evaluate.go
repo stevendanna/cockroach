@@ -207,6 +207,7 @@ func evaluateBatch(
 	ui uncertainty.Interval,
 	evalPath batchEvalPath,
 	omitInRangefeeds bool, // only relevant for transactional writes
+	resolvableTxns storage.ResolvableTxnLookup,
 ) (_ *kvpb.BatchResponse, _ result.Result, retErr *kvpb.Error) {
 	// NB: Don't mutate BatchRequest directly.
 	baReqs := ba.Requests
@@ -355,6 +356,7 @@ func evaluateBatch(
 		}
 		curResult, err := evaluateCommand(
 			ctx, readWriter, rec, ms, ss, baHeader, args, reply, g, st, ui, evalPath, omitInRangefeeds,
+			resolvableTxns,
 		)
 		if reg != nil {
 			reg.End()
@@ -517,6 +519,7 @@ func evaluateCommand(
 	ui uncertainty.Interval,
 	evalPath batchEvalPath,
 	omitInRangefeeds bool,
+	resolvableTxns storage.ResolvableTxnLookup,
 ) (result.Result, error) {
 	var err error
 	var pd result.Result
@@ -525,10 +528,6 @@ func evaluateCommand(
 		var now hlc.ClockTimestamp
 		if st != nil {
 			now = st.Now
-		}
-		var resolvableTxns storage.ResolvableTxnLookup
-		if g != nil {
-			resolvableTxns = storage.NewResolvableTxnLookup(g.ResolvableTxnsForScanning())
 		}
 		cArgs := batcheval.CommandArgs{
 			EvalCtx:               rec,

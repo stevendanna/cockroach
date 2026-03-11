@@ -70,6 +70,10 @@ func (r *Replica) executeReadOnlyBatch(
 
 	var rw storage.ReadWriter
 	resolvableTxnsForScanning := g.ResolvableTxnsForScanning()
+	// Build the ResolvableTxnLookup before dropping latches (which nils g).
+	// This is passed through to evaluateBatch so the scanner can resolve
+	// intents inline even after g is nil.
+	resolvableTxns := storage.NewResolvableTxnLookup(resolvableTxnsForScanning)
 	var intentsToResolveVirtually []roachpb.LockUpdate
 	if len(resolvableTxnsForScanning) == 0 {
 		// Scanning VIR is not active; fall back to the batch-prepending VIR path.
@@ -148,7 +152,7 @@ func (r *Replica) executeReadOnlyBatch(
 			}
 			_, err = evaluateCommand(
 				ctx, rwNoAssert, rec, nil /* ms */, nil /* ss */, h, req,
-				reply, g, &st, ui, readWrite, false, /* omitInRangefeeds */
+				reply, g, &st, ui, readWrite, false /* omitInRangefeeds */, nil, /* resolvableTxns */
 			)
 			if err != nil {
 				r.store.metrics.VirtualResolveBatchErrors.Inc(1)
@@ -204,7 +208,7 @@ func (r *Replica) executeReadOnlyBatch(
 	}
 
 	var result result.Result
-	ba, br, result, pErr = r.executeReadOnlyBatchWithServersideRefreshes(ctx, rw, rec, ba, g, &st, ui, evalPath)
+	ba, br, result, pErr = r.executeReadOnlyBatchWithServersideRefreshes(ctx, rw, rec, ba, g, &st, ui, evalPath, resolvableTxns)
 
 	// If the request hit a server-side concurrency retry error, immediately
 	// propagate the error. Don't assume ownership of the concurrency guard.
@@ -505,6 +509,7 @@ func (r *Replica) executeReadOnlyBatchWithServersideRefreshes(
 	st *kvserverpb.LeaseStatus,
 	ui uncertainty.Interval,
 	evalPath batchEvalPath,
+	resolvableTxns storage.ResolvableTxnLookup,
 ) (_ *kvpb.BatchRequest, br *kvpb.BatchResponse, res result.Result, pErr *kvpb.Error) {
 	log.Event(ctx, "executing read-only batch")
 
@@ -588,7 +593,7 @@ func (r *Replica) executeReadOnlyBatchWithServersideRefreshes(
 		now := timeutil.Now()
 		br, res, pErr = evaluateBatch(
 			ctx, kvserverbase.CmdIDKey(""), rw, rec, nil /* ms */, ba, g,
-			st, ui, evalPath, false, /* omitInRangefeeds */
+			st, ui, evalPath, false /* omitInRangefeeds */, resolvableTxns,
 		)
 		r.store.metrics.ReplicaReadBatchEvaluationLatency.RecordValue(timeutil.Since(now).Nanoseconds())
 		// Allow only one retry.

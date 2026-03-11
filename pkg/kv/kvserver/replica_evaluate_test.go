@@ -945,6 +945,7 @@ func TestEvaluateBatch(t *testing.T) {
 				uncertainty.Interval{},
 				evalPath,
 				false, /* omitInRangefeeds */
+				nil,   /* resolvableTxns */
 			)
 
 			tc.check(t, r)

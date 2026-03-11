@@ -98,7 +98,8 @@ func (r *Replica) MaybeGossipNodeLivenessRaftMuLocked(
 	br, result, pErr :=
 		evaluateBatch(
 			ctx, kvserverbase.CmdIDKey(""), rw, rec, nil /* ms */, &ba,
-			nil /* g */, nil /* st */, uncertainty.Interval{}, readOnlyDefault, false, /* omitInRangefeeds */
+			nil /* g */, nil /* st */, uncertainty.Interval{}, readOnlyDefault,
+			false /* omitInRangefeeds */, nil, /* resolvableTxns */
 		)
 	if pErr != nil {
 		return errors.Wrapf(pErr.GoError(), "couldn't scan node liveness records in span %s", span)
