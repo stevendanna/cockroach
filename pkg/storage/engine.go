@@ -1969,6 +1969,11 @@ func assertMVCCIteratorInvariants(iter MVCCIterator) error {
 // intent resolution (VIR) is active: learning each transaction's status allows
 // the scanner to resolve their intents inline during evaluation.
 //
+// When resolvableTxns is non-nil, intents from transactions in this map are
+// skipped entirely. These are transactions whose status is known via scanning
+// VIR — the MVCC scanner will resolve their intents inline during evaluation,
+// so they should not be treated as conflicts here.
+//
 // [1] The supplied txnID may be empty (uuid.Nil) if the request on behalf of
 // which the scan is being performed is non-transactional.
 func ScanConflictingIntentsForDroppingLatchesEarly(
@@ -1981,6 +1986,7 @@ func ScanConflictingIntentsForDroppingLatchesEarly(
 	maxLockConflicts int64,
 	targetLockConflictBytes int64,
 	preferDistinctTxns bool,
+	resolvableTxns ResolvableTxnLookup,
 ) (needIntentHistory bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -2082,6 +2088,21 @@ func ScanConflictingIntentsForDroppingLatchesEarly(
 		}
 		if intentConflicts := meta.Timestamp.ToTimestamp().LessEq(ts); !intentConflicts {
 			continue
+		}
+		// Skip intents from transactions that scanning VIR will resolve inline
+		// during evaluation. Without this check, these intents would be reported
+		// as conflicts and cause a livelock: the request would repeatedly get a
+		// LockConflictError for intents it could handle.
+		//
+		// We replicate the scanner's epoch check: if the intent is from a newer
+		// epoch than the update, the update is stale and the scanner will fall
+		// through to normal intent handling — so we must NOT skip it here.
+		if resolvableTxns != nil {
+			if found, lu := resolvableTxns.LookupResolvableTxn(meta.Txn.ID); found {
+				if meta.Txn.Epoch <= lu.Txn.Epoch {
+					continue
+				}
+			}
 		}
 		if seenTxns != nil {
 			if _, seen := seenTxns[meta.Txn.ID]; seen {
