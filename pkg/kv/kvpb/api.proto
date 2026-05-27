@@ -25,6 +25,7 @@ import "util/tracing/tracingpb/tracing.proto";
 import "gogoproto/gogo.proto";
 import "google/protobuf/duration.proto";
 import "multitenant/tenantcapabilitiespb/capabilities.proto";
+import "util/admission/admissionpb/resource_group.proto";
 
 // ReadConsistencyType specifies what type of consistency is observed
 // during read operations.
@@ -3151,6 +3152,27 @@ message AdmissionHeader {
   // already been accounted for, and can start reserving more only when it
   // exceeds.
   bool no_memory_reserved_at_source = 5;
+
+  // ResourceGroupID is the catalog ID of the resource group bound to
+  // the SQL session that originated this request, as resolved on the
+  // gateway via the SQL-side resource group cache. Zero means the
+  // session was not bound to any group; the host then admits the work
+  // under the per-tenant default rather than under a user-defined
+  // group. Both old senders (no field set) and the common "no group"
+  // case round-trip as a zero-byte varint on the wire.
+  uint64 resource_group_id = 6;
+
+  // ResourceGroupConfig is the admissionpb.ResourceGroupConfig the
+  // gateway last observed for ResourceGroupID. It rides along on each
+  // BatchRequest so the host's ResourceGroupConfigHolder can install
+  // or refresh its per-group weight from the request itself (under
+  // the holder's strict-newer version policy), without the host
+  // having to read system.resource_groups. The all-zero value
+  // (cpu_weight = 0) means "no config carried": the host falls back
+  // to the per-tenant default until a subsequent request arrives
+  // with a populated config. This is also what older senders that
+  // never set the field marshal to.
+  cockroach.util.admission.admissionpb.ResourceGroupConfig resource_group_config = 7 [(gogoproto.nullable) = false];
 }
 
 // A BatchRequest contains one or more requests to be executed in
