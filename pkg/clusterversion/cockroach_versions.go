@@ -290,6 +290,13 @@ const (
 	// to persist per-tenant resource group configurations.
 	V26_3_AddResourceGroupsTable
 
+	// V26_3_AddResourceGroupsVersionColumn adds a version column to
+	// system.resource_groups. The version is incremented on every config
+	// update and is carried alongside the config on BatchRequest admission
+	// headers so KV nodes can keep their in-memory holder fresh without a
+	// central reconciler.
+	V26_3_AddResourceGroupsVersionColumn
+
 	// *************************************************
 	// Step (1) Add new versions above this comment.
 	// Do not add new versions to a patch release.
@@ -380,6 +387,8 @@ var versionTable = [numKeys]roachpb.Version{
 	V26_3_AlterStatementsTablePK: {Major: 26, Minor: 2, Internal: 8},
 
 	V26_3_AddResourceGroupsTable: {Major: 26, Minor: 2, Internal: 10},
+
+	V26_3_AddResourceGroupsVersionColumn: {Major: 26, Minor: 2, Internal: 12},
 	// *************************************************
 	// Step (2): Add new versions above this comment.
 	// *************************************************

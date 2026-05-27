@@ -220,6 +220,16 @@ var upgrades = []upgradebase.Upgrade{
 			"restore for a cluster predating this table can leave it empty",
 		),
 	),
+
+	upgrade.NewTenantUpgrade(
+		"add version column to system.resource_groups",
+		clusterversion.V26_3_AddResourceGroupsVersionColumn.Version(),
+		upgrade.NoPrecondition,
+		addResourceGroupsVersionColumnMigration,
+		upgrade.RestoreActionNotRequired(
+			"the column has a NOT NULL default, so pre-V26_3 backups restore cleanly",
+		),
+	),
 	// Note: when starting a new release version, the first upgrade (for
 	// Vxy_zStart) must be a newFirstUpgrade. Keep this comment at the bottom.
 }

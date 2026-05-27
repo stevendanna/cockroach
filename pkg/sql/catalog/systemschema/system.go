@@ -1423,13 +1423,14 @@ CREATE TABLE system.statements (
 	// path can produce an id in the reserved range.
 	ResourceGroupsTableSchema = `
 CREATE TABLE system.resource_groups (
-    id     INT8   NOT NULL,
-    name   STRING NOT NULL,
-    config BYTES  NOT NULL,
+    id      INT8   NOT NULL,
+    name    STRING NOT NULL,
+    config  BYTES  NOT NULL,
+    version INT8   NOT NULL DEFAULT 1:::INT8,
     CONSTRAINT "primary" PRIMARY KEY (id ASC),
     CONSTRAINT check_id_reserved_range CHECK (id >= 16),
     UNIQUE INDEX resource_groups_name_idx (name ASC),
-    FAMILY "primary" (id, name, config)
+    FAMILY "primary" (id, name, config, version)
 );`
 
 	// ResourceGroupIDSequenceSchema defines the schema for the
@@ -1482,7 +1483,7 @@ const SystemDatabaseName = catconstants.SystemDatabaseName
 // release version).
 //
 // NB: Don't set this to clusterversion.Latest; use a specific version instead.
-var SystemDatabaseSchemaBootstrapVersion = clusterversion.V26_3_AddResourceGroupsTable.Version()
+var SystemDatabaseSchemaBootstrapVersion = clusterversion.V26_3_AddResourceGroupsVersionColumn.Version()
 
 // MakeSystemDatabaseDesc constructs a copy of the system database
 // descriptor.
@@ -1752,6 +1753,7 @@ var (
 	falseBoolString = descpb.Expression("false")
 	trueBoolString  = descpb.Expression("true")
 	zeroIntString   = descpb.Expression("0:::INT8")
+	oneIntString    = descpb.Expression("1:::INT8")
 
 	// UsersTable is the descriptor for the users table.
 	UsersTable = makeSystemTable(
@@ -5594,13 +5596,14 @@ var (
 				{Name: "id", ID: 1, Type: types.Int},
 				{Name: "name", ID: 2, Type: types.String},
 				{Name: "config", ID: 3, Type: types.Bytes},
+				{Name: "version", ID: 4, Type: types.Int, DefaultExpr: &oneIntString},
 			},
 			[]descpb.ColumnFamilyDescriptor{
 				{
 					Name:        "primary",
 					ID:          0,
-					ColumnNames: []string{"id", "name", "config"},
-					ColumnIDs:   []descpb.ColumnID{1, 2, 3},
+					ColumnNames: []string{"id", "name", "config", "version"},
+					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4},
 				},
 			},
 			descpb.IndexDescriptor{
