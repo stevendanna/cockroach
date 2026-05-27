@@ -1,0 +1,62 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "resourcegroupcache",
+    srcs = [
+        "cache.go",
+        "doc.go",
+        "row_decoder.go",
+    ],
+    importpath = "github.com/cockroachdb/cockroach/pkg/sql/resourcegroupcache",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/keys",
+        "//pkg/kv/kvclient/rangefeed",
+        "//pkg/kv/kvclient/rangefeed/rangefeedbuffer",
+        "//pkg/kv/kvclient/rangefeed/rangefeedcache",
+        "//pkg/kv/kvpb",
+        "//pkg/roachpb",
+        "//pkg/sql/catalog",
+        "//pkg/sql/catalog/systemschema",
+        "//pkg/sql/isql",
+        "//pkg/sql/rowenc",
+        "//pkg/sql/rowenc/valueside",
+        "//pkg/sql/sem/tree",
+        "//pkg/sql/sessiondata",
+        "//pkg/sql/types",
+        "//pkg/util/admission/admissionpb",
+        "//pkg/util/hlc",
+        "//pkg/util/log",
+        "//pkg/util/protoutil",
+        "//pkg/util/startup",
+        "//pkg/util/stop",
+        "//pkg/util/syncutil",
+        "//pkg/util/timeutil",
+        "@com_github_cockroachdb_errors//:errors",
+    ],
+)
+
+go_test(
+    name = "resourcegroupcache_test",
+    srcs = [
+        "cache_test.go",
+        "main_test.go",
+    ],
+    deps = [
+        ":resourcegroupcache",
+        "//pkg/base",
+        "//pkg/security/securityassets",
+        "//pkg/security/securitytest",
+        "//pkg/server",
+        "//pkg/sql",
+        "//pkg/sql/catalog",
+        "//pkg/testutils",
+        "//pkg/testutils/serverutils",
+        "//pkg/testutils/sqlutils",
+        "//pkg/testutils/testcluster",
+        "//pkg/util/leaktest",
+        "//pkg/util/log",
+        "@com_github_cockroachdb_errors//:errors",
+        "@com_github_stretchr_testify//require",
+    ],
+)
