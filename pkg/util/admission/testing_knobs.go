@@ -56,6 +56,12 @@ type TestingKnobs struct {
 	// DisableCPUTimeTokenSQLBypass disables the functionality which
 	// has SQL work bypass AC, in case CPU time token AC is enabled.
 	DisableCPUTimeTokenSQLBypass bool
+
+	// OnCPUGrantCoordinatorsCreated, if non-nil, is invoked once with
+	// the CPUGrantCoordinators created by NewGrantCoordinators. Used by
+	// tests that need to introspect the per-node resource-group holder
+	// without plumbing a new accessor through the server interface.
+	OnCPUGrantCoordinatorsCreated func(*CPUGrantCoordinators)
 }
 
 // observeOnlyKnobs returns a TestingKnobs that includes only observation

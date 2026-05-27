@@ -747,6 +747,7 @@ go_test(
         "privileged_accessor_test.go",
         "region_util_test.go",
         "rename_test.go",
+        "resource_group_e2e_test.go",
         "revert_test.go",
         "run_control_test.go",
         "scan_test.go",

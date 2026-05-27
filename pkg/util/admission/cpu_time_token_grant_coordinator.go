@@ -223,6 +223,18 @@ func (coord *CPUGrantCoordinators) IngestResourceGroupConfig(
 	)
 }
 
+// LookupIngestedResourceGroupConfig returns the per-resource-group
+// config currently installed in the holder for (tenantID, groupID).
+// It returns ok=false if no entry exists. Intended for testing and
+// debug paths that want to verify an Ingest has taken effect.
+func (coord *CPUGrantCoordinators) LookupIngestedResourceGroupConfig(
+	tenantID, groupID uint64,
+) (ResourceGroupConfig, bool) {
+	snap := coord.cpuTimeCoord.configHolder.Snapshot()
+	cfg, ok := snap.Groups[groupKey{tenantID: tenantID, groupID: groupID}]
+	return cfg, ok
+}
+
 // GetRunnableCountCallback returns a callback of type
 // goschedstats.RunnableCountCallback. The callback fans out to both
 // the slot-based coordinator (which adjusts slots and records period

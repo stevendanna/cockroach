@@ -208,13 +208,17 @@ func NewGrantCoordinators(
 		setLatestOverride()
 	}
 
+	regularCPU := &CPUGrantCoordinators{
+		st:           st,
+		slotsCoord:   slotsCoord,
+		cpuTimeCoord: cpuTimeTokenCoord,
+	}
+	if knobs != nil && knobs.OnCPUGrantCoordinatorsCreated != nil {
+		knobs.OnCPUGrantCoordinatorsCreated(regularCPU)
+	}
 	return GrantCoordinators{
-		Stores: makeStoresGrantCoordinators(ambientCtx, opts, st, onLogEntryAdmitted, knobs),
-		RegularCPU: &CPUGrantCoordinators{
-			st:           st,
-			slotsCoord:   slotsCoord,
-			cpuTimeCoord: cpuTimeTokenCoord,
-		},
+		Stores:     makeStoresGrantCoordinators(ambientCtx, opts, st, onLogEntryAdmitted, knobs),
+		RegularCPU: regularCPU,
 		ElasticCPU: makeElasticCPUGrantCoordinator(ambientCtx, st, registry, knobs),
 	}
 }
