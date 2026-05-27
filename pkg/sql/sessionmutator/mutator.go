@@ -1214,3 +1214,11 @@ func (m *SessionDataMutator) SetStatsAsOf(val hlc.Timestamp) {
 func (m *SessionDataMutator) SetBufferedWritesImplicitTxnsEnabled(val bool) {
 	m.Data.BufferedWritesImplicitTxnsEnabled = val
 }
+
+// SetResourceGroup binds (or clears) the resource group on this session.
+// Pass an empty name and a zero id to clear; both must be set together so
+// the visible name and the id used for admission lookups never disagree.
+func (m *SessionDataMutator) SetResourceGroup(name string, id uint64) {
+	m.Data.ResourceGroupName = name
+	m.Data.ResourceGroupId = id
+}

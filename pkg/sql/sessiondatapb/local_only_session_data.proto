@@ -829,6 +829,19 @@ message LocalOnlySessionData {
   // return an error if no SQL instance matches DistSQLPlanLocalityFilter
   // instead of falling back to the gateway / random instance selection.
   bool distsql_plan_locality_filter_strict = 209 [(gogoproto.customname) = "DistSQLPlanLocalityFilterStrict"];
+  // ResourceGroupName is the user-visible name of the resource group bound
+  // to this session via SET resource_group. The empty string means no
+  // group is bound and admission falls back to the per-tenant default.
+  // This field exists so SHOW resource_group can render the name; the
+  // ID is what actually drives admission.
+  string resource_group_name = 210;
+  // ResourceGroupID is the catalog ID of the resource group named in
+  // ResourceGroupName. It is resolved once at SET time via the
+  // sql-side resource group cache (with a synchronous read-through on
+  // miss); subsequent batch requests look up the live config by this ID
+  // rather than by name to avoid carrying name resolution into the hot
+  // path. Zero means no group is bound.
+  uint64 resource_group_id = 211;
 
   ///////////////////////////////////////////////////////////////////////////
   // WARNING: consider whether a session parameter you're adding needs to  //

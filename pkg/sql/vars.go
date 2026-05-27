@@ -925,6 +925,44 @@ var varGen = map[string]sessionVar{
 	},
 
 	// CockroachDB extension.
+	`resource_group`: {
+		Description: sessionVarDescriptions["resource_group"],
+		SetWithPlanner: func(ctx context.Context, p *planner, scope setScope, s string) error {
+			cache := p.ExecCfg().ResourceGroupCache
+			var id uint64
+			if s != "" {
+				if cache == nil {
+					return pgerror.New(pgcode.Internal,
+						"resource group cache is not initialized")
+				}
+				resolved, ok, err := cache.NameToID(ctx, s)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return pgerror.Newf(pgcode.UndefinedObject,
+						"resource group %q does not exist", s)
+				}
+				id = resolved
+			}
+			return p.applyOnSessionDataMutators(
+				ctx,
+				scope,
+				func(m sessionmutator.SessionDataMutator) error {
+					m.SetResourceGroup(s, id)
+					return nil
+				},
+			)
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return evalCtx.SessionData().ResourceGroupName, nil
+		},
+		GlobalDefault: func(_ *settings.Values) string {
+			return ""
+		},
+	},
+
+	// CockroachDB extension.
 	`vectorize`: {
 		Description:        sessionVarDescriptions["vectorize"],
 		ClusterSettingName: "sql.defaults.vectorize",

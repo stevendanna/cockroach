@@ -202,6 +202,7 @@ var sessionVarDescriptions = map[string]string{
 	"register_latch_wait_contention_events":                           "Controls whether contention events are registered for latch wait operations.",
 	"reorder_joins_limit":                                             "Sets the number of joins at which the optimizer should stop attempting to reorder.",
 	"require_explicit_primary_keys":                                   "Controls whether CREATE TABLE statements should error out if no primary key is provided.",
+	"resource_group":                                                  "Names the resource group whose admission weight subsequent KV work from this session should be admitted under.",
 	"results_buffer_size":                                             "Specifies the size at which the pgwire results buffer will self-flush.",
 	"role":                                                            "The current role for the session.",
 	"row_security":                                                    "Controls whether row level security is enabled.",

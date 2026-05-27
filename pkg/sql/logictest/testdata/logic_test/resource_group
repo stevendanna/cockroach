@@ -283,3 +283,55 @@ statement ok
 CREATE TABLE resource (id INT PRIMARY KEY); DROP TABLE resource
 
 subtest end
+
+subtest session_var
+
+# Default is the empty string (no group bound to the session).
+query T
+SHOW resource_group
+----
+·
+
+# Setting to an unknown group reports the name back to the user; the
+# session var lookup goes through the SQL cache with a read-through, so
+# the error reflects the absence of any row in system.resource_groups.
+statement error pq: resource group "ghost" does not exist
+SET resource_group = 'ghost'
+
+# Resource group bound to the session is reflected in SHOW.
+statement ok
+CREATE RESOURCE GROUP session_test WITH cpu_weight = 100
+
+statement ok
+SET resource_group = 'session_test'
+
+query T
+SHOW resource_group
+----
+session_test
+
+# Setting to the empty string clears the binding.
+statement ok
+SET resource_group = ''
+
+query T
+SHOW resource_group
+----
+·
+
+# RESET behaves the same as setting to empty.
+statement ok
+SET resource_group = 'session_test'
+
+statement ok
+RESET resource_group
+
+query T
+SHOW resource_group
+----
+·
+
+statement ok
+DROP RESOURCE GROUP session_test
+
+subtest end

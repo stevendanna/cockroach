@@ -94,6 +94,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/querycache"
 	"github.com/cockroachdb/cockroach/pkg/sql/rangeprober"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
+	"github.com/cockroachdb/cockroach/pkg/sql/resourcegroupcache"
 	"github.com/cockroachdb/cockroach/pkg/sql/rolemembershipcache"
 	"github.com/cockroachdb/cockroach/pkg/sql/scheduledlogging"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scdeps"
@@ -1067,6 +1068,9 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		StatementHintsCache: hints.NewStatementHintsCache(
 			cfg.clock, cfg.rangeFeedFactory, cfg.stopper, codec, cfg.internalDB, cfg.Settings,
 		),
+		ResourceGroupCache: resourcegroupcache.New(
+			cfg.clock, cfg.rangeFeedFactory, cfg.stopper, cfg.internalDB, codec,
+		),
 		VecIndexManager:            vecIndexManager,
 		RowMetrics:                 &rowMetrics,
 		InternalRowMetrics:         &internalRowMetrics,
@@ -1821,6 +1825,9 @@ func (s *SQLServer) preStart(
 		return err
 	}
 	if err = s.execCfg.StatementHintsCache.Start(ctx, s.execCfg.SystemTableIDResolver); err != nil {
+		return err
+	}
+	if err = s.execCfg.ResourceGroupCache.Start(ctx, s.execCfg.SystemTableIDResolver); err != nil {
 		return err
 	}
 
