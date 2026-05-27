@@ -450,6 +450,10 @@ func runCPUTimeTokenWorkQueueTest(t *testing.T, path string) {
 				if d.HasArg("priority") {
 					d.ScanArgs(t, "priority", &pri)
 				}
+				var rgID uint64
+				if d.HasArg("resource-group-id") {
+					d.ScanArgs(t, "resource-group-id", &rgID)
+				}
 				wrkMap.set(id, &testWork{cancel: cancel})
 				workInfo := WorkInfo{
 					TenantID:        tenant,
@@ -457,6 +461,7 @@ func runCPUTimeTokenWorkQueueTest(t *testing.T, path string) {
 					CreateTime:      int64(1) * int64(time.Millisecond),
 					BypassAdmission: bypass,
 					RequestedCount:  requestedCount,
+					ResourceGroupID: admissionpb.ResourceGroupID(rgID),
 				}
 				go func(ctx context.Context, info WorkInfo, id int) {
 					resp, err := q.Admit(ctx, info)
@@ -573,9 +578,20 @@ func runCPUTimeTokenWorkQueueTest(t *testing.T, path string) {
 					cur.Weight = 1
 				}
 				fresh[k] = cur
-				q.configHolder.mu.Lock()
-				q.configHolder.mu.config = fresh
-				q.configHolder.mu.Unlock()
+				// Install directly into both current and next so the
+				// per-key, by-version superset invariant holds and any
+				// subsequent Ingest sees the same baseline.
+				freshNext := make(ResourceGroupConfigSet, len(fresh))
+				for gk, gc := range fresh {
+					freshNext[gk] = gc
+				}
+				q.configHolder.next.Lock()
+				q.configHolder.current.Lock()
+				q.configHolder.current.config = fresh
+				q.configHolder.next.config = freshNext
+				q.configHolder.dirty.Store(false)
+				q.configHolder.current.Unlock()
+				q.configHolder.next.Unlock()
 				q.mu.Lock()
 				q.applyConfigLocked(q.configHolder.Snapshot().Groups)
 				q.mu.Unlock()
@@ -1449,42 +1465,85 @@ func TestGCThenLazyRecreateRecoversFromHolder(t *testing.T) {
 }
 
 // TestGroupKeyForWorkInfoSelection verifies the per-WorkQueue
-// groupKey derivation policy: the default (tenantGroupKeyForWorkInfo)
-// ignores cpuTimeTokenACMode, while the CTT variant
-// (cpuTimeTokenGroupKeyForWorkInfo) honors it. This is the
-// invariant that keeps StoreWorkQueue's IO queues from being
-// reshaped by CTT settings.
+// groupKey derivation policy.
+//
+// The default (tenantGroupKeyForWorkInfo) ignores cpuTimeTokenACMode
+// and WorkInfo.ResourceGroupID; this keeps StoreWorkQueue's IO queues
+// from being reshaped by CTT settings.
+//
+// The CTT variant (cpuTimeTokenGroupKeyForWorkInfo) honors
+// cpuTimeTokenACMode. Under resourceManagerMode, work with a non-zero
+// WorkInfo.ResourceGroupID is keyed under (tenantID, groupID); work
+// without one falls back to the priority-derived high/low built-ins.
+// Under other modes the CTT variant falls back to tenant-keyed
+// grouping.
 func TestGroupKeyForWorkInfoSelection(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	st := cluster.MakeTestingClusterSettings()
 	ctx := context.Background()
-	info := WorkInfo{
-		TenantID: roachpb.MustMakeTenantID(5),
-		Priority: admissionpb.NormalPri,
-	}
+	const tID = uint64(5)
+	const rgID = uint64(42)
 
 	for _, tc := range []struct {
-		name string
-		mode cpuTimeTokenMode
+		name      string
+		mode      cpuTimeTokenMode
+		info      WorkInfo
+		expectCTT groupKey
 	}{
-		{"off", offMode},
-		{"serverless", serverlessMode},
-		{"resource_manager", resourceManagerMode},
+		{
+			name:      "off-without-rg",
+			mode:      offMode,
+			info:      WorkInfo{TenantID: roachpb.MustMakeTenantID(tID), Priority: admissionpb.NormalPri},
+			expectCTT: tenantGroupKey(tID),
+		},
+		{
+			name:      "serverless-without-rg",
+			mode:      serverlessMode,
+			info:      WorkInfo{TenantID: roachpb.MustMakeTenantID(tID), Priority: admissionpb.NormalPri},
+			expectCTT: tenantGroupKey(tID),
+		},
+		{
+			name:      "rm-without-rg-normal-pri-falls-back-to-high",
+			mode:      resourceManagerMode,
+			info:      WorkInfo{TenantID: roachpb.MustMakeTenantID(tID), Priority: admissionpb.NormalPri},
+			expectCTT: rgGroupKey(highResourceGroupID),
+		},
+		{
+			name:      "rm-without-rg-bulk-normal-pri-falls-back-to-low",
+			mode:      resourceManagerMode,
+			info:      WorkInfo{TenantID: roachpb.MustMakeTenantID(tID), Priority: admissionpb.BulkNormalPri},
+			expectCTT: rgGroupKey(lowResourceGroupID),
+		},
+		{
+			name: "rm-with-rg-routes-to-tenant-and-group",
+			mode: resourceManagerMode,
+			info: WorkInfo{
+				TenantID:        roachpb.MustMakeTenantID(tID),
+				Priority:        admissionpb.NormalPri,
+				ResourceGroupID: admissionpb.ResourceGroupID(rgID),
+			},
+			expectCTT: groupKey{tenantID: tID, groupID: rgID},
+		},
+		{
+			name: "non-rm-ignores-rg-id",
+			mode: serverlessMode,
+			info: WorkInfo{
+				TenantID:        roachpb.MustMakeTenantID(tID),
+				Priority:        admissionpb.NormalPri,
+				ResourceGroupID: admissionpb.ResourceGroupID(rgID),
+			},
+			expectCTT: tenantGroupKey(tID),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cpuTimeTokenACMode.Override(ctx, &st.SV, tc.mode)
 
-			require.Equal(t, tenantGroupKey(5), tenantGroupKeyForWorkInfo(info, &st.SV),
-				"default keying must not depend on cpuTimeTokenACMode")
+			require.Equal(t, tenantGroupKey(tID), tenantGroupKeyForWorkInfo(tc.info, &st.SV),
+				"default keying must not depend on cpuTimeTokenACMode or ResourceGroupID")
 
-			cttKey := cpuTimeTokenGroupKeyForWorkInfo(info, &st.SV)
-			if tc.mode == resourceManagerMode {
-				require.Equal(t, rgGroupKey(highResourceGroupID), cttKey)
-			} else {
-				require.Equal(t, tenantGroupKey(5), cttKey)
-			}
+			require.Equal(t, tc.expectCTT, cpuTimeTokenGroupKeyForWorkInfo(tc.info, &st.SV))
 		})
 	}
 }

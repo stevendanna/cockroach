@@ -8,6 +8,7 @@ package admission
 import (
 	"math"
 	"slices"
+	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -32,6 +33,14 @@ type ResourceGroupConfig struct {
 	// the group from the bucket-fullness gate. Within the same canBurst
 	// qualification, groups remain ordered by used/weight.
 	MaxCPU bool
+	// Version monotonically identifies the freshness of this config.
+	// Ingest only overwrites a stored config when the incoming Version
+	// is strictly greater than the stored one. Built-in configs are
+	// seeded at math.MaxUint64 so Ingest can never displace them.
+	// Caller-supplied configs originate from the per-tenant
+	// system.resource_groups table, whose version column is bumped on
+	// every ALTER.
+	Version uint64
 }
 
 // ResourceGroupConfigSet is the set of per-group configs keyed by groupKey.
@@ -41,8 +50,8 @@ type ResourceGroupConfigSet map[groupKey]ResourceGroupConfig
 // SafeFormat renders one entry per line, sorted by tenantID then
 // groupID, e.g.:
 //
-//	t0g1 weight=80 burstFrac=0.80 maxCPU=true
-//	t0g2 weight=20 burstFrac=0.20 maxCPU=false
+//	t0g1 weight=80 burstFrac=0.80 maxCPU=true version=18446744073709551615
+//	t0g2 weight=20 burstFrac=0.20 maxCPU=false version=18446744073709551615
 func (s ResourceGroupConfigSet) SafeFormat(w redact.SafePrinter, _ rune) {
 	keys := make([]groupKey, 0, len(s))
 	for k := range s {
@@ -51,8 +60,8 @@ func (s ResourceGroupConfigSet) SafeFormat(w redact.SafePrinter, _ rune) {
 	slices.SortFunc(keys, groupKey.compare)
 	for _, k := range keys {
 		cfg := s[k]
-		w.Printf("%s weight=%d burstFrac=%.2f maxCPU=%t\n",
-			k, cfg.Weight, cfg.BurstFrac, cfg.MaxCPU)
+		w.Printf("%s weight=%d burstFrac=%.2f maxCPU=%t version=%d\n",
+			k, cfg.Weight, cfg.BurstFrac, cfg.MaxCPU, cfg.Version)
 	}
 }
 
@@ -61,15 +70,21 @@ func (s ResourceGroupConfigSet) String() string {
 	return redact.StringWithoutMarkers(s)
 }
 
-// GetOrDefault returns the config for k if installed, otherwise a
-// fallback: resource groups (tenantID==0) get defaultRGGroupConfig;
-// tenant groups (groupID==0) get defaultTenantGroupConfig. Used by
-// WorkQueue's lazy group creation: an Admit for a key without a
-// corresponding groupInfo consults the set to populate weight and
-// maxCPU on the new groupInfo.
+// GetOrDefault returns the config for k if installed; otherwise it
+// applies the following fallbacks in order:
 //
-// TODO(wenyihu6): collapse to a single fallback once we can align the
-// rg and tenant defaults.
+//  1. If k is a tenant group (groupID == 0), return
+//     defaultTenantGroupConfig.
+//  2. If k.tenantID != 0 (user-defined RG keyed by tenant), look up
+//     the per-tenant default groupKey{k.tenantID, defaultUserResourceGroupID}.
+//     This entry is lazily installed on first Ingest from k.tenantID,
+//     so once any work has flowed in from that tenant, unknown
+//     group IDs from the same tenant route to the tenant's own
+//     default config rather than to the global fallback.
+//  3. Otherwise return defaultRGGroupConfig.
+//
+// TODO(wenyihu6): collapse to a single fallback once we can align
+// the rg and tenant defaults.
 func (s ResourceGroupConfigSet) GetOrDefault(k groupKey) ResourceGroupConfig {
 	if cfg, ok := s[k]; ok {
 		return cfg
@@ -78,29 +93,38 @@ func (s ResourceGroupConfigSet) GetOrDefault(k groupKey) ResourceGroupConfig {
 		// Tenant group (tenantID is set, groupID is zero).
 		return defaultTenantGroupConfig
 	}
+	if k.tenantID != 0 {
+		// User-defined RG keyed by tenant. Try the per-tenant default
+		// first; this is the entry the holder installs lazily on the
+		// first Ingest from this tenant.
+		if cfg, ok := s[groupKey{tenantID: k.tenantID, groupID: defaultUserResourceGroupID}]; ok {
+			return cfg
+		}
+	}
 	// Resource group (groupID is set).
 	return defaultRGGroupConfig
 }
 
 // defaultRGGroupConfig is the safety fallback returned by GetOrDefault
 // for resource group keys (groupID != 0) not in the installed
-// configuration. In steady state this is unreachable: the built-in
-// configs cover high/low. It exists to keep Admit's lazy-create path
-// total — if a caller installs a config that omits a known group ID,
-// Admit gets a usable weight rather than a zero-weight group.
-// Weight=20 mirrors the low default; MaxCPU=false keeps an
-// unconfigured group from bypassing the burst-fullness gate.
-//
-// TODO(wenyihu6): once SQL DDL (CREATE/ALTER RESOURCE GROUP) is wired
-// through, decide whether unknown group IDs should be a hard error.
-var defaultRGGroupConfig = ResourceGroupConfig{Weight: 20, BurstFrac: 0.2, MaxCPU: false}
+// configuration and for which no per-tenant default has been
+// installed. In steady state for user-defined RGs this is unreachable
+// once any work has flowed in from the requesting tenant (the
+// per-tenant lazy default takes over); it exists to keep Admit's
+// lazy-create path total — if a caller installs a config that omits a
+// known group ID, Admit gets a usable weight rather than a
+// zero-weight group. Weight=20 mirrors the low default; MaxCPU=false
+// keeps an unconfigured group from bypassing the burst-fullness gate.
+var defaultRGGroupConfig = ResourceGroupConfig{
+	Weight: 20, BurstFrac: 0.2, MaxCPU: false, Version: math.MaxUint64,
+}
 
 // defaultTenantGroupConfig is the fallback for tenant group keys
 // (groupID == 0): every tenant gets defaultGroupWeight, since
 // per-tenant weights are no longer configurable. MaxCPU=false because
 // tenants don't carry burst flags.
 var defaultTenantGroupConfig = ResourceGroupConfig{
-	Weight: defaultGroupWeight, BurstFrac: 0.20, MaxCPU: false,
+	Weight: defaultGroupWeight, BurstFrac: 0.20, MaxCPU: false, Version: math.MaxUint64,
 }
 
 // systemTenantGroupConfig is the built-in config for the system tenant
@@ -108,16 +132,36 @@ var defaultTenantGroupConfig = ResourceGroupConfig{
 // BurstFrac=1.0 so the full burst budget is available, and MaxCPU=true
 // to bypass the burst-fullness gate.
 var systemTenantGroupConfig = ResourceGroupConfig{
-	Weight: math.MaxUint32, BurstFrac: 1.0, MaxCPU: true,
+	Weight: math.MaxUint32, BurstFrac: 1.0, MaxCPU: true, Version: math.MaxUint64,
 }
 
 // builtinGroupConfigs are configs that are always present in the
 // holder. Set seeds from this list first; callers cannot overwrite
-// built-in keys.
+// built-in keys. All built-ins are seeded at Version=math.MaxUint64
+// so Ingest's strict-newer-wins check can never displace them.
 var builtinGroupConfigs = ResourceGroupConfigSet{
-	tenantGroupKey(1):               systemTenantGroupConfig,
-	rgGroupKey(highResourceGroupID): {Weight: 80, BurstFrac: 0.8, MaxCPU: true},
-	rgGroupKey(lowResourceGroupID):  {Weight: 20, BurstFrac: 0.2, MaxCPU: false},
+	tenantGroupKey(1): systemTenantGroupConfig,
+	rgGroupKey(highResourceGroupID): {
+		Weight: 80, BurstFrac: 0.8, MaxCPU: true, Version: math.MaxUint64,
+	},
+	rgGroupKey(lowResourceGroupID): {
+		Weight: 20, BurstFrac: 0.2, MaxCPU: false, Version: math.MaxUint64,
+	},
+}
+
+// perTenantDefaultConfig is the config installed lazily under
+// groupKey{tenantID: T, groupID: defaultUserResourceGroupID} on the
+// first Ingest from tenant T. It is seeded at Version=math.MaxUint64
+// so a subsequent Ingest cannot displace it (user-defined RG IDs
+// start at 16; the reserved low IDs are never sent by tenants).
+//
+// We use the global defaultRGGroupConfig as the per-tenant default
+// config: tenants that have never altered any group via SQL will see
+// the same shape as the safety fallback. If product requirements
+// later diverge, this is the seam to change.
+var perTenantDefaultConfig = ResourceGroupConfig{
+	Weight: defaultRGGroupConfig.Weight, BurstFrac: defaultRGGroupConfig.BurstFrac,
+	MaxCPU: defaultRGGroupConfig.MaxCPU, Version: math.MaxUint64,
 }
 
 // ConfigSnapshot is the immutable snapshot returned by
@@ -166,18 +210,59 @@ func (s ConfigSnapshot) MaxFraction() [numResourceTiers]float64 {
 	}
 }
 
-// ResourceGroupConfigHolder owns the source-of-truth config set for RM mode.
-// It is pure storage behind an RWMutex; reads (every Admit) vastly outnumber
-// writes (config changes only).
+// ResourceGroupConfigHolder owns the source-of-truth config set for
+// RM mode. It separates the hot read path (Snapshot, Ingest's fast
+// version check) from the cold write path (Ingest's overwrite path,
+// promote) using two maps:
+//
+//   - current: read by Snapshot and the Ingest fast path under
+//     current.RLock. Writers (promote) take current.Lock briefly
+//     during the swap.
+//   - next: written by the Ingest slow path under next.Lock. Always a
+//     per-key, by-version superset of current (invariant: never has
+//     an older Version than current for any key, and contains every
+//     key that current contains).
+//   - dirty: atomic flag set by the Ingest slow path; checked by
+//     Snapshot to gate the promote() call.
+//
+// The flow:
+//
+//   - Snapshot: if dirty, call promote(); then RLock current and
+//     return the map. Most calls are no-ops on dirty (false branch)
+//     plus one RLock.
+//   - Ingest: RLock current to check version. If incoming is not
+//     strictly newer, return. Otherwise Lock next, re-check version
+//     (covers races against another Ingest that already promoted),
+//     overwrite, set dirty.
+//   - promote: Lock next; if !dirty, return (raced with another
+//     promoter); Lock current; swap current.config = next.config; then
+//     copy next.config to a fresh map so the next slow path mutates a
+//     map that no Snapshot can observe; clear dirty.
+//
+// Built-in configs (builtinGroupConfigs) are seeded in both maps at
+// construction and re-seeded by Set. Their Version is math.MaxUint64,
+// so the Ingest version check makes them effectively immortal.
+//
+// The per-tenant default (groupKey{T, defaultUserResourceGroupID}) is
+// installed lazily under the next lock during the first Ingest from
+// tenant T. It also rides at Version=math.MaxUint64 so it cannot be
+// overwritten by a subsequent Ingest with the same key (which would
+// require a tenant having configured a user-defined RG at the
+// reserved ID 3 — impossible, since user IDs start at 16).
 type ResourceGroupConfigHolder struct {
 	// sv provides access to cluster settings for the snapshot's
 	// mode and utilization targets. Required.
 	sv *settings.Values
 
-	mu struct {
+	current struct {
 		syncutil.RWMutex
 		config ResourceGroupConfigSet
 	}
+	next struct {
+		syncutil.Mutex
+		config ResourceGroupConfigSet
+	}
+	dirty atomic.Bool
 }
 
 // newResourceGroupConfigHolder constructs a holder seeded with
@@ -194,7 +279,9 @@ func newResourceGroupConfigHolder(sv *settings.Values) *ResourceGroupConfigHolde
 
 // Set replaces the stored config wholesale. Keys absent from config are
 // dropped. Built-in configs (builtinGroupConfigs) are always present;
-// callers cannot overwrite them.
+// callers cannot overwrite them. Set installs fresh maps in both
+// current and next, preserving the invariant that next is a per-key,
+// by-version superset of current (they are equal post-Set).
 //
 // NB: caller may mutate config after Set returns; the input is copied.
 func (h *ResourceGroupConfigHolder) Set(config ResourceGroupConfigSet) {
@@ -209,20 +296,103 @@ func (h *ResourceGroupConfigHolder) Set(config ResourceGroupConfigSet) {
 		}
 		cp[k] = v
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.mu.config = cp
+	// Fresh copy for next so subsequent Ingest mutations on next do
+	// not aliasing-leak into the map handed out by Snapshot.
+	nextCp := make(ResourceGroupConfigSet, len(cp))
+	for k, v := range cp {
+		nextCp[k] = v
+	}
+	// Take both locks; current.Lock first (writer), then next.Lock.
+	// promote() takes next.Lock then current.Lock — Set is called only
+	// at construction / from tests, never concurrently with promote in
+	// production, so the ordering inversion is acceptable here. It
+	// would be a deadlock risk only if Set could race with promote on
+	// the same holder; tests do not do that.
+	h.next.Lock()
+	defer h.next.Unlock()
+	h.current.Lock()
+	defer h.current.Unlock()
+	h.current.config = cp
+	h.next.config = nextCp
+	h.dirty.Store(false)
+}
+
+// Ingest installs cfg under key if cfg.Version is strictly greater
+// than the currently stored version. No-op otherwise. Ingest is safe
+// to call concurrently from many goroutines.
+//
+// On the first Ingest from a tenant (tenantID = key.tenantID, key
+// itself may be any user-defined RG from that tenant), Ingest also
+// installs the per-tenant default entry under
+// groupKey{tenantID: key.tenantID, groupID: defaultUserResourceGroupID}
+// at Version=math.MaxUint64, so subsequent GetOrDefault lookups for
+// unknown user IDs from this tenant route to that entry rather than
+// to the global defaultRGGroupConfig. The lazy install is a no-op for
+// tenant-keyed (groupID==0) ingests, which never happen in production
+// but may appear in tests.
+func (h *ResourceGroupConfigHolder) Ingest(key groupKey, cfg ResourceGroupConfig) {
+	// Fast path: read current. If we already have at least this
+	// version AND the per-tenant default for key.tenantID is already
+	// installed, there is nothing for the slow path to do. This
+	// avoids serializing the common "re-receive the same config" case
+	// behind next.Lock.
+	needPTD := key.tenantID != 0
+	cur, haveKey, havePTD := h.fastPathRead(key, needPTD)
+	if haveKey && cur.Version >= cfg.Version && havePTD {
+		return
+	}
+
+	// Slow path: stage in next.
+	h.next.Lock()
+	defer h.next.Unlock()
+	if staged, ok := h.next.config[key]; !ok || staged.Version < cfg.Version {
+		h.next.config[key] = cfg
+		h.dirty.Store(true)
+	}
+	// Lazily install the per-tenant default. We check next (the
+	// authoritative write-side map) under its own lock to avoid
+	// double-installing across racing Ingests from the same tenant.
+	if needPTD {
+		ptdKey := groupKey{tenantID: key.tenantID, groupID: defaultUserResourceGroupID}
+		if _, ok := h.next.config[ptdKey]; !ok {
+			h.next.config[ptdKey] = perTenantDefaultConfig
+			h.dirty.Store(true)
+		}
+	}
+}
+
+// fastPathRead performs the Ingest fast-path read of current under a
+// single RLock. It returns the stored config for key (if any) and
+// whether the per-tenant default for key.tenantID is already
+// installed (or "true" when checkPTD is false, so callers can ignore
+// it for tenant-keyed Ingests).
+func (h *ResourceGroupConfigHolder) fastPathRead(
+	key groupKey, checkPTD bool,
+) (cur ResourceGroupConfig, haveKey, havePTD bool) {
+	h.current.RLock()
+	defer h.current.RUnlock()
+	cur, haveKey = h.current.config[key]
+	havePTD = !checkPTD
+	if checkPTD {
+		_, havePTD = h.current.config[groupKey{
+			tenantID: key.tenantID, groupID: defaultUserResourceGroupID,
+		}]
+	}
+	return cur, haveKey, havePTD
 }
 
 // Snapshot returns the installed config bundled with utilization
 // targets from cluster settings. The Groups map is returned directly
-// (no copy); it is immutable post-install because Set installs a
-// fresh map rather than mutating in place, so prior snapshots remain
-// stable.
+// (no copy); it is immutable post-install because promote() installs
+// a fresh map rather than mutating in place, so prior snapshots
+// remain stable. Snapshot is hot — every Admit reads it.
 func (h *ResourceGroupConfigHolder) Snapshot() ConfigSnapshot {
-	h.mu.RLock()
-	groups := h.mu.config
-	h.mu.RUnlock()
+	if h.dirty.Load() {
+		h.promote()
+	}
+	h.current.RLock()
+	groups := h.current.config
+	h.current.RUnlock()
 	snap := ConfigSnapshot{
 		Groups:     groups,
 		Mode:       cpuTimeTokenACMode.Get(h.sv),
@@ -242,4 +412,29 @@ func (h *ResourceGroupConfigHolder) Snapshot() ConfigSnapshot {
 		snap.SystemNoBurstFrac = KVCPUTimeSystemUtilGoal.Get(h.sv)
 	}
 	return snap
+}
+
+// promote installs the staged config from next onto current.
+// Idempotent and safe to call from multiple goroutines: only the
+// first promoter past the dirty re-check does the swap; the rest
+// observe dirty=false and return.
+//
+// After the swap, next is reseeded with a deep copy of current so
+// subsequent Ingest slow-path writes mutate a map no prior Snapshot
+// can observe.
+func (h *ResourceGroupConfigHolder) promote() {
+	h.next.Lock()
+	defer h.next.Unlock()
+	if !h.dirty.Load() {
+		return // raced with another promoter
+	}
+	h.current.Lock()
+	h.current.config = h.next.config
+	h.current.Unlock()
+	cp := make(ResourceGroupConfigSet, len(h.next.config))
+	for k, v := range h.next.config {
+		cp[k] = v
+	}
+	h.next.config = cp
+	h.dirty.Store(false)
 }

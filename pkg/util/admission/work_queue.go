@@ -728,6 +728,16 @@ const (
 	highResourceGroupID uint64 = 1
 	// lowResourceGroupID is used for work with priority < NormalPri.
 	lowResourceGroupID uint64 = 2
+	// defaultUserResourceGroupID is the reserved ID for the
+	// per-tenant default user resource group entry. The
+	// ResourceGroupConfigHolder lazily installs
+	// groupKey{tenantID: T, groupID: defaultUserResourceGroupID} on
+	// the first Ingest from tenant T, and GetOrDefault routes unknown
+	// user-defined RG keys from tenant T to that entry. Reserved
+	// because user-defined RG IDs allocated by
+	// system.resource_group_id_seq start at 16, so this ID can never
+	// collide with one the tenant configured.
+	defaultUserResourceGroupID uint64 = 3
 )
 
 // priorityToResourceGroupKey maps a WorkPriority to the rg-keyed
@@ -747,11 +757,23 @@ func tenantGroupKeyForWorkInfo(info WorkInfo, _ *settings.Values) groupKey {
 }
 
 // cpuTimeTokenGroupKeyForWorkInfo is the groupKeyForWorkInfo
-// installed by the CTT WorkQueue. In resourceManagerMode the key is
-// derived from WorkInfo.Priority; otherwise it falls back to
-// tenant-keyed grouping.
+// installed by the CTT WorkQueue. Under resourceManagerMode it first
+// honors an explicit WorkInfo.ResourceGroupID (user-defined or
+// built-in); when none is carried, it falls back to the priority-
+// derived high/low built-ins. Other modes use tenant-keyed grouping.
+//
+// TODO(ssd): the priority-derived fallback is a placeholder for work
+// paths that do not yet carry a ResourceGroupID (e.g. KV work whose
+// originating BatchRequest predates AdmissionHeader plumbing, or
+// internal background work). Once all callers either plumb a
+// ResourceGroupID or accept the per-tenant default, decide whether
+// to keep this fallback or route every uncarried request to
+// (tenantID, defaultUserResourceGroupID).
 func cpuTimeTokenGroupKeyForWorkInfo(info WorkInfo, sv *settings.Values) groupKey {
 	if cpuTimeTokenACMode.Get(sv) == resourceManagerMode {
+		if info.ResourceGroupID != 0 {
+			return groupKey{tenantID: info.TenantID.ToUint64(), groupID: uint64(info.ResourceGroupID)}
+		}
 		return priorityToResourceGroupKey(info.Priority)
 	}
 	return tenantGroupKey(info.TenantID.ToUint64())
