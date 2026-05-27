@@ -671,6 +671,7 @@ func (ex *connExecutor) execStmtInOpenState(
 		p.txn.SetWorkloadInfo(
 			uint64(ih.fingerprintId), appNameID, workloadid.WorkloadTypeStatement,
 		)
+		setTxnResourceGroupFromSession(p.txn, p.SessionData(), p.ExecCfg().ResourceGroupCache)
 	}
 
 	// Note that here we always unconditionally defer a function that takes care
@@ -1708,6 +1709,7 @@ func (ex *connExecutor) execStmtInOpenStateWithPausablePortal(
 		p.txn.SetWorkloadInfo(
 			uint64(ih.fingerprintId), appNameID2, workloadid.WorkloadTypeStatement,
 		)
+		setTxnResourceGroupFromSession(p.txn, p.SessionData(), p.ExecCfg().ResourceGroupCache)
 	}
 
 	if buildutil.CrdbTestBuild {
@@ -2629,6 +2631,7 @@ func (ex *connExecutor) commitSQLTransactionInternal(ctx context.Context) (retEr
 		ex.state.mu.txn.SetWorkloadInfo(
 			txnFingerprintID, appNameID, workloadid.WorkloadTypeCommit,
 		)
+		setTxnResourceGroupFromSession(ex.state.mu.txn, ex.sessionData(), ex.server.cfg.ResourceGroupCache)
 	}
 
 	if err := ex.state.mu.txn.Commit(ctx); err != nil {

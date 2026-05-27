@@ -474,6 +474,25 @@ func (txn *Txn) SetWorkloadInfo(
 	txn.workloadType = workloadType
 }
 
+// SetResourceGroup binds a resource group to this transaction. The
+// (id, cfg) pair is written into the txn's admission header and
+// thereafter rides along on every BatchRequest the txn sends. The
+// host's admission control uses cfg to seed or refresh its per-group
+// state under (tenant, id); id alone is what routes work to the right
+// group on every node that has already seen cfg or a newer version.
+//
+// Pass id=0 to clear any previously-set group; cfg is ignored in that
+// case.
+func (txn *Txn) SetResourceGroup(id uint64, cfg admissionpb.ResourceGroupConfig) {
+	if id == 0 {
+		txn.admissionHeader.ResourceGroupID = 0
+		txn.admissionHeader.ResourceGroupConfig = admissionpb.ResourceGroupConfig{}
+		return
+	}
+	txn.admissionHeader.ResourceGroupID = id
+	txn.admissionHeader.ResourceGroupConfig = cfg
+}
+
 // SetBufferedWritesEnabled toggles whether the writes are buffered on the
 // gateway node until the commit time. Buffered writes cannot be enabled on a
 // txn that performed any requests. When disabling buffered writes, if there are

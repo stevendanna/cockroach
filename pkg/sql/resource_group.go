@@ -10,10 +10,12 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
+	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/paramparse"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
+	"github.com/cockroachdb/cockroach/pkg/sql/resourcegroupcache"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -424,4 +426,36 @@ func (p *planner) ShowResourceGroups(
 	_ context.Context, n *tree.ShowResourceGroups,
 ) (planNode, error) {
 	return p.showResourceGroupsImpl("")
+}
+
+// setTxnResourceGroupFromSession stamps the session's currently-bound
+// resource group on txn so subsequent BatchRequests carry it. The
+// gateway pulls the live config from the local resource-group cache;
+// the host's admission control treats the carried config as a
+// version-tagged hint and updates its own holder under
+// (tenant, id) only if the carried version is strictly newer.
+//
+// If the session has no group bound (ResourceGroupID == 0) the
+// resource-group fields on the txn are cleared. If the id is bound
+// but the cache hasn't yet observed the row (rangefeed lag), the id
+// is still stamped with a zero config; the host then routes work to
+// the per-tenant default until a newer config arrives from any other
+// gateway.
+func setTxnResourceGroupFromSession(
+	txn *kv.Txn, sd *sessiondata.SessionData, cache *resourcegroupcache.Cache,
+) {
+	if txn == nil || sd == nil {
+		return
+	}
+	id := sd.ResourceGroupID
+	if id == 0 || cache == nil {
+		txn.SetResourceGroup(0, admissionpb.ResourceGroupConfig{})
+		return
+	}
+	entry, ok := cache.LookupByID(id)
+	if !ok {
+		txn.SetResourceGroup(id, admissionpb.ResourceGroupConfig{})
+		return
+	}
+	txn.SetResourceGroup(id, entry.Config)
 }
