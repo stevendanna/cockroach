@@ -1220,5 +1220,5 @@ func (m *SessionDataMutator) SetBufferedWritesImplicitTxnsEnabled(val bool) {
 // the visible name and the id used for admission lookups never disagree.
 func (m *SessionDataMutator) SetResourceGroup(name string, id uint64) {
 	m.Data.ResourceGroupName = name
-	m.Data.ResourceGroupId = id
+	m.Data.ResourceGroupID = id
 }

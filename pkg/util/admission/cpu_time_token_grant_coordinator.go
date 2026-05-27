@@ -13,6 +13,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/goschedstats"
@@ -196,6 +197,30 @@ func (coord *CPUGrantCoordinators) SetResourceGroupConfig(config ResourceGroupCo
 		panic(errors.AssertionFailedf("queues[%d] is not a *WorkQueue", rmQueueTier))
 	}
 	q.refreshResourceGroupConfig()
+}
+
+// IngestResourceGroupConfig offers cfg, carried on a BatchRequest's
+// AdmissionHeader, to the holder keyed by (tenantID, groupID). The
+// holder applies its strict-newer-wins version policy: an older or
+// equal version is dropped silently.
+//
+// cfg.CPUWeight must be > 0; a zero-weight payload is treated as
+// "no config carried" by the caller and should not reach here. The
+// call does not trigger an RM-mode refresh: ingested configs flow
+// into the holder's "next" staging map and are promoted on the
+// next Snapshot read along the admit hot path.
+func (coord *CPUGrantCoordinators) IngestResourceGroupConfig(
+	tenantID, groupID uint64, cfg admissionpb.ResourceGroupConfig,
+) {
+	coord.cpuTimeCoord.configHolder.Ingest(
+		groupKey{tenantID: tenantID, groupID: groupID},
+		ResourceGroupConfig{
+			Weight:    uint32(cfg.CPUWeight),
+			BurstFrac: cfg.BurstFrac,
+			MaxCPU:    cfg.MaxCPU,
+			Version:   uint64(cfg.Version),
+		},
+	)
 }
 
 // GetRunnableCountCallback returns a callback of type

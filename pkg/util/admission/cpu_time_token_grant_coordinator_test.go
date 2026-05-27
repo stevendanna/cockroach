@@ -11,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -211,4 +212,56 @@ func TestSetResourceGroupConfigViaCoord(t *testing.T) {
 	require.Equal(t, uint32(30), rg43.weight)
 	require.Equal(t, float64(0.3), rg43.burstFrac)
 	require.False(t, rg43.cpuTimeBurstBucket.maxCPU)
+}
+
+// TestIngestResourceGroupConfigViaCoord exercises the kvadmission-side
+// entry point: an arbitrary KV node receiving a BatchRequest hands
+// the carried (tenantID, groupID, typed config) tuple to the coord,
+// which installs it into the holder. The test asserts the install
+// lands in a Snapshot, that re-ingesting an older version is a no-op,
+// and that the per-tenant default is lazily created.
+func TestIngestResourceGroupConfigViaCoord(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	var ambientCtx log.AmbientContext
+	settings := cluster.MakeTestingClusterSettings()
+	registry := metric.NewRegistry()
+	var opts Options
+	knobs := &TestingKnobs{DisableCPUTimeTokenFillerGoroutine: true}
+	coords := NewGrantCoordinators(ambientCtx, settings, opts, registry, &noopOnLogEntryAdmitted{}, knobs)
+	defer coords.Close()
+	cpuCoords := coords.RegularCPU
+
+	const tenantID = uint64(2)
+	const groupID = uint64(42)
+
+	// First ingest at version 1 installs the config and lazily creates
+	// the per-tenant default under (tenantID, defaultUserResourceGroupID).
+	cpuCoords.IngestResourceGroupConfig(tenantID, groupID, admissionpb.ResourceGroupConfig{
+		CPUWeight: 70, BurstFrac: 0.7, MaxCPU: true, Version: 1,
+	})
+	snap := cpuCoords.cpuTimeCoord.configHolder.Snapshot()
+	got, ok := snap.Groups[groupKey{tenantID: tenantID, groupID: groupID}]
+	require.True(t, ok, "ingested group should be visible")
+	require.Equal(t, ResourceGroupConfig{Weight: 70, BurstFrac: 0.7, MaxCPU: true, Version: 1}, got)
+	ptd, ok := snap.Groups[groupKey{tenantID: tenantID, groupID: defaultUserResourceGroupID}]
+	require.True(t, ok, "per-tenant default should be installed on first ingest")
+	require.Equal(t, perTenantDefaultConfig, ptd)
+
+	// Newer version overwrites.
+	cpuCoords.IngestResourceGroupConfig(tenantID, groupID, admissionpb.ResourceGroupConfig{
+		CPUWeight: 140, BurstFrac: 0.9, MaxCPU: false, Version: 2,
+	})
+	snap = cpuCoords.cpuTimeCoord.configHolder.Snapshot()
+	got = snap.Groups[groupKey{tenantID: tenantID, groupID: groupID}]
+	require.Equal(t, ResourceGroupConfig{Weight: 140, BurstFrac: 0.9, MaxCPU: false, Version: 2}, got)
+
+	// Stale version is a no-op.
+	cpuCoords.IngestResourceGroupConfig(tenantID, groupID, admissionpb.ResourceGroupConfig{
+		CPUWeight: 999, BurstFrac: 0.1, MaxCPU: true, Version: 1,
+	})
+	snap = cpuCoords.cpuTimeCoord.configHolder.Snapshot()
+	got = snap.Groups[groupKey{tenantID: tenantID, groupID: groupID}]
+	require.Equal(t, ResourceGroupConfig{Weight: 140, BurstFrac: 0.9, MaxCPU: false, Version: 2}, got)
 }

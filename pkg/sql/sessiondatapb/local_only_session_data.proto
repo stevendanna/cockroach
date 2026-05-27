@@ -841,7 +841,7 @@ message LocalOnlySessionData {
   // miss); subsequent batch requests look up the live config by this ID
   // rather than by name to avoid carrying name resolution into the hot
   // path. Zero means no group is bound.
-  uint64 resource_group_id = 211;
+  uint64 resource_group_id = 211 [(gogoproto.customname) = "ResourceGroupID"];
 
   ///////////////////////////////////////////////////////////////////////////
   // WARNING: consider whether a session parameter you're adding needs to  //

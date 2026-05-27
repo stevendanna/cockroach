@@ -282,6 +282,18 @@ func (n *controllerImpl) AdmitKVWork(
 		return Handle{}, nil
 	}
 	admissionInfo := workInfoForBatch(n.settings, requestTenantID, rangeTenantID, ba)
+	// If the batch carries a resource group config from the gateway,
+	// hand it to the holder. Ingest is cheap when the holder already
+	// has at least this version. CPUWeight==0 is the "no config
+	// carried" sentinel — also what old senders that never set the
+	// field marshal to — and is skipped here.
+	if cfg := &ba.AdmissionHeader.ResourceGroupConfig; cfg.CPUWeight > 0 {
+		n.cpuGrantCoords.IngestResourceGroupConfig(
+			admissionInfo.TenantID.ToUint64(),
+			ba.AdmissionHeader.ResourceGroupID,
+			*cfg,
+		)
+	}
 	ah := Handle{tenantID: admissionInfo.TenantID}
 	admissionEnabled := true
 	// Don't subject HeartbeatTxnRequest to the storeAdmissionQ. Even though
@@ -640,6 +652,7 @@ func workInfoForBatch(
 		AppNameID:       ba.Header.AppNameID,
 		GatewayNodeID:   ba.Header.GatewayNodeID,
 		WorkloadType:    workloadid.WorkloadType(ba.Header.WorkloadType),
+		ResourceGroupID: admissionpb.ResourceGroupID(ba.AdmissionHeader.ResourceGroupID),
 	}
 	return admissionInfo
 }

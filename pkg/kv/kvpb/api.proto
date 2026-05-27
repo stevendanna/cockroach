@@ -3160,7 +3160,7 @@ message AdmissionHeader {
   // under the per-tenant default rather than under a user-defined
   // group. Both old senders (no field set) and the common "no group"
   // case round-trip as a zero-byte varint on the wire.
-  uint64 resource_group_id = 6;
+  uint64 resource_group_id = 6 [(gogoproto.customname) = "ResourceGroupID"];
 
   // ResourceGroupConfig is the admissionpb.ResourceGroupConfig the
   // gateway last observed for ResourceGroupID. It rides along on each

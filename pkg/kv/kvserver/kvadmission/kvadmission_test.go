@@ -108,6 +108,27 @@ func TestWorkInfoForBatch(t *testing.T) {
 				TenantID: roachpb.MustMakeTenantID(2),
 				Priority: admissionpb.NormalPri, CreateTime: 5, BypassAdmission: false,
 			}},
+		{
+			name: "resource-group-id-populates-work-info",
+			ah: kvpb.AdmissionHeader{
+				Priority: int32(admissionpb.NormalPri), CreateTime: 5, Source: kvpb.AdmissionHeader_FROM_SQL,
+				ResourceGroupID: 42,
+			},
+			requestTenant: 2, rangeTenant: 4,
+			expected: admission.WorkInfo{
+				TenantID: roachpb.MustMakeTenantID(2),
+				Priority: admissionpb.NormalPri, CreateTime: 5, BypassAdmission: false,
+				ResourceGroupID: admissionpb.ResourceGroupID(42),
+			}},
+		{
+			name: "zero-resource-group-id-leaves-work-info-field-zero",
+			ah: kvpb.AdmissionHeader{
+				Priority: int32(admissionpb.NormalPri), CreateTime: 5, Source: kvpb.AdmissionHeader_FROM_SQL},
+			requestTenant: 2, rangeTenant: 4,
+			expected: admission.WorkInfo{
+				TenantID: roachpb.MustMakeTenantID(2),
+				Priority: admissionpb.NormalPri, CreateTime: 5, BypassAdmission: false,
+			}},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
