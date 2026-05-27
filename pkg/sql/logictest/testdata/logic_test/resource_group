@@ -165,6 +165,44 @@ id  name  cpu_weight  max_cpu  cpu_share_percent
 
 subtest end
 
+subtest version
+
+# CREATE writes version=1; each ALTER bumps it by one. The new
+# version is also embedded in the marshaled proto so it can ride
+# along on the BatchRequest admission header and let receiving KV
+# nodes ignore stale payloads. `high` was CREATEd then ALTERed twice
+# (cpu_weight=200, then max_cpu=false), so its current version is 3.
+query II
+SELECT version,
+       (crdb_internal.pb_to_json('cockroach.util.admission.admissionpb.ResourceGroupConfig', config)->>'version')::INT
+FROM system.resource_groups WHERE name = 'high'
+----
+3  3
+
+# Even a no-op ALTER (same cpu_weight) bumps the version. The
+# receiver-side strictly-newer comparison wants a monotonic counter,
+# not a content hash.
+statement ok
+ALTER RESOURCE GROUP high WITH cpu_weight = 200
+
+query II
+SELECT version,
+       (crdb_internal.pb_to_json('cockroach.util.admission.admissionpb.ResourceGroupConfig', config)->>'version')::INT
+FROM system.resource_groups WHERE name = 'high'
+----
+4  4
+
+# ALTER IF EXISTS on a missing group is a no-op and bumps nothing.
+statement ok
+ALTER RESOURCE GROUP IF EXISTS ghost WITH cpu_weight = 1
+
+query I
+SELECT version FROM system.resource_groups WHERE name = 'high'
+----
+4
+
+subtest end
+
 subtest cpu_share
 
 # cpu_share_percent is derived from the entire set of user-defined

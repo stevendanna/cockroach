@@ -28,11 +28,11 @@ const resourceGroupOp = "resource-group"
 // TODO(ssd): replace HasAdminRole with a finer-grained privilege when
 // the resource manager goes GA.
 func checkResourceGroupsEnabled(ctx context.Context, p *planner) error {
-	// The system.resource_groups table and its sequence are only present
-	// once the V26_3_AddResourceGroupsTable migration has run. Reject
-	// statements until the cluster upgrade is finalized so callers see a
-	// clear error rather than "relation does not exist".
-	if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V26_3_AddResourceGroupsTable) {
+	// The system.resource_groups table, its sequence, and its version
+	// column are populated by a chain of V26_3_* migrations. Gating on
+	// the final V26_3 version means all of them have run, so CREATE
+	// and ALTER can rely on the version column existing.
+	if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V26_3) {
 		return pgerror.New(pgcode.FeatureNotSupported,
 			"resource group SQL is not available until the cluster upgrade to v26.3 is finalized")
 	}
@@ -63,6 +63,12 @@ const (
 	resourceGroupOptCPUWeight = "cpu_weight"
 	resourceGroupOptMaxCPU    = "max_cpu"
 )
+
+// initialResourceGroupVersion is the version stamped on a freshly
+// CREATEd row. The version column defaults to 1 too, but we write the
+// value explicitly so the column and the Version field embedded in the
+// marshaled config are always set in the same place.
+const initialResourceGroupVersion = 1
 
 // applyResourceGroupOptions mutates cfg by applying each option in opts,
 // leaving fields whose keys do not appear in opts unchanged.
@@ -149,6 +155,11 @@ func (c *createResourceGroupNode) startExec(params runParams) error {
 		return pgerror.Newf(pgcode.InvalidParameterValue,
 			"%s is required and must be a positive integer", resourceGroupOptCPUWeight)
 	}
+	// CREATE always writes the inaugural version. Embedding it in the
+	// marshaled proto matches what ALTER does and keeps the on-disk
+	// invariant simple: the value in the version column always matches
+	// the Version field inside the marshaled config.
+	cfg.Version = initialResourceGroupVersion
 	configBytes, err := protoutil.Marshal(&cfg)
 	if err != nil {
 		return errors.Wrap(err, "marshaling resource group config")
@@ -168,8 +179,8 @@ func (c *createResourceGroupNode) startExec(params runParams) error {
 	if _, err := p.InternalSQLTxn().ExecEx(
 		ctx, resourceGroupOp, p.Txn(),
 		sessiondata.NodeUserSessionDataOverride,
-		`INSERT INTO system.resource_groups (id, name, config) VALUES ($1, $2, $3)`,
-		id, name, configBytes,
+		`INSERT INTO system.resource_groups (id, name, config, version) VALUES ($1, $2, $3, $4)`,
+		id, name, configBytes, initialResourceGroupVersion,
 	); err != nil {
 		// On duplicate-name collision, give a friendlier error or no-op
 		// for IF NOT EXISTS.
@@ -214,7 +225,7 @@ func (a *alterResourceGroupNode) startExec(params runParams) error {
 	row, err := p.InternalSQLTxn().QueryRowEx(
 		ctx, resourceGroupOp, p.Txn(),
 		sessiondata.NodeUserSessionDataOverride,
-		`SELECT config FROM system.resource_groups WHERE name = $1`, name,
+		`SELECT config, version FROM system.resource_groups WHERE name = $1`, name,
 	)
 	if err != nil {
 		return errors.Wrap(err, "loading resource group")
@@ -235,6 +246,11 @@ func (a *alterResourceGroupNode) startExec(params runParams) error {
 	if err := applyResourceGroupOptions(ctx, p.SemaCtx(), p.EvalContext(), &cfg, a.n.Options); err != nil {
 		return err
 	}
+	// Bump the version in the same transaction we read it in. Any
+	// concurrent ALTER on the same row conflicts under serializable
+	// isolation, so the version is monotonic per group.
+	newVersion := int64(tree.MustBeDInt(row[1])) + 1
+	cfg.Version = newVersion
 	configBytes, err := protoutil.Marshal(&cfg)
 	if err != nil {
 		return errors.Wrap(err, "marshaling resource group config")
@@ -242,8 +258,8 @@ func (a *alterResourceGroupNode) startExec(params runParams) error {
 	if _, err := p.InternalSQLTxn().ExecEx(
 		ctx, resourceGroupOp, p.Txn(),
 		sessiondata.NodeUserSessionDataOverride,
-		`UPDATE system.resource_groups SET config = $1 WHERE name = $2`,
-		configBytes, name,
+		`UPDATE system.resource_groups SET config = $1, version = $2 WHERE name = $3`,
+		configBytes, newVersion, name,
 	); err != nil {
 		return errors.Wrap(err, "updating resource group")
 	}
