@@ -39,6 +39,17 @@ func TestObsoleteCode(t *testing.T) {
 	}
 }
 
+// TestCPUTimeTokenACModeAcceptsResourceManager asserts that
+// SET CLUSTER SETTING admission.cpu_time_tokens.mode = 'resource_manager'
+// is accepted. Other tests in this file use Override, which skips
+// validation.
+func TestCPUTimeTokenACModeAcceptsResourceManager(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	require.NoError(t, cpuTimeTokenACMode.Validate(int64(resourceManagerMode)))
+}
+
 // TestCPUTimeTokenACEnableAndDisable verifies that GetKVWorkQueue
 // routes work to the correct queue based on cpuTimeTokenACMode,
 // activeMode, the legacy bool, and the kill switch.

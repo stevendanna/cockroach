@@ -78,12 +78,6 @@ var cpuTimeTokenACMode = settings.RegisterEnumSetting[cpuTimeTokenMode](
 		serverlessMode:      "serverless",
 		resourceManagerMode: "resource_manager",
 	},
-	settings.WithValidateEnum(func(val string) error {
-		if val == "resource_manager" {
-			return errors.New("resource_manager mode is not yet implemented")
-		}
-		return nil
-	}),
 )
 
 // cpuTimeTokenACKillSwitch is an env var kill switch that disables CPU time
