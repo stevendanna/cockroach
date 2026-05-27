@@ -30,4 +30,12 @@ message ResourceGroupConfig {
   // full set of rows. The field is on the proto so the same struct can
   // carry the derived share across package boundaries.
   double burst_frac = 3 [(gogoproto.customname) = "BurstFrac"];
+
+  // Version is the monotonically-increasing config version stored in
+  // system.resource_groups.version. It rides the wire alongside the
+  // config so a receiving KV node can compare against what it already
+  // has and only install strictly-newer configs. Older payloads decode
+  // this as 0, which is never strictly newer than any installed
+  // version, so the receiver will simply skip the install.
+  int64 version = 4;
 }
